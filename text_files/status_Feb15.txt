@@ -1,0 +1,62 @@
+Status as of Feb 15
+=================
+
+Current State:
+-------------
+1. Built executables:
+   - Rust server (market_server.exe) in /rust directory
+   - Python processor (market_processor.exe) in /python directory
+   - Service coordinator running but UI needs fixing
+
+Directory Structure:
+------------------
+Main project: C:\Users\aport\Documents\NinjaTrader 8\bin\Custom\Strategies\OrderManager\
+- /python/market_processor.exe
+- /rust/market_server.exe
+- /redis/redis-server.exe (needed)
+- service_coordinator.py
+
+UI Project: C:\Users\aport\Documents\market-ui\
+- index.html
+- script.js
+- styles.css
+
+Required Next Steps:
+------------------
+1. Redis:
+   - Need to obtain redis-server.exe
+   - Place in /redis directory
+
+2. UI Integration:
+   - Copy UI files from market-ui project to OrderManager directory:
+     * index.html
+     * script.js
+     * styles.css
+   - Ensure service_coordinator.py serves these files correctly
+
+3. Testing:
+   - Test Redis server startup
+   - Test Rust server startup
+   - Test Python processor startup
+   - Verify UI can control all services
+   - Verify service status reporting
+
+Port Configuration:
+-----------------
+- Redis: 6379
+- Rust Server: 8080
+- Python Processor: 5000
+- Service Coordinator UI: 5000
+
+Dependencies:
+------------
+1. Service Order:
+   - Redis must start first
+   - Rust server depends on Redis
+   - Python processor depends on Redis
+   - UI coordinates all services
+
+2. File Dependencies:
+   - market_processor.exe needs Redis connection
+   - market_server.exe needs Redis connection
+   - UI needs all service endpoints accessible 

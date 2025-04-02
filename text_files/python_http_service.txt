@@ -1,0 +1,158 @@
+using System;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using Newtonsoft.Json;
+
+public class BarData
+{
+    private DateTime time;
+    private double open;
+    private double high;
+    private double low;
+    private double close;
+    private double volume;
+    private string strategyId;
+
+    public void Update(DateTime time, double open, double high, double low, double close, double volume, string strategyId)
+    {
+        this.time = time;
+        this.open = open;
+        this.high = high;
+        this.low = low;
+        this.close = close;
+        this.volume = volume;
+        this.strategyId = strategyId;
+    }
+
+    public object ToJson()
+    {
+        return new
+        {
+            time = time.ToString("yyyy-MM-dd HH:mm:ss"),
+            open,
+            high,
+            low,
+            close,
+            volume,
+            strategy_id = strategyId
+        };
+    }
+}
+
+public class PythonHttpService : IDisposable
+{
+    private bool disposed;
+    private readonly HttpClient client;
+    private readonly string baseUrl;
+    private readonly object syncLock = new object();
+    private readonly BarData barDataCache;
+    private readonly Queue<BarData> dataQueue;
+    private readonly CancellationTokenSource serviceCts;
+    private Task processTask;
+
+    public PythonHttpService(string host = "localhost", int port = 8765)
+    {
+        this.baseUrl = $"http://{host}:{port}";
+        this.client = new HttpClient();
+        this.barDataCache = new BarData();
+        this.dataQueue = new Queue<BarData>();
+        this.serviceCts = new CancellationTokenSource();
+        client.Timeout = TimeSpan.FromSeconds(2);
+
+        // Start processing task
+        processTask = ProcessQueueAsync();
+    }
+
+    public void QueueBarData(DateTime time, double open, double high, double low, double close, double volume, string strategyId)
+    {
+        if (disposed) return;
+
+        lock (syncLock)
+        {
+            barDataCache.Update(time, open, high, low, close, volume, strategyId);
+            dataQueue.Enqueue(barDataCache);
+        }
+    }
+
+    private async Task ProcessQueueAsync()
+    {
+        while (!serviceCts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                BarData data = null;
+                lock (syncLock)
+                {
+                    if (dataQueue.Count > 0)
+                        data = dataQueue.Dequeue();
+                }
+
+                if (data != null)
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(serviceCts.Token);
+                    cts.CancelAfter(TimeSpan.FromSeconds(2));
+
+                    var content = new StringContent(
+                        JsonConvert.SerializeObject(data.ToJson()),
+                        Encoding.UTF8,
+                        "application/json");
+
+                    var response = await client.PostAsync($"{baseUrl}/bar_update", content, cts.Token);
+                    
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        // Silent fail - just drop the data
+                    }
+                }
+            }
+            catch (Exception) when (!disposed)
+            {
+                // Silent fail for expected exceptions
+            }
+
+            await Task.Delay(100, serviceCts.Token);
+        }
+    }
+
+    public async Task<bool> CheckHealth()
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var response = await client.GetAsync($"{baseUrl}/health", cts.Token);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!disposed)
+        {
+            if (disposing)
+            {
+                serviceCts.Cancel();
+                try
+                {
+                    processTask?.Wait(TimeSpan.FromSeconds(5));
+                }
+                catch { }
+                serviceCts.Dispose();
+                client.Dispose();
+            }
+            disposed = true;
+        }
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+} 

@@ -1,0 +1,68 @@
+OrderBook:
+L2 price gets rounded into whole numbers, with cieling round.
+
+
+metric scores: all scores are -100 to -10(bear) ,110 to 10 as neutral and 10-100(bull).  The score is a confidence in the outcome defined by the metric 
+composite outcomes: a trailing score, normalized -100 to 100 composite of individual metric scores , based on the last 5 bars: 
+    if trend bullish and composite score is growing positive : continue_bullish,
+    if trend bearish and composite score is growing negative : continue_bearish
+    if trend breaish and composite score is growing positive : reversal_bullish,
+    if trend bullish and composite score is growing negative : reversal_bearish
+
+
+
+Tools:
+    EMA 25, 
+    VWAP 25,
+    SMA 200,
+    Bollinger Bands 20, 2 stddev
+
+Trending Metrics:
+    Small trend: 3 bars growing in the same direction
+    Volatite trend: 3 bars growing in the same direction with wicks in both sides
+    Stable trend: 3 bars growing in the same direction with no lower wicks 
+    Long trend: EMA > VWAP and 10 bar avg price > 10 bar avg EMA
+    Ending trend: Grown of long trend is slowing, reaching a slow peak
+
+Price Band Metrics 
+    - Dominance: -ask/(volume) , bid/volume
+        - color < red < 0 , green > 0
+        - density - volume reletive to price - price+10 bands
+    - Reversal Opportunity (0-100)
+        - dominance of ask above bid, density, +dominance of surrounding bands
+        - resistance, is this band within the upper wicks of bars that failed to trend up
+        - is this band within the lower wicks of trends that failed to trend down
+
+Momentum Metrics
+    Trend Sentiment -100 to 100 score based on trending movement with opposing price band density along the current bars. 
+        Only During Trends:
+        Score each band above and below with a value decreasing away from the price.  
+        (pressure)Calculate total volume above and below price.
+            if trend up and ask pressure is greater than buy pressure, then bearish
+            if trend down and buy pressure is greater than ask pressure, then bullish.
+            if trend up and ask pressure is less than buy pressure, then bullish
+            if trend down and buy pressure is less than ask pressure, then bearish
+
+EMA VWAP Divergence:
+    EMA and VWAP are gorwing apart with VWAP < EMA: Bullish
+    EMA and VWAP are gorwing apart with VWAP < EMA: Bearish
+    EMA and VWAP are converging with VWAP < EMA: Bearish
+    EMA and VWAP are converging  with VWAP < EMA: Bullish
+
+Bursts:  
+Tracking the averge rate of order volume per direction / second as stddev 3.
+    If an order burst is detected , it is likely to be a large bar. Bear/Bull based on burst direction
+
+Modifiers: Increase/Decrease scores
+Breakout Zones Conditions
+    Long period of flat within a tight Bollinger Band (or comparable calulation)
+    Relative High order volume with overall price range and equal wicks (even if wick is 0)
+    If Volume was fully skewed bid or ask, it would leave the Bollinger Band
+
+Building Opportunity: 
+period of sideways trading.  Incrementally modifier to score intensity,assuming that the longer the flat period, the more likely a chance of breakout.
+
+Regime: 
+    If EMA is trending UP towards SMA or positively away, bullish
+    If EMA is trending DOWN towards SMA or negatively away, bearish
+

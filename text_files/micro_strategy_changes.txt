@@ -1,0 +1,42 @@
+// Add these properties to MicroStrategy class
+private MinimalPythonService pythonService;
+private bool pythonConnected;
+
+// Add this to OnStateChange in DataLoaded state
+case State.DataLoaded:
+    base.OnStateChange(e);  // Important: Call base implementation
+    Print("Initializing Python connection...");
+    pythonService = new MinimalPythonService(logger: msg => Print(msg));
+    Task.Run(async () => {
+        pythonConnected = await pythonService.CheckHealth();
+        Print($"Python connection status: {(pythonConnected ? "Connected" : "Failed to connect")}");
+    });
+    break;
+
+// Add this to OnStateChange in Terminated state
+case State.Terminated:
+    base.OnStateChange(e);  // Important: Call base implementation
+    Print("Disposing Python connection...");
+    pythonService?.Dispose();
+    break;
+
+// Add this to OnBarUpdate
+protected override void OnBarUpdate()
+{
+    base.OnBarUpdate();  // Important: Call base implementation
+    
+    // Only process for BarsInProgress 0 (primary series)
+    if (BarsInProgress != 0) return;
+    
+    if (pythonConnected)
+    {
+        Task.Run(async () => {
+            var data = new {
+                time = Time[0],
+                instrument = Instrument.FullName,
+                close = Close[0]
+            };
+            await pythonService.SendDebug($"Bar update: {JsonConvert.SerializeObject(data)}");
+        });
+    }
+} 

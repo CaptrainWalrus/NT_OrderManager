@@ -1,0 +1,37 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+import uvicorn
+
+app = FastAPI()
+
+class BarData(BaseModel):
+    time: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    strategy_id: str
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+@app.post("/bar_update")
+async def bar_update(data: BarData):
+    try:
+        # Process bar data here
+        print(f"Received bar data from {data.strategy_id}: {data.dict()}")
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="localhost", port=8765)
+
+# Requirements (requirements.txt):
+# fastapi==0.104.1
+# uvicorn==0.24.0
+# pydantic==2.5.2 

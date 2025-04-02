@@ -1,0 +1,74 @@
+		protected override FunctionResponses BuildNewSignal()
+		{
+		
+			if(CurrentBars[0] < base.BarsRequiredToTrade)
+			{
+				return FunctionResponses.NoAction;
+			}
+			
+
+			string msg ="A";
+			
+			try
+			{
+				FunctionResponses EntryFunctionValue = FunctionResponses.NoAction;
+				/// only enter through the respoctive BIP index
+				
+				
+				
+					msg = "A2";
+					TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
+					/// dont run more than 1 time every 30 sec
+					msg = "A2a";
+					//Print(vwapScore);	
+
+					if (getAllcustomPositionsCombined() < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
+					{
+					   msg = "A2B";
+						 // Get consistent target prices from the indicator
+				
+						
+						bool canScaleInAgg = CalculateTotalOpenPositionProfit() > (scaleInRisk);
+						double standardInstrumentOpenProfit = CalculateTotalOpenPositionProfitForInstrument(3);
+						double microInstrumentOpenProfit = CalculateTotalOpenPositionProfitForInstrument(1);
+					
+					      if (microContracts == true)
+					        {
+								
+							   msg = "A2 M";
+								if ((GetMarketPositionByIndex(0) != MarketPosition.Flat && canScaleInAgg) || (GetMarketPositionByIndex(0) == MarketPosition.Flat))
+								{
+									msg = "A2 N";
+								
+								
+								
+								///if signalboolX true evaluate for signal X
+								///if signalboolY true evaluate for signal Y 
+									
+								
+								}
+									   
+									
+																			
+
+								
+
+							}
+
+						}
+								
+
+					
+					return FunctionResponses.NoAction;
+			}
+			catch (Exception ex)
+		    {
+		        Print($"Error in microStrategy: BAR {CurrentBars[0]}, {ex.Message} + {msg}");
+		        return FunctionResponses.NoAction;
+		    }
+					
+				
+			
+			return FunctionResponses.NoAction;
+			
+			}

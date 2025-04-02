@@ -1,0 +1,39 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('server_debug.log'),
+        logging.StreamHandler()
+    ]
+)
+
+app = FastAPI()
+
+@app.get("/health")
+async def health_check():
+    logging.info("Health check endpoint called")
+    return {"status": "ok", "message": "Server is running"}
+
+@app.post("/debug")
+async def debug_endpoint(data: dict):
+    logging.info(f"Debug endpoint received data: {data}")
+    return {
+        "status": "received",
+        "data": data,
+        "message": "Debug data received successfully"
+    }
+
+if __name__ == "__main__":
+    logging.info("Starting server...")
+    uvicorn.run(app, host="localhost", port=8765)
+
+# requirements.txt:
+# fastapi==0.104.1
+# uvicorn==0.24.0
+# pydantic==2.5.2 

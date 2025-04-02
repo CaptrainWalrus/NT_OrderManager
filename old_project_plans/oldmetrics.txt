@@ -1,0 +1,793 @@
+from typing import Dict, List, Any, Optional, Tuple
+from dataclasses import dataclass, asdict
+import numpy as np
+from ..core.price_aggregation import PriceLevel
+from ..monitoring.historical_metrics import MetricTimeSeries
+from ..common.imports import logging
+import time
+from collections import deque
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class BandMetrics:
+    """Price band metrics with JSON serialization support"""
+    dominance: float = 0.0
+    volume: float = 0.0
+    momentum: float = 0.0
+    imbalance: float = 0.0
+    absorption: float = 0.0
+    support: float = 0.0
+    resistance: float = 0.0
+    lower: float = 0.0
+    upper: float = 0.0
+
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return asdict(self)
+
+@dataclass
+class DirectionalSignals:
+    """Short-term directional signals"""
+    momentum_score: float      # -1 to 1, direction and strength
+    gap_pressure: float       # 0 to 1, presence of order gaps
+    absorption_rate: float    # How quickly orders are filled
+    aggressive_imbalance: float  # Sudden shifts in order flow
+    price_acceptance: float   # How well price is accepted at level
+
+class RollingStatistics:
+    """Maintains rolling statistics for normalizing metrics"""
+    
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self.values = deque(maxlen=window_size)
+        
+    def add(self, value: float) -> None:
+        self.values.append(value)
+        
+    @property
+    def mean(self) -> float:
+        return np.mean(self.values) if self.values else 0.0
+        
+    @property
+    def std(self) -> float:
+        return np.std(self.values) if len(self.values) > 1 else 1.0
+        
+    def zscore(self, value: float) -> float:
+        """Convert value to z-score based on rolling window"""
+        if not self.values:
+            return 0.0
+        return (value - self.mean) / self.std
+
+class PriceBandAnalyzer:
+    """Analyzes price level activity within bands"""
+    
+    def __init__(self, band_size: float = 0.25):
+        self.band_size = band_size
+        self.mean = 0.0
+        self.std = 1.0
+        self._history = {}  # Change from list to dict
+        self._metrics_cache = {}
+        
+    def analyze_level(self, level: PriceLevel) -> Optional[BandMetrics]:
+        """Analyze price level with validation"""
+        try:
+            if not level:
+                return None
+                
+            # Handle empty levels
+            if level.bid_volume == 0 and level.ask_volume == 0:
+                return BandMetrics(
+                    dominance=0.0,
+                    volume=0.0,
+                    momentum=0.0,
+                    imbalance=0.0,
+                    absorption=0.0,
+                    support=0.0,
+                    resistance=0.0,
+                    lower=level.price,
+                    upper=level.price + self.band_size
+                )
+                
+            # Calculate metrics
+            total_vol = level.bid_volume + level.ask_volume
+            if total_vol > 0:
+                dominance = (level.bid_volume - level.ask_volume) / total_vol
+                imbalance = abs(dominance)
+            else:
+                dominance = 0.0
+                imbalance = 0.0
+
+            # Update history before calculating metrics
+            self._update_history(level)
+            
+            try:
+                metrics = BandMetrics(
+                    dominance=dominance,
+                    volume=float(total_vol),
+                    momentum=self._calculate_momentum(level.price),
+                    imbalance=imbalance,
+                    absorption=self._calculate_absorption_rate(level),
+                    support=self._calculate_support_score(level.price, level),
+                    resistance=self._calculate_resistance_score(level.price, level),
+                    lower=level.price,
+                    upper=level.price + self.band_size
+                )
+                return metrics
+            except Exception as calc_error:
+                logger.error(f"Error calculating metrics for price {level.price}: {str(calc_error)}")
+                # Return default metrics on calculation error
+                return BandMetrics(
+                    dominance=dominance,
+                    volume=float(total_vol),
+                    momentum=0.0,
+                    imbalance=imbalance,
+                    absorption=0.0,
+                    support=0.0,
+                    resistance=0.0,
+                    lower=level.price,
+                    upper=level.price + self.band_size
+                )
+            
+        except Exception as e:
+            logger.error(f"Error analyzing price band for price {getattr(level, 'price', 'unknown')}: {str(e)}")
+            return None
+        
+    def _calculate_dominance(self, bid_vol: int, ask_vol: int) -> float:
+        """Calculate dominance score for a price level"""
+        total = bid_vol + ask_vol
+        if total == 0:
+            return 0.0
+        return (bid_vol - ask_vol) / total  # Returns -1.0 to 1.0
+        
+    def _calculate_support_score(self, price: float, level: PriceLevel) -> float:
+        """Calculate support score based on bid presence"""
+        try:
+            if not level or level.bid_volume == 0:
+                return 0.0
+            
+            # Get history for this band
+            band_key = (price, price + self.band_size)
+            if band_key not in self._history:
+                return 0.0
+            
+            history = self._history[band_key]
+            if not history:
+                return 0.0
+            
+            # Calculate support based on:
+            # 1. Bid volume strength
+            # 2. Recent price bounces
+            # 3. Order persistence
+            bid_strength = level.bid_volume / (level.ask_volume + level.bid_volume)
+            
+            # Look at recent history
+            recent = [x for x in history if time.time() - x['timestamp'] < 300]
+            if not recent:
+                return bid_strength
+            
+            # Calculate bounce ratio
+            bounces = sum(1 for x in recent if x['value'] > 0)
+            bounce_ratio = bounces / len(recent) if recent else 0
+            
+            return (bid_strength + bounce_ratio) / 2
+            
+        except Exception as e:
+            logger.debug(f"Support calculation error for {price}: {str(e)}")
+            return 0.0
+        
+    def _calculate_resistance_score(self, price: float, level: PriceLevel) -> float:
+        """Calculate resistance score based on ask presence"""
+        try:
+            if not level or level.ask_volume == 0:
+                return 0.0
+            
+            # Get history for this band
+            band_key = (price, price + self.band_size)
+            if band_key not in self._history:
+                return 0.0
+            
+            history = self._history[band_key]
+            if not history:
+                return 0.0
+            
+            # Calculate resistance based on:
+            # 1. Ask volume strength
+            # 2. Recent rejections
+            # 3. Order persistence
+            ask_strength = level.ask_volume / (level.ask_volume + level.bid_volume)
+            
+            # Look at recent history
+            recent = [x for x in history if time.time() - x['timestamp'] < 300]
+            if not recent:
+                return ask_strength
+            
+            # Calculate rejection ratio
+            rejections = sum(1 for x in recent if x['value'] < 0)
+            rejection_ratio = rejections / len(recent) if recent else 0
+            
+            return (ask_strength + rejection_ratio) / 2
+            
+        except Exception as e:
+            logger.debug(f"Resistance calculation error for {price}: {str(e)}")
+            return 0.0
+        
+    def _calculate_directional_signals(self, level: PriceLevel) -> DirectionalSignals:
+        """Calculate short-term directional signals"""
+        now = time.time()
+        self._history.append((now, level.price))
+        
+        # 1. Momentum Score (-1 to 1)
+        momentum = self._calculate_momentum(level.price)
+        
+        # 2. Gap Pressure (0 to 1)
+        # High when there are few or no resting orders in the direction of movement
+        gap_pressure = self._calculate_gap_pressure(level)
+        
+        # 3. Order Absorption
+        # How quickly orders are being filled vs resting
+        absorption = self._calculate_absorption(level)
+        
+        # 4. Aggressive Imbalance
+        # Sudden shifts in order flow direction
+        agg_imbalance = self._calculate_aggressive_imbalance(level)
+        
+        # 5. Price Acceptance
+        # How well the market accepts price levels
+        acceptance = self._calculate_price_acceptance(level)
+        
+        return DirectionalSignals(
+            momentum_score=momentum,
+            gap_pressure=gap_pressure,
+            absorption_rate=absorption,
+            aggressive_imbalance=agg_imbalance,
+            price_acceptance=acceptance
+        )
+        
+    def _calculate_momentum(self, price: float) -> float:
+        """Calculate price momentum"""
+        try:
+            band_key = (price, price + self.band_size)
+            if band_key not in self._history:
+                return 0.0
+            
+            history = self._history[band_key]
+            if not history:
+                return 0.0
+            
+            # Get recent values
+            recent = [x for x in history if time.time() - x['timestamp'] < 60]  # Last minute
+            if len(recent) < 2:
+                return 0.0
+            
+            # Calculate momentum as rate of change
+            values = [x['value'] for x in recent]
+            changes = [b - a for a, b in zip(values[:-1], values[1:])]
+            
+            return sum(changes) / len(changes)
+            
+        except Exception as e:
+            logger.debug(f"Momentum calculation error for {price}: {str(e)}")
+            return 0.0
+        
+    def _calculate_gap_pressure(self, level: PriceLevel) -> float:
+        """Calculate pressure from order gaps"""
+        # Look for gaps in the order book
+        momentum = self._calculate_momentum(level.price)
+        
+        if momentum > 0:
+            # Upward momentum - look for ask gaps
+            if level.ask_volume == 0:
+                return 1.0  # Maximum gap pressure
+            return 1.0 - (level.ask_volume / (level.ask_volume + level.bid_volume))
+        elif momentum < 0:
+            # Downward momentum - look for bid gaps
+            if level.bid_volume == 0:
+                return 1.0
+            return 1.0 - (level.bid_volume / (level.ask_volume + level.bid_volume))
+        return 0.0
+        
+    def _calculate_absorption_rate(self, level: PriceLevel) -> float:
+        """Calculate order absorption rate"""
+        try:
+            if not level or (level.bid_volume == 0 and level.ask_volume == 0):
+                return 0.0
+            
+            # Get recent history for this price band
+            band_key = (level.price, level.price + self.band_size)
+            history = self._history.get(band_key, [])
+            if not history:
+                return 0.0
+            
+            # Calculate absorption rate based on:
+            # 1. Volume changes over time
+            # 2. Order flow imbalance
+            # 3. Price stability
+            recent = history[-60:]  # Last minute
+            if len(recent) < 2:
+                return 0.0
+            
+            # Calculate volume changes between consecutive entries
+            volume_changes = [
+                abs(b['volume'] - a['volume']) 
+                for a, b in zip(recent[:-1], recent[1:])
+            ]
+            
+            if not volume_changes:
+                return 0.0
+            
+            # Calculate average volume change rate
+            avg_change = sum(volume_changes) / len(volume_changes)
+            
+            # Calculate imbalance changes
+            imbalance_changes = [
+                abs((b['bid_vol'] - b['ask_vol']) / (b['bid_vol'] + b['ask_vol']) -
+                    (a['bid_vol'] - a['ask_vol']) / (a['bid_vol'] + a['ask_vol']))
+                for a, b in zip(recent[:-1], recent[1:])
+                if (a['bid_vol'] + a['ask_vol']) > 0 and (b['bid_vol'] + b['ask_vol']) > 0
+            ]
+            
+            # Combine volume and imbalance changes
+            if imbalance_changes:
+                avg_imbalance = sum(imbalance_changes) / len(imbalance_changes)
+                absorption = (avg_change / 1000.0) * (1 - avg_imbalance)
+            else:
+                absorption = avg_change / 1000.0
+            
+            return min(1.0, max(0.0, absorption))
+            
+        except Exception as e:
+            logger.error(f"Error calculating absorption rate: {str(e)}")
+            return 0.0
+        
+    def _calculate_aggressive_imbalance(self, level: PriceLevel) -> float:
+        """Detect sudden shifts in order flow"""
+        history = self._history.get((level.price, level.price + self.band_size))
+        if not history:
+            return 0.0
+            
+        # Compare very recent (5s) to recent (30s) imbalance
+        very_recent = history.get_recent(5)
+        recent = history.get_recent(30)
+        
+        if not very_recent or not recent:
+            return 0.0
+            
+        vr_imbalance = sum(p.value for p in very_recent) / len(very_recent)
+        r_imbalance = sum(p.value for p in recent) / len(recent)
+        
+        # Return the difference - high values indicate sudden shifts
+        return abs(vr_imbalance - r_imbalance)
+        
+    def _calculate_price_acceptance(self, level: PriceLevel) -> float:
+        """Calculate how well the market accepts a price level"""
+        history = self._history.get((level.price, level.price + self.band_size))
+        if not history:
+            return 0.0
+            
+        recent = history.get_recent(60)  # Last minute
+        if not recent:
+            return 0.0
+            
+        # Price is well accepted if:
+        # 1. Consistent trading (low volatility)
+        # 2. Balanced order flow
+        # 3. Sustained activity
+        values = [p.value for p in recent]
+        
+        volatility = float(np.std(values))
+        balance = 1.0 - abs(sum(values) / len(values))  # 1 = perfectly balanced
+        activity = len(recent) / 60.0  # trades per second
+        
+        return (balance * (1.0 - volatility) * activity) ** (1/3)
+        
+    def get_active_bands(self, min_trades: int = 10) -> List[BandMetrics]:
+        """Get metrics for active price bands"""
+        active_bands = []
+        
+        for (lower, upper), history in self._history.items():
+            if len(history.values) >= min_trades:
+                recent = history.get_recent(300)  # Last 5 minutes
+                if recent:
+                    values = np.array([p.value for p in recent])
+                    active_bands.append(BandMetrics(
+                        upper_bound=upper,
+                        lower_bound=lower,
+                        avg_dominance=float(np.mean(values)),
+                        total_volume=len(recent),
+                        bid_ratio=len([v for v in values if v > 0]) / len(values),
+                        ask_ratio=len([v for v in values if v < 0]) / len(values),
+                        num_trades=len(recent),
+                        volatility=float(np.std(values))
+                    ))
+                    
+        return sorted(active_bands, key=lambda x: x.lower_bound)
+        
+    def get_band_stats(self) -> Dict[str, Any]:
+        """Get overall statistics for all bands"""
+        all_values = []
+        for history in self._history.values():
+            all_values.extend([p.value for p in history.values])
+            
+        if not all_values:
+            return {
+                "num_bands": 0,
+                "total_trades": 0,
+                "avg_dominance": 0.0,
+                "volatility": 0.0
+            }
+            
+        values = np.array(all_values)
+        return {
+            "num_bands": len(self._history),
+            "total_trades": len(values),
+            "avg_dominance": float(np.mean(values)),
+            "volatility": float(np.std(values))
+        }
+
+    def _find_significant_levels(self, hloc_data: List[Dict[str, float]]) -> List[Tuple[float, float]]:
+        """Find significant price levels and their strengths"""
+        # Collect swing highs/lows
+        highs = [d['high'] for d in hloc_data]
+        lows = [d['low'] for d in hloc_data]
+        
+        # Find clusters of pivots
+        high_clusters = self._cluster_prices(highs)
+        low_clusters = self._cluster_prices(lows)
+        
+        # Score levels based on:
+        # 1. Number of touches
+        # 2. Recent relevance
+        # 3. Volume at level
+        # 4. Prior rejection strength
+        levels = []
+        
+        for price, count in high_clusters.items():
+            strength = self._calculate_level_strength(price, count, hloc_data)
+            levels.append((price, strength))
+            
+        for price, count in low_clusters.items():
+            strength = self._calculate_level_strength(price, count, hloc_data)
+            levels.append((price, strength))
+            
+        return sorted(levels, key=lambda x: x[1], reverse=True)
+        
+    def _calculate_level_strength(self, price: float, touch_count: int, 
+                                hloc_data: List[Dict[str, float]]) -> float:
+        """Calculate the significance of a price level"""
+        # Base strength from number of touches
+        base_strength = min(touch_count / 5, 1.0)
+        
+        # Recency factor - more recent touches are more significant
+        recency = 0.0
+        for i, data in enumerate(hloc_data):
+            if abs(data['high'] - price) < 0.25 or abs(data['low'] - price) < 0.25:
+                recency = max(recency, (i + 1) / len(hloc_data))
+                
+        # Volume factor
+        volume_score = self._calculate_level_volume_score(price)
+        
+        # Rejection strength
+        rejection_score = self._calculate_rejection_strength(price, hloc_data)
+        
+        # Combine factors
+        return (base_strength * 0.3 + 
+                recency * 0.2 + 
+                volume_score * 0.25 + 
+                rejection_score * 0.25) 
+
+    def _calculate_volatility(self, band_key: Tuple[float, float]) -> float:
+        """Calculate price volatility for a band"""
+        history = self._history.get(band_key)
+        if not history or len(history.values) < 2:
+            return 0.0
+        
+        # Get recent values
+        recent = history.get_recent(300)  # Last 5 minutes
+        if not recent:
+            return 0.0
+        
+        # Calculate standard deviation of price changes
+        values = [p.value for p in recent]
+        return float(np.std(values)) if values else 0.0 
+
+    def _update_history(self, level: PriceLevel) -> None:
+        """Update price band history with validation"""
+        try:
+            if not level:
+                return
+            
+            band_key = (level.price, level.price + self.band_size)
+            if band_key not in self._history:
+                self._history[band_key] = []
+            
+            # Add new data point
+            entry = {
+                'timestamp': time.time(),
+                'value': level.dominance,
+                'volume': level.bid_volume + level.ask_volume,
+                'bid_vol': level.bid_volume,
+                'ask_vol': level.ask_volume
+            }
+            
+            self._history[band_key].append(entry)
+            
+            # Cleanup old data
+            cutoff = time.time() - 300  # 5 minutes
+            self._history[band_key] = [
+                x for x in self._history[band_key]
+                if x['timestamp'] > cutoff
+            ]
+            
+        except Exception as e:
+            logger.error(f"Error updating history for price {getattr(level, 'price', 'unknown')}: {str(e)}")
+
+def calculate_opacity(dominance: float) -> int:
+    """Calculate opacity value matching NinjaTrader's rendering"""
+    # NT takes dominance and:
+    # 1. Gets absolute value
+    # 2. Scales up by 100 if < 1
+    # 3. Clamps between 1-100
+    # 4. Preserves sign
+    
+    sign = 1 if dominance > 0 else -1
+    abs_dom = abs(dominance)
+    scaled = abs_dom * 100 if abs_dom < 1 else abs_dom
+    opacity = sign * min(100, max(1, scaled))
+    return int(opacity) 
+
+
+    from dataclasses import dataclass, asdict
+from typing import Dict, List, Tuple, Optional
+from collections import defaultdict, deque
+import numpy as np
+from ..core.price_aggregation import PriceLevel
+import logging
+import time
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class IcebergPattern:
+    """Iceberg order pattern with JSON serialization"""
+    price: float = 0.0
+    size: float = 0.0
+    confidence: float = 0.0
+    side: str = "none"  # "bid" or "ask"
+    timestamp: float = 0.0
+
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return asdict(self)
+
+@dataclass
+class BreakthroughPattern:
+    """Price level breakthrough pattern"""
+    level: float
+    strength: float  # 0-1 score of breakthrough strength
+    volume_surge: float  # relative volume increase
+    prior_rejections: int  # number of previous failed attempts
+    absorption_rate: float  # how quickly opposing orders were absorbed
+
+class PatternDetector:
+    """Detects order flow patterns with validation"""
+    
+    # Configuration constants
+    MIN_REPEATS = 3
+    CONFIDENCE_THRESHOLD = 0.6
+    MAX_PRICE_DEVIATION = 0.25
+    
+    def __init__(self, window_size: int = 300):
+        self.window_size = window_size
+        self.order_history = deque(maxlen=window_size)
+        self.size_clusters = defaultdict(list)
+        self.level_history = defaultdict(list)
+        self.hloc_history = deque(maxlen=window_size)
+        self._last_cleanup = time.time()
+        
+    def _validate_level(self, level: PriceLevel) -> bool:
+        """Validate incoming level data"""
+        try:
+            if not level or not isinstance(level, PriceLevel):
+                return False
+            if not all(isinstance(x, (int, float)) for x in [level.price, level.bid_volume, level.ask_volume]):
+                return False
+            return True
+        except Exception:
+            return False
+
+    def update(self, level: PriceLevel, hloc: Optional[Dict[str, float]] = None):
+        """Update pattern detection with new data"""
+        self.order_history.append(level)
+        if hloc:
+            self.hloc_history.append(hloc)
+            
+        # Update size clustering
+        for side in ['B', 'A']:
+            size = level.bid_volume if side == 'B' else level.ask_volume
+            if size > 0:
+                self.size_clusters[side].append((level.price, size))
+                
+        # Update level history
+        self.level_history[level.price].append(level)
+        
+    def detect_icebergs(self) -> List[IcebergPattern]:
+        """Detect iceberg orders with robust error handling"""
+        try:
+            # Input validation
+            if not self.order_history:
+                logger.debug("No order history available for pattern detection")
+                return []
+
+            # Initialize tracking
+            detected_patterns = []
+            processed_count = 0
+            error_count = 0
+
+            # Process each cluster with error isolation
+            for side, clusters in self.size_clusters.items():
+                try:
+                    size_groups = defaultdict(list)
+                    for price, size in clusters:
+                        if not isinstance(price, (int, float)) or not isinstance(size, (int, float)):
+                            logger.warning(f"Invalid price/size data: {price}/{size}")
+                            continue
+                        size_groups[size].append(price)
+                    
+                    # Pattern detection with validation
+                    for size, prices in size_groups.items():
+                        if len(prices) >= self.MIN_REPEATS:
+                            confidence = self._calculate_iceberg_confidence(prices, size)
+                            if confidence > self.CONFIDENCE_THRESHOLD:
+                                detected_patterns.append((
+                                    float(prices[-1]),  # Latest price
+                                    float(size),
+                                    confidence,
+                                    side
+                                ))
+                                processed_count += 1
+
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"Error processing cluster {side}: {e}")
+                    continue
+
+            # Log detection stats
+            logger.debug(f"Pattern detection complete: {processed_count} patterns, {error_count} errors")
+
+            return [
+                IcebergPattern(
+                    price=price,
+                    size=size, 
+                    confidence=conf,
+                    side=side,
+                    timestamp=time.time()
+                )
+                for price, size, conf, side in detected_patterns
+            ]
+
+        except Exception as e:
+            logger.error(f"Critical error in pattern detection: {e}", exc_info=True)
+            return []
+        
+    def detect_breakthroughs(self, lookback_periods: int = 100) -> List[BreakthroughPattern]:
+        """Detect resistance/support breakthroughs"""
+        if not self.hloc_history:
+            return []
+            
+        breakthroughs = []
+        recent_hloc = list(self.hloc_history)[-lookback_periods:]
+        
+        # Find significant levels from recent HLOC data
+        levels = self._find_significant_levels(recent_hloc)
+        
+        for level, strength in levels:
+            # Check if current price has broken the level
+            if self._is_breakthrough(level, recent_hloc[-1]):
+                # Analyze breakthrough characteristics
+                volume_surge = self._calculate_volume_surge(level)
+                prior_rejections = self._count_prior_rejections(level, recent_hloc)
+                absorption = self._calculate_breakthrough_absorption(level)
+                
+                breakthroughs.append(BreakthroughPattern(
+                    level=level,
+                    strength=strength,
+                    volume_surge=volume_surge,
+                    prior_rejections=prior_rejections,
+                    absorption_rate=absorption
+                ))
+                
+        return sorted(breakthroughs, key=lambda x: x.strength, reverse=True)
+        
+    def _cluster_prices(self, prices: List[float]) -> Dict[float, int]:
+        """Group similar prices and count occurrences"""
+        clusters = defaultdict(int)
+        for price in prices:
+            # Round to nearest tick
+            rounded = round(price * 4) / 4  # Assuming 0.25 tick size
+            clusters[rounded] += 1
+        return clusters
+        
+    def _calculate_iceberg_confidence(self, prices: List[float], size: float) -> float:
+        """Calculate confidence score for iceberg detection"""
+        # Base confidence from repeat count
+        base_score = min(len(prices) / 5, 1.0)
+        
+        # Size significance
+        avg_size = np.mean([l.bid_volume + l.ask_volume for l in self.order_history])
+        size_score = min(size / avg_size, 1.0) if avg_size > 0 else 0
+        
+        # Time regularity
+        time_score = self._calculate_time_regularity(prices[-1], size)
+        
+        return (base_score * 0.4 + size_score * 0.3 + time_score * 0.3)
+        
+    def _calculate_time_regularity(self, price: float, size: float) -> float:
+        """Calculate how regular the timing is between orders"""
+        times = []
+        for level in self.order_history:
+            if abs(level.price - price) < 0.25:  # Within one tick
+                if level.bid_volume == size or level.ask_volume == size:
+                    times.append(level.timestamp)
+                    
+        if len(times) < 3:
+            return 0.0
+            
+        intervals = np.diff(times)
+        cv = np.std(intervals) / np.mean(intervals) if np.mean(intervals) > 0 else float('inf')
+        return max(0, 1 - cv)
+        
+    def _get_time_span(self, price: float, size: int) -> float:
+        """Get time span between first and last occurrence"""
+        times = []
+        for level in self.order_history:
+            if abs(level.price - price) < 0.25:
+                if level.bid_volume == size or level.ask_volume == size:
+                    times.append(level.timestamp)
+                    
+        return max(times) - min(times) if times else 0.0
+        
+    def _calculate_volume_surge(self, level: float) -> float:
+        """Calculate volume surge"""
+        # Implementation needed
+        return 0.0
+        
+    def _count_prior_rejections(self, level: float, hloc: List[Dict[str, float]]) -> int:
+        """Count prior rejections"""
+        # Implementation needed
+        return 0
+        
+    def _calculate_breakthrough_absorption(self, level: float) -> float:
+        """Calculate breakthrough absorption"""
+        # Implementation needed
+        return 0.0
+        
+    def _find_significant_levels(self, hloc: List[Dict[str, float]]) -> List[Tuple[float, float]]:
+        """Find significant levels"""
+        # Implementation needed
+        return []
+        
+    def _is_breakthrough(self, level: float, current_price: float) -> bool:
+        """Check if current price has broken the level"""
+        # Implementation needed
+        return False
+        
+    def _calculate_relative_size_score(self, size: int) -> float:
+        """Score how significant the order size is"""
+        recent_sizes = []
+        for level in self.order_history:
+            if level.bid_volume > 0:
+                recent_sizes.append(level.bid_volume)
+            if level.ask_volume > 0:
+                recent_sizes.append(level.ask_volume)
+                
+        if not recent_sizes:
+            return 0.0
+            
+        avg_size = np.mean(recent_sizes)
+        if avg_size == 0:
+            return 0.0
+            
+        return min(size / avg_size, 1.0) 
+
+        

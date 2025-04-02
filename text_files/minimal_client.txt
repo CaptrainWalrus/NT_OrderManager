@@ -1,0 +1,66 @@
+using System;
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+
+public class MinimalPythonService : IDisposable
+{
+    private readonly HttpClient client;
+    private readonly string baseUrl;
+    private bool disposed;
+    private readonly Action<string> logger;
+
+    public MinimalPythonService(string host = "localhost", int port = 8765, Action<string> logger = null)
+    {
+        this.baseUrl = $"http://{host}:{port}";
+        this.client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        this.logger = logger ?? (msg => { }); // No-op if no logger provided
+    }
+
+    public async Task<bool> CheckHealth()
+    {
+        try
+        {
+            var response = await client.GetAsync($"{baseUrl}/health");
+            var content = await response.Content.ReadAsStringAsync();
+            logger($"Health check response: {content}");
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            logger($"Health check failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    public async Task SendDebug(string message)
+    {
+        try
+        {
+            var data = new { message = message, timestamp = DateTime.Now.ToString("O") };
+            var content = new StringContent(
+                JsonConvert.SerializeObject(data),
+                Encoding.UTF8,
+                "application/json"
+            );
+
+            var response = await client.PostAsync($"{baseUrl}/debug", content);
+            var responseContent = await response.Content.ReadAsStringAsync();
+            logger($"Debug response: {responseContent}");
+        }
+        catch (Exception ex)
+        {
+            logger($"Debug send failed: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!disposed)
+        {
+            client?.Dispose();
+            disposed = true;
+        }
+    }
+} 

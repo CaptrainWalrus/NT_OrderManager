@@ -1,0 +1,198 @@
+from pathlib import Path
+from mmap import mmap as mmap_class
+from ..common.imports import (
+    np, Dict, Optional, Any,
+    threading, time, List
+)
+import tempfile
+import os
+import logging
+from ..core.price_aggregation import PriceLevel
+
+logger = logging.getLogger(__name__)
+
+class FastDataStore:
+    """Memory mapped file interface for zero-copy data transfer"""
+    
+    def __init__(self, filename: str, size_mb: int = 100):
+        # Define data structure first
+        self.dtype = np.dtype([
+            ('price', 'f8'),
+            ('bid_size', 'i4'),
+            ('ask_size', 'i4'),
+            ('bid_orders', 'i2'),
+            ('ask_orders', 'i2'),
+            ('new_orders', 'i2'),
+            ('dominance', 'f4'),
+            ('opacity', 'i2'),     # Added opacity (0-100)
+            ('timestamp', 'f8')
+        ])
+        
+        # Calculate size that's multiple of dtype
+        item_size = self.dtype.itemsize
+        requested_size = size_mb * 1024 * 1024  # Convert MB to bytes
+        num_items = requested_size // item_size
+        self.size = num_items * item_size  # Ensure size is multiple of itemsize
+        
+        self.lock = threading.Lock()
+        self.stats = {
+            'writes': 0,
+            'last_write': 0
+        }
+        
+        # Calculate number of slots available
+        self.num_slots = self.size // item_size
+        logger.info(f"Initialized FastDataStore with {self.num_slots:,} slots")
+        
+        # Create temp file
+        self.temp_file = tempfile.NamedTemporaryFile(delete=False)
+        self.filename = self.temp_file.name
+        logger.info(f"Created temp file: {self.filename}")
+        
+        # Initialize memory map
+        self._init_mmap()
+        logger.info(f"Memory map initialized. Data shape: {self.data.shape}")
+        
+    def _init_mmap(self):
+        """Initialize memory mapped file"""
+        # Write initial zeros
+        self.temp_file.write(b'\0' * self.size)
+        self.temp_file.flush()
+        
+        # Memory map the file with write access
+        self.mm = mmap_class(self.temp_file.fileno(), self.size)
+        self.data = np.frombuffer(self.mm, dtype=self.dtype)
+
+    def write_level(self, data: Dict[str, Any]) -> None:
+        """Write a price level to the memory map"""
+        try:
+            # Debug log the incoming data
+            logger.debug(f"Writing level data: {data}")
+            
+            # Find slot for this price
+            idx = self._find_slot(data['Price'])
+            if idx >= 0:
+                # Get dominance value
+                dominance = data.get('dominance', 0.0)  # Just use 'dominance'
+                opacity = int(dominance * 100)  # Convert 0-1 to 0-100
+                
+                # Write data to memory map
+                self.data[idx]['price'] = data['Price']
+                self.data[idx]['bid_size'] = data['SumSizeA']
+                self.data[idx]['ask_size'] = data['SumSizeB']
+                self.data[idx]['bid_orders'] = data['CountUniqueOrderIdsA']
+                self.data[idx]['ask_orders'] = data['CountUniqueOrderIdsB']
+                self.data[idx]['new_orders'] = data['newOrders']
+                self.data[idx]['dominance'] = dominance
+                self.data[idx]['opacity'] = opacity
+                self.data[idx]['timestamp'] = int(time.time() * 1000)
+                
+                # Update stats
+                self.stats['writes'] += 1
+                self.stats['last_write'] = time.time()
+        except Exception as e:
+            logger.error(f"Error writing level: {e}", exc_info=True)
+            raise
+
+    def read_levels(self, min_price: float = None, max_price: float = None) -> np.ndarray:
+        """Read price levels from memory mapped file with optional price range"""
+        with self.lock:
+            try:
+                logger.debug(f"Reading levels. Data shape: {self.data.shape}")
+                logger.debug(f"First 10 rows: {self.data[:10]}")
+                logger.debug(f"Non-zero prices: {np.where(self.data['price'] > 0)[0]}")
+                
+                if min_price is None and max_price is None:
+                    result = self.data[self.data['price'] > 0]  # Return all non-zero prices
+                    logger.debug(f"Found {len(result)} non-zero price levels")
+                    return result
+                
+                mask = (self.data['price'] > 0)  # Base mask for non-zero prices
+                if min_price is not None:
+                    mask &= (self.data['price'] >= min_price)
+                if max_price is not None:
+                    mask &= (self.data['price'] <= max_price)
+                
+                result = self.data[mask]
+                logger.debug(f"Found {len(result)} price levels in range")
+                return result
+            except Exception as e:
+                logger.error(f"Error reading levels: {e}", exc_info=True)
+                raise
+
+    def _find_slot(self, price: float) -> Optional[int]:
+        """Find slot for price level (existing or new)"""
+        try:
+            # Look for existing price
+            matches = np.where(self.data['price'] == price)[0]
+            if len(matches) > 0:
+                logger.debug(f"Found existing slot {matches[0]} for price {price}")
+                return matches[0]
+            
+            # Look for empty slot
+            empty = np.where(self.data['price'] == 0)[0]
+            if len(empty) > 0:
+                logger.debug(f"Found empty slot {empty[0]} for price {price}")
+                return empty[0]
+            
+            logger.warning(f"No slots available for price {price}. Data shape: {self.data.shape}")
+            return None  # No space available
+        except Exception as e:
+            logger.error(f"Error finding slot: {e}", exc_info=True)
+            raise
+
+    def clear(self) -> None:
+        """Clear all data"""
+        with self.lock:
+            self.data.fill(0)
+            self.mm.flush()
+
+    def close(self) -> None:
+        """Close and cleanup memory mapped file"""
+        try:
+            if hasattr(self, 'data'):
+                del self.data  # Remove numpy array reference first
+            if hasattr(self, 'mm'):
+                self.mm.close()
+            if hasattr(self, 'temp_file'):
+                self.temp_file.close()
+                try:
+                    os.unlink(self.filename)  # Delete the temp file
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Error closing FastDataStore: {e}", exc_info=True)
+
+    def get_memory_usage(self) -> int:
+        """Get current memory usage in bytes"""
+        if hasattr(self, 'mm') and self.mm is not None:
+            return self.mm.size()
+        return 0
+
+    @property
+    def memory_usage(self) -> int:
+        """Get current memory usage in bytes"""
+        return self.get_memory_usage()
+
+    def get_active_levels(self) -> List[PriceLevel]:
+        """Get all active price levels"""
+        # Read current data
+        data = self.read_levels()
+        
+        # Filter for non-zero prices
+        active_mask = data['price'] > 0
+        active_data = data[active_mask]
+        
+        # Convert to PriceLevel objects
+        levels = []
+        for row in active_data:
+            levels.append(PriceLevel(
+                price=float(row['price']),
+                bid_volume=int(row['bid_size']),
+                ask_volume=int(row['ask_size']),
+                num_bids=int(row['bid_orders']),
+                num_asks=int(row['ask_orders']),
+                timestamp=float(row['timestamp'])
+            ))
+        
+        return levels 

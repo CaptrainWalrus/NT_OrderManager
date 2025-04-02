@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Service Coordinator</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Service Coordinator</h1>
+        <div class="services">
+            <div class="service">
+                <h2>Redis</h2>
+                <p id="redis-status">Status: Checking...</p>
+                <button onclick="startService('redis')">Start Redis</button>
+            </div>
+            <div class="service">
+                <h2>Python Processor</h2>
+                <p id="python-status">Status: Checking...</p>
+                <button onclick="startService('python')">Start Python</button>
+            </div>
+            <div class="service">
+                <h2>Rust Server</h2>
+                <p id="rust-status">Status: Checking...</p>
+                <button onclick="startService('rust')">Start Rust</button>
+            </div>
+        </div>
+        <button class="stop-all" onclick="stopAll()">Stop All Services</button>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html> 
