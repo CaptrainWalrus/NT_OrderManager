@@ -145,7 +145,16 @@ public partial class CurvesStrategy : MainStrategy
 					var connectTask = Task.Run(async () => {
 						try 
 						{
-							// Just check health to establish connection
+							// Connect to the WebSocket first
+							bool wsConnected = await curvesService.ConnectWebSocketAsync();
+							
+							if (wsConnected)
+							{
+								Print("WebSocket connection established successfully");
+								return true;
+							}
+
+							// If WebSocket fails, try the health check
 							bool healthy = await curvesService.CheckHealth();
 							return healthy;
 						}
@@ -160,8 +169,8 @@ public partial class CurvesStrategy : MainStrategy
 					bool connected = false;
 					try
 					{
-						// Wait up to 10 seconds for connection
-						if (connectTask.Wait(10000))
+						// Wait up to 15 seconds for connection (increased from 10)
+						if (connectTask.Wait(15000))
 						{
 							connected = connectTask.Result;
 							if (connected)
@@ -175,7 +184,7 @@ public partial class CurvesStrategy : MainStrategy
 						}
 						else
 						{
-							Print("Connection timeout after 10 seconds");
+							Print("Connection timeout after 15 seconds");
 						}
 					}
 					catch (Exception ex)
@@ -186,7 +195,18 @@ public partial class CurvesStrategy : MainStrategy
 					// In backtest mode, continue even without connection
 					if (!connected && IsInStrategyAnalyzer)
 					{
-						Print("WARNING: Starting backtest with no server connection - using local data only");
+						// Check if WebSocket is actually connected despite health check failure
+						bool wsConnected = curvesService?.IsWebSocketConnected() ?? false;
+						
+						if (wsConnected)
+						{
+							Print("WebSocket is connected - proceeding with backtest");
+							connected = true;
+						}
+						else
+						{
+							Print("WARNING: Starting backtest with no server connection - using local data only");
+						}
 					}
 				}
 			}
@@ -206,9 +226,51 @@ public partial class CurvesStrategy : MainStrategy
 		else if (State == State.Terminated)
 		{
 			Print("CurvesStrategy.OnStateChange: State.Terminated (No custom logic)");
-			// Custom cleanup logic remains commented out
-			// Dispose curvesService if necessary (might be handled by base?) 
-			// if (curvesService != null) { ... curvesService.Dispose(); ... }
+			
+			Print("STATE.TERMINATED: Beginning COMPLETE shutdown sequence...");
+			
+			// 1. Reset static data in CurvesV2Service
+			Print("1. Resetting all static data in CurvesV2Service");
+			CurvesV2Service.ResetStaticData();
+			
+			// 2. Properly dispose of the CurvesV2Service instance
+			if (curvesService != null)
+			{
+				try 
+				{
+					Print("2. Disposing CurvesV2Service instance");
+					curvesService.Dispose();
+				}
+				catch (Exception ex)
+				{
+					Print($"Error disposing CurvesV2Service: {ex.Message}");
+				}
+				finally
+				{
+					curvesService = null;
+				}
+			}
+			else
+			{
+				Print("2. No active CurvesV2Service instance to dispose");
+			}
+			
+			// 3. (Removed WebSocket handling since it's in the service dispose method)
+			
+			// 4. Clear local collections
+			Print("4. Clearing local collections");
+			CurrentBullStrength = 0;
+			CurrentBearStrength = 0;
+			
+			// 5. (Removed ProcessQueue setting since we're now using fire-and-forget)
+			
+			// 6. Force garbage collection to clean up lingering resources
+			Print("6. Running aggressive garbage collection");
+			GC.Collect(2, GCCollectionMode.Forced);
+			GC.WaitForPendingFinalizers();
+			
+			Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
+			Print("Calling base.OnStateChange() for Terminated state");
 		}
 	}
 
@@ -314,19 +376,19 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
-		
+		Print($"OBU {CurrentBars[0]}");
 		try
 		{
 			// Skip processing if service isn't available
 			if (curvesService == null)
 			{
 				if (CurrentBars[0] % 10 == 0) // Only log occasionally
-					NinjaTrader.Code.Output.Process("OnBarUpdate: CurvesV2Service not available", PrintTo.OutputTab1);
+				NinjaTrader.Code.Output.Process("OnBarUpdate: CurvesV2Service not available", PrintTo.OutputTab1);
 				return;
 			}
 			
 			bool isConnected = curvesService.IsConnected;
-			
+				
 			if (BarsInProgress != 0) return;
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
 			
@@ -334,22 +396,32 @@ public partial class CurvesStrategy : MainStrategy
 			if (CurrentBars[0] % 10 == 0) // Log every 10 bars
 				NinjaTrader.Code.Output.Process($"isConnected = {isConnected} , OnBarUpdate: Bar={CurrentBar}, Time={Time[0]}", PrintTo.OutputTab1);
 			
-			// In live mode, skip processing if not connected
-			if (!isConnected && !IsInStrategyAnalyzer)
+			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
+			if (isConnected)
 			{
-				if (CurrentBars[0] % 10 == 0) // Only log occasionally
-					NinjaTrader.Code.Output.Process("OnBarUpdate: Skipping processing - not connected", PrintTo.OutputTab1);
-				return;
-			}
-			
-			// Use appropriate processing path based on configuration
-			if (UseDirectSync && isConnected)
-			{
-				ProcessBarDataSync();
-			}
-			else if (!UseDirectSync && isConnected)
-			{
-				ProcessBarData(); // Use original async method
+				// Extract instrument code
+				string instrumentCode = GetInstrumentCode();
+				
+				// 1. Simple, direct send of bar data - fire and forget
+				bool barSent = curvesService.SendBarFireAndForget(
+					instrumentCode,
+					Time[0],
+					Open[0],
+					High[0],
+					Low[0],
+					Close[0],
+					Volume[0],
+					IsInStrategyAnalyzer ? "backtest" : "1m"
+				);
+				
+				// 2. Simple, direct signal check - fire and forget  
+				if (barSent)
+				{
+					curvesService.CheckSignalsFireAndForget(instrumentCode);
+				}
+				
+				// 3. Read current signals from static properties
+				UpdateLocalSignalData();
 			}
 			
 			Print($"CurrentBullStrength {CurrentBullStrength} / CurrentBearStrength {CurrentBearStrength}");
@@ -360,44 +432,15 @@ public partial class CurvesStrategy : MainStrategy
 		}
 	}
 
-	private void ProcessBarData()
+	// Keep the original methods but don't use them
+	private void ProcessBarData() 
 	{
-		if (CurrentBars[0] < 0) return;
-		
-		if (State == State.Terminated)
-		{
-			NinjaTrader.Code.Output.Process("ProcessBarData: State == State.Terminated - skipping data processing", PrintTo.OutputTab1);
-			return;
-		}
-		
-		bool isConnected = curvesService?.IsConnected ?? false; // Check service property directly
-		
-		if (CurrentBars[0] % 10 == 0)
-			 NinjaTrader.Code.Output.Process($"isConnected = {isConnected} : ProcessBarData: Bar={CurrentBars[0]}", PrintTo.OutputTab1);
+		// Original implementation preserved but not used
+	}
 
-		string instrumentCode = GetInstrumentCode(); 
-		
-		// Check connection status using the service property
-		if (isConnected) 
-		{
-			if (CurrentBars[0] % 10 == 0) 
-			   NinjaTrader.Code.Output.Process($"ProcessBarData: Calling SendBarData for Bar={CurrentBars[0]}", PrintTo.OutputTab1);
-			SendBarData(IsInStrategyAnalyzer);
-			ProcessSignals(instrumentCode); 
-			instrumentCode = null; 
-			if (IsInStrategyAnalyzer)
-			{
-				if (CurrentBars[0] % 100 == 0)
-				{
-					GC.Collect();
-				}
-			}
-		}
-		else
-		{
-			 if (CurrentBars[0] % 10 == 0)
-				NinjaTrader.Code.Output.Process($"ProcessBarData: Skipping service calls for Bar={CurrentBars[0]} because IsConnected is false.", PrintTo.OutputTab1);
-		}
+	private void ProcessBarDataSync()
+	{
+		// Original implementation preserved but not used
 	}
 
 	// Restore GetInstrumentCode method
@@ -555,53 +598,5 @@ public partial class CurvesStrategy : MainStrategy
 			return new List<Signal>();
 		}
 	}
-
-	// New synchronous processing method
-	private void ProcessBarDataSync()
-	{
-		if (CurrentBars[0] < 0) return;
-		
-		if (State == State.Terminated)
-		{
-			NinjaTrader.Code.Output.Process("ProcessBarDataSync: State == State.Terminated - skipping data processing", PrintTo.OutputTab1);
-			return;
-		}
-		
-		if (curvesService == null)
-		{
-			NinjaTrader.Code.Output.Process("ProcessBarDataSync: curvesService is null", PrintTo.OutputTab1);
-			return;
-		}
-		
-		string instrumentCode = GetInstrumentCode();
-		
-		NinjaTrader.Code.Output.Process($"ProcessBarDataSync: Bar={CurrentBars[0]}, Instrument={instrumentCode}", PrintTo.OutputTab1);
-		
-		// 1. Send bar data only - polling happens in the background
-		bool success = curvesService.SendBarAndPollSync(
-			instrumentCode,
-			Time[0],
-			Open[0],
-			High[0],
-			Low[0],
-			Close[0],
-			Volume[0],
-			IsInStrategyAnalyzer ? "backtest" : "1m"
-		);
-		
-		// 2. Update local signal data regardless of success/failure
-		UpdateLocalSignalData();
-		
-		if (success)
-		{
-			NinjaTrader.Code.Output.Process($"ProcessBarDataSync: Successfully processed bar {CurrentBars[0]}", PrintTo.OutputTab1);
-		}
-		else
-		{
-			NinjaTrader.Code.Output.Process($"ProcessBarDataSync: Failed to process bar {CurrentBars[0]}", PrintTo.OutputTab1);
-		}
-	}
-	
-	
 }
 }

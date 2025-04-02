@@ -105,6 +105,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime lastSignalCheck = DateTime.MinValue;
         private readonly object disposeLock = new object();
         private readonly OrganizedStrategy.CurvesV2Config config;
+        private static readonly object webSocketSendLock = new object(); // Lock for send operations
 
         // References to background tasks for proper disposal
         private Task receiveLoopTask;
@@ -131,24 +132,36 @@ namespace NinjaTrader.NinjaScript.Strategies
         // New method to reset static data (for cleanup in backtest or memory management)
         public static void ResetStaticData()
         {
-            CurrentBullStrength = 0;
-            CurrentBearStrength = 0;
-            PatternName = null;
-            
-            // Clear list without reallocating
-            if (CurrentMatches != null)
+            try
             {
-                CurrentMatches.Clear();
-            }
-            else
-            {
+                CurrentBullStrength = 0;
+                CurrentBearStrength = 0;
+                PatternName = "";
                 CurrentMatches = new List<PatternMatch>();
+                LastSignalTimestamp = null;
+                
+                // Clear any static task or resource references
+                lock (syncLock)
+                {
+                    processorRunning = false;
+                    // Clear bar queue
+                    while (barQueue.TryDequeue(out _)) { }
+                }
+                
+                // Clear response cache
+                ClearCache();
+
+                // Force cleanup of any static resources
+                GC.Collect(2, GCCollectionMode.Forced);
+                GC.WaitForPendingFinalizers();
+                
+                // Log the reset
+                NinjaTrader.Code.Output.Process("CurvesV2Service static data has been reset", PrintTo.OutputTab1);
             }
-            
-            LastSignalTimestamp = null;
-            
-            // Clear cache to prevent memory leaks
-            ClearCache();
+            catch (Exception ex)
+            {
+                NinjaTrader.Code.Output.Process($"Error resetting static data: {ex.Message}", PrintTo.OutputTab1);
+            }
         }
         
         // Clear old entries from the cache
@@ -273,16 +286,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool IsDisposed()
         {
+            NinjaTrader.Code.Output.Process("IsDisposed: Attempting to acquire disposeLock...", PrintTo.OutputTab1);
             lock (disposeLock)
             {
+                NinjaTrader.Code.Output.Process($"IsDisposed: Lock acquired. Value={disposed}", PrintTo.OutputTab1);
                 return disposed;
             }
         }
         
         private bool IsShuttingDown()
         {
+            NinjaTrader.Code.Output.Process("IsShuttingDown: Attempting to acquire connectionStateLock...", PrintTo.OutputTab1);
             lock (connectionStateLock)
             {
+                NinjaTrader.Code.Output.Process($"IsShuttingDown: Lock acquired. Value={isShuttingDown || disposed}", PrintTo.OutputTab1);
                 return isShuttingDown || disposed;
             }
         }
@@ -291,179 +308,109 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             lock (disposeLock)
             {
-                if (!disposed)
+                if (disposed)
+                    return;
+                
+                try
                 {
-                    try
+                    isShuttingDown = true;
+                    
+                    // Stop the signal polling task if it's running
+                    try 
                     {
-                        NinjaTrader.Code.Output.Process("*** Dispose Started: Shutting down CurvesV2 Service ***", PrintTo.OutputTab1);
-
-                        // Set shutdown flag first
-                        lock (connectionStateLock)
+                        // Cancel the signal polling token
+                        if (signalPollCts != null)
                         {
-                            isShuttingDown = true;
-                        }
-
-                        // Mark as disposed
-                        disposed = true;
-
-                        // Stop signal polling task
-                        try
-                        {
-                            if (signalPollCts != null && !signalPollCts.IsCancellationRequested)
-                            {
-                                NinjaTrader.Code.Output.Process("Dispose: Cancelling signal polling task", PrintTo.OutputTab1);
+                            if (!signalPollCts.IsCancellationRequested)
                                 signalPollCts.Cancel();
-                                // Don't dispose CTS here, wait until end
-                            }
+                            signalPollCts.Dispose();
+                            signalPollCts = null;
                         }
-                        catch (Exception ex)
-                        {
-                            NinjaTrader.Code.Output.Process($"Dispose Error: Stopping signal polling: {ex.Message}", PrintTo.OutputTab1);
-                        }
-
-                        // Cancel WebSocket operations token
-                        CancellationTokenSource localWebSocketCts = webSocketCts; // Local copy for thread safety
-                        if (localWebSocketCts != null && !localWebSocketCts.IsCancellationRequested)
-                    {
-                        try
-                        {
-                                NinjaTrader.Code.Output.Process("Dispose: Cancelling WebSocket CancellationTokenSource", PrintTo.OutputTab1);
-                                localWebSocketCts.Cancel();
-                            }
-                            catch (ObjectDisposedException) { NinjaTrader.Code.Output.Process("Dispose Warning: WebSocket CTS already disposed.", PrintTo.OutputTab1); }
-                            catch (Exception ex)
-                            {
-                                NinjaTrader.Code.Output.Process($"Dispose Error: Cancelling WebSocket CTS: {ex.Message}", PrintTo.OutputTab1);
-                            }
-                        } else {
-                            NinjaTrader.Code.Output.Process("Dispose: WebSocket CTS is null or already cancelled.", PrintTo.OutputTab1);
-                        }
-
-                        // Stop bar processor task and clear queue
-                        NinjaTrader.Code.Output.Process("Dispose: Stopping bar processor and clearing queue.", PrintTo.OutputTab1);
-                        lock (syncLock)
-                        {
-                            processorRunning = false;
-                        }
-                        while (barQueue.TryDequeue(out _)) { } // Clear queue
-
-                        // Close and dispose WebSocket object
-                        ClientWebSocket localWebSocket = webSocket; // Local copy for thread safety
-                        if (localWebSocket != null)
-                        {
-                            NinjaTrader.Code.Output.Process($"Dispose: Handling WebSocket object (State: {localWebSocket.State})", PrintTo.OutputTab1);
-                            try
-                            {
-                                if (localWebSocket.State == WebSocketState.Open || localWebSocket.State == WebSocketState.CloseReceived)
-                                {
-                                    NinjaTrader.Code.Output.Process("Dispose: Attempting graceful WebSocket close...", PrintTo.OutputTab1);
-                                    var closeCts = new CancellationTokenSource(500); // Short timeout for close
-                                    localWebSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Disposing", closeCts.Token).Wait(200); // Use CloseOutputAsync for faster exit
-                                    closeCts.Dispose();
-                                    NinjaTrader.Code.Output.Process("Dispose: Graceful close attempted.", PrintTo.OutputTab1);
-                                }
-                            }
-                            catch (Exception ex) { NinjaTrader.Code.Output.Process($"Dispose Warning: Graceful close failed/timed out: {ex.Message}", PrintTo.OutputTab1); }
-
-                            try
-                            {
-                                // Force abort if not closed or already aborted
-                                if (localWebSocket.State != WebSocketState.Closed && localWebSocket.State != WebSocketState.Aborted)
-                                {
-                                    NinjaTrader.Code.Output.Process($"Dispose: WebSocket state is {localWebSocket.State}. Aborting forcefully.", PrintTo.OutputTab1);
-                                    localWebSocket.Abort();
-                                }
-                            }
-                            catch (ObjectDisposedException) { NinjaTrader.Code.Output.Process("Dispose Warning: WebSocket already disposed before Abort.", PrintTo.OutputTab1); }
-                            catch (Exception ex) { NinjaTrader.Code.Output.Process($"Dispose Error: Aborting WebSocket: {ex.Message}", PrintTo.OutputTab1); }
-                            finally
-                            {
-                                try {
-                                    NinjaTrader.Code.Output.Process("Dispose: Disposing WebSocket object.", PrintTo.OutputTab1);
-                                    localWebSocket.Dispose();
-                                 } catch (ObjectDisposedException) {} catch (Exception ex) { NinjaTrader.Code.Output.Process($"Dispose Error: Disposing WebSocket object: {ex.Message}", PrintTo.OutputTab1); }
-                                webSocket = null; // Clear the reference
-                            }
-                        } else {
-                            NinjaTrader.Code.Output.Process("Dispose: WebSocket object is null.", PrintTo.OutputTab1);
-                        }
-
-                        // Wait for background tasks (receive loop, ping loop) to complete
-                        NinjaTrader.Code.Output.Process("Dispose: Waiting for WebSocket background tasks to complete...", PrintTo.OutputTab1);
-                        Task localReceiveTask = receiveLoopTask; // Local copy
-                        Task localPingTask = pingLoopTask;       // Local copy
-                        List<Task> tasksToWait = new List<Task>();
-                        if (localReceiveTask != null && !localReceiveTask.IsCompleted)
-                        {
-                            NinjaTrader.Code.Output.Process($"Dispose: Receive loop task status: {localReceiveTask.Status}", PrintTo.OutputTab1);
-                            tasksToWait.Add(localReceiveTask);
-                        }
-                        if (localPingTask != null && !localPingTask.IsCompleted)
-                        {
-                             NinjaTrader.Code.Output.Process($"Dispose: Ping loop task status: {localPingTask.Status}", PrintTo.OutputTab1);
-                             tasksToWait.Add(localPingTask);
-                        }
-
-                        if (tasksToWait.Count > 0)
-                        {
-                            try
-                            {
-                                // Wait for tasks with timeout
-                                bool allTasksCompleted = Task.WaitAll(tasksToWait.ToArray(), TimeSpan.FromSeconds(2)); // Wait up to 2 seconds
-                                if (allTasksCompleted)
-                                    NinjaTrader.Code.Output.Process("Dispose: WebSocket background tasks completed gracefully.", PrintTo.OutputTab1);
-                                else
-                                    NinjaTrader.Code.Output.Process("Dispose Warning: Timed out waiting for WebSocket background tasks to complete.", PrintTo.OutputTab1);
-                            }
-                            catch (AggregateException ae)
-                            {
-                                // Log inner exceptions, often OperationCanceledException which is expected
-                                foreach(var ex in ae.Flatten().InnerExceptions) {
-                                    if (ex is OperationCanceledException) {
-                                        NinjaTrader.Code.Output.Process("Dispose: Background task cancelled as expected.", PrintTo.OutputTab1);
-                                    } else {
-                                        NinjaTrader.Code.Output.Process($"Dispose Warning: Exception waiting for tasks: {ex.GetType().Name} - {ex.Message}", PrintTo.OutputTab1);
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                NinjaTrader.Code.Output.Process($"Dispose Error: Waiting for tasks: {ex.Message}", PrintTo.OutputTab1);
-                            }
-                        }
-                        else
-                        {
-                            NinjaTrader.Code.Output.Process("Dispose: No active WebSocket background tasks to wait for.", PrintTo.OutputTab1);
-                        }
-                        receiveLoopTask = null; // Clear task references
-                        pingLoopTask = null;
-
-                        // Dispose CancellationTokenSources now
-                        NinjaTrader.Code.Output.Process("Dispose: Disposing CancellationTokenSources.", PrintTo.OutputTab1);
-                        try { signalPollCts?.Dispose(); } catch (ObjectDisposedException) {} catch (Exception ex) { NinjaTrader.Code.Output.Process($"Dispose Error: Disposing signalPollCts: {ex.Message}", PrintTo.OutputTab1);} finally { signalPollCts = null; }
-                        try { localWebSocketCts?.Dispose(); } catch (ObjectDisposedException) {} catch (Exception ex) { NinjaTrader.Code.Output.Process($"Dispose Error: Disposing webSocketCts: {ex.Message}", PrintTo.OutputTab1);} finally { webSocketCts = null; }
-
-                        // Dispose HTTP client
-                        NinjaTrader.Code.Output.Process("Dispose: Disposing HTTP client.", PrintTo.OutputTab1);
-                        try { client?.Dispose(); } catch (ObjectDisposedException) {} catch (Exception ex) { NinjaTrader.Code.Output.Process($"Dispose Error: Disposing HttpClient: {ex.Message}", PrintTo.OutputTab1);} finally { client = null; }
-
-                        // Final cleanup
-                        NinjaTrader.Code.Output.Process("Dispose: Final static cleanup.", PrintTo.OutputTab1);
-                        webSocketConnected = false;
-                        ClearCache(); // Clears static cache
-
-                        // Aggressive GC as final step
-                        NinjaTrader.Code.Output.Process("Dispose: Forcing final Garbage Collection.", PrintTo.OutputTab1);
-                        GC.Collect(2, GCCollectionMode.Forced, true); // Force blocking collection
-                        GC.WaitForPendingFinalizers();
-                        GC.Collect(2, GCCollectionMode.Forced, true);
-
-                        NinjaTrader.Code.Output.Process("***** CurvesV2Service Dispose Completed *****", PrintTo.OutputTab1);
                     }
                     catch (Exception ex)
                     {
-                        NinjaTrader.Code.Output.Process($"CRITICAL ERROR in CurvesV2Service.Dispose: {ex.GetType().Name} - {ex.Message} \n {ex.StackTrace}", PrintTo.OutputTab1);
+                        Log($"Error stopping signal polling: {ex.Message}");
                     }
+                    
+                    // Cancel WebSocket token source
+                    try
+                    {
+                        if (webSocketCts != null)
+                        {
+                            if (!webSocketCts.IsCancellationRequested)
+                                webSocketCts.Cancel();
+                            webSocketCts.Dispose();
+                            webSocketCts = null;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Error canceling WebSocket operations: {ex.Message}");
+                    }
+                    
+                    // Close WebSocket if needed
+                    if (webSocket != null)
+                    {
+                        try
+                        {
+                            // Use a short timeout for closing
+                            var timeout = new CancellationTokenSource(2000).Token;
+                            
+                            // Only attempt to close if it's open
+                            if (webSocket.State == WebSocketState.Open)
+                            {
+                                var closeTask = webSocket.CloseAsync(
+                                    WebSocketCloseStatus.NormalClosure,
+                                    "Service is shutting down",
+                                    timeout);
+                                
+                                // Wait with timeout
+                                if (!closeTask.Wait(2000))
+                                {
+                                    Log("WebSocket close operation timed out");
+                                }
+                            }
+                            
+                            webSocket.Dispose();
+                            webSocket = null;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"Error closing WebSocket: {ex.Message}");
+                        }
+                    }
+                    
+                    // Clear and dispose client
+                    if (client != null)
+                    {
+                        try
+                        {
+                            client.Dispose();
+                            client = null;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"Error disposing HTTP client: {ex.Message}");
+                        }
+                    }
+                    
+                    // Set flags to terminate any pending operations
+                    webSocketConnected = false;
+                    disposed = true;
+                    
+                    // Signal processor to stop
+                    processorRunning = false;
+                    
+                    // Apply aggressive cleanup to ensure no tasks linger
+                    GC.Collect(2, GCCollectionMode.Forced);
+                    GC.WaitForPendingFinalizers();
+                    
+                    Log("CurvesV2Service fully disposed");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error during service disposal: {ex.Message}");
+                    disposed = true; // Mark as disposed anyway
                 }
             }
         }
@@ -1180,8 +1127,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                         // Start the receive loop only if connection successful and store the task
                         receiveLoopTask = Task.Run(ReceiveWebSocketMessagesAsync);
 
-                        // Start the heartbeat ping task only if connection successful and store the task
-                        pingLoopTask = Task.Run(SendWebSocketPingAsync);
+                        // *** Start the CORRECT PingLoopAsync task ***
+                        pingLoopTask = Task.Run(() => PingLoopAsync(webSocketCts.Token));
 
                         // Reset consecutive errors counter
                         lock (connectionStateLock)
@@ -1217,48 +1164,49 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
         
-        // Health check - use WebSocket if possible, fallback to HTTP only if necessary
+        // Health check using HTTP to verify server is running
         public async Task<bool> CheckHealth()
         {
             if (IsDisposed())
-            {
                 return false;
-            }
             
-            // Check WebSocket connection first
-            if (webSocket != null && webSocket.State == WebSocketState.Open)
+            // If WebSocket is already connected, consider the health check passed
+            if (webSocketConnected)
             {
+                NinjaTrader.Code.Output.Process("Health check passed: WebSocket already connected", PrintTo.OutputTab1);
                 return true;
             }
-            
-            // If WebSocket not connected, try to connect it
-            bool connected = await ConnectWebSocketAsync();
-            if (connected)
-            {
-                return true;
-            }
-            
-            // Last resort - try HTTP health check
+                
             try
             {
-                string healthEndpoint = $"{baseUrl}/api/health";
-                var response = await client.GetAsync(healthEndpoint);
+                NinjaTrader.Code.Output.Process("Checking CurvesV2 server health...", PrintTo.OutputTab1);
                 
-                if (response.IsSuccessStatusCode)
+                string healthEndpoint = $"{baseUrl}/";
+                
+                // Create a new temporary client with a short timeout
+                using (var tempClient = new HttpClient())
                 {
-                    // WebSocket connection failed but HTTP is working
-                    // Try to reconnect WebSocket again in the background
-                    Task.Run(async () => await ConnectWebSocketAsync());
+                    tempClient.Timeout = TimeSpan.FromSeconds(5); // 5 second timeout
                     
-                    NinjaTrader.Code.Output.Process("HTTP health check successful, but WebSocket connection failed", PrintTo.OutputTab1);
-                    return true;
+                    // Send a request to the root endpoint (health check)
+                    var response = await tempClient.GetAsync(healthEndpoint);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var content = await response.Content.ReadAsStringAsync();
+                        NinjaTrader.Code.Output.Process($"Health check passed: {content}", PrintTo.OutputTab1);
+                        return true;
+                    }
+                    else
+                    {
+                        NinjaTrader.Code.Output.Process($"Health check failed: Status code {response.StatusCode}", PrintTo.OutputTab1);
+                        return false;
+                    }
                 }
-                
-                return false;
             }
             catch (Exception ex)
             {
-                NinjaTrader.Code.Output.Process($"Health check failed: {ex.Message}", PrintTo.OutputTab1);
+                NinjaTrader.Code.Output.Process($"Health check error: {ex.Message}", PrintTo.OutputTab1);
                 return false;
             }
         }
@@ -1443,110 +1391,93 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // Send periodic heartbeats to keep the WebSocket connection alive
-        private async Task SendWebSocketPingAsync()
+        // Background task to periodically send pings
+        private async Task PingLoopAsync(CancellationToken cancellationToken)
         {
-            if (IsDisposed()) return;
-            
-            try
+            NinjaTrader.Code.Output.Process("Ping loop started.", PrintTo.OutputTab1);
+            while (webSocket != null && webSocket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
             {
-                // Send heartbeats every 15 seconds
-                while (webSocket.State == WebSocketState.Open)
+                try
                 {
-                    // Wait before sending the next ping - shorter interval for more responsive reconnection
-                    await Task.Delay(15000); // 15 seconds between pings
-                    
-                    if (webSocket.State != WebSocketState.Open || IsDisposed())
-                        break;
-                        
-                    try
+                    await Task.Delay(15000, cancellationToken); // Send ping every 15 seconds
+
+                    if (webSocket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
                     {
-                        // Only send a new ping if we got a response to the previous one
-                        // or if we've missed too many (to prevent flooding)
-                        if (receivedPong || missedHeartbeats > 2)
+                        bool lockTaken = false;
+                        try
                         {
-                            NinjaTrader.Code.Output.Process("Sending WebSocket ping...", PrintTo.OutputTab1);
-                            
-                            // Create ping message with a unique ID
-                            var pingId = Guid.NewGuid().ToString("N").Substring(0, 8);
-                            var pingMessage = new { 
-                                type = "ping", 
-                                id = pingId,
-                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() 
-                            };
-                            string jsonMessage = JsonConvert.SerializeObject(pingMessage);
-                            byte[] messageBytes = Encoding.UTF8.GetBytes(jsonMessage);
-                            
-                            // Set flag that we're waiting for a pong
-                            receivedPong = false;
-                            
-                            // Send ping with a shorter timeout
-                            var pingCts = new CancellationTokenSource(3000);
-                            try {
-                                await webSocket.SendAsync(
-                                    new ArraySegment<byte>(messageBytes),
-                                    WebSocketMessageType.Text,
-                                    true,
-                                    pingCts.Token
-                                );
+                            // Try to acquire lock with a short timeout
+                            NinjaTrader.Code.Output.Process("PingLoop: Trying to acquire send lock...", PrintTo.OutputTab1);
+                            Monitor.TryEnter(webSocketSendLock, 500, ref lockTaken); // Timeout 500ms
+
+                            if (lockTaken)
+                            {
+                                NinjaTrader.Code.Output.Process("PingLoop: Lock acquired. Sending WebSocket ping...", PrintTo.OutputTab1);
+                                string pingPayload = JsonConvert.SerializeObject(new { type = "ping", id = Guid.NewGuid().ToString("N").Substring(0, 8), timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+                                byte[] buffer = Encoding.UTF8.GetBytes(pingPayload);
                                 
-                                NinjaTrader.Code.Output.Process("WebSocket ping sent", PrintTo.OutputTab1);
+                                // Send asynchronously and await the result
+                                var sendPingTask = webSocket.SendAsync(
+                                    new ArraySegment<byte>(buffer), 
+                                    WebSocketMessageType.Text, 
+                                    true, 
+                                    cancellationToken // <<< Pass the loop's cancellation token
+                                ); 
+
+                                await sendPingTask; // Use await instead of Wait()
+
+                                // Check if cancellation occurred during await
+                                if (cancellationToken.IsCancellationRequested)
+                                {
+                                     NinjaTrader.Code.Output.Process("PingLoop: SendAsync cancelled during await.", PrintTo.OutputTab1);
+                                     break; // Exit loop if cancelled
+                                }
+
+                                NinjaTrader.Code.Output.Process("PingLoop: WebSocket ping sent successfully (async await).", PrintTo.OutputTab1);
+                                    missedHeartbeats = 0; // Reset missed heartbeats
                             }
-                            catch {
-                                // If sending the ping fails, increment missed heartbeats
-                                missedHeartbeats++;
-                                NinjaTrader.Code.Output.Process($"Failed to send heartbeat (missed {missedHeartbeats})", PrintTo.OutputTab1);
-                            }
-                            finally {
-                                pingCts.Dispose();
-                            }
-                            
-                            // Check if we've missed too many heartbeats
-                            if (missedHeartbeats > 3)
+                            else
                             {
-                                NinjaTrader.Code.Output.Process($"Too many missed heartbeats ({missedHeartbeats}), reconnecting...", PrintTo.OutputTab1);
-                                webSocketConnected = false;
-                                break;
+                                NinjaTrader.Code.Output.Process("PingLoop: Could not acquire send lock, skipping ping.", PrintTo.OutputTab1);
                             }
                         }
-                        else
+                        catch (OperationCanceledException)
                         {
-                            // We didn't get a response to the previous ping
+                            NinjaTrader.Code.Output.Process("PingLoop: SendAsync cancelled (timeout or external).", PrintTo.OutputTab1);
                             missedHeartbeats++;
-                            NinjaTrader.Code.Output.Process($"No pong received (missed {missedHeartbeats})", PrintTo.OutputTab1);
-                            
-                            // If we've missed too many, break to reconnect
-                            if (missedHeartbeats > 3)
+                        }
+                        catch (Exception ex)
+                        {
+                            NinjaTrader.Code.Output.Process($"PingLoop: Error sending ping: {ex.Message}", PrintTo.OutputTab1);
+                            missedHeartbeats++;
+                        }
+                        finally
+                        {
+                            // *** Release lock in finally block ***
+                            if (lockTaken)
                             {
-                                NinjaTrader.Code.Output.Process($"Too many missed heartbeats ({missedHeartbeats}), reconnecting...", PrintTo.OutputTab1);
-                                webSocketConnected = false;
-                                break;
+                                Monitor.Exit(webSocketSendLock);
+                                NinjaTrader.Code.Output.Process("PingLoop: Lock released.", PrintTo.OutputTab1);
                             }
                         }
                         
-                        // For the demo, always treat as if we got a pong to avoid excessive reconnections
-                        // In a production system with proper pong handling, this would be removed
-                        receivedPong = true;
-                        missedHeartbeats = 0;
-                    }
-                    catch (Exception ex)
-                    {
-                        NinjaTrader.Code.Output.Process($"Error sending heartbeat: {ex.Message}", PrintTo.OutputTab1);
-                        missedHeartbeats++;
-                        
-                        if (webSocket.State != WebSocketState.Open || missedHeartbeats > 3)
+                        // Check for too many missed heartbeats
+                        if (missedHeartbeats > 3)
                         {
-                            webSocketConnected = false;
-                            break;
+                             NinjaTrader.Code.Output.Process("PingLoop: Too many missed heartbeats, triggering reconnect.", PrintTo.OutputTab1);
+                             webSocketConnected = false; // Mark as disconnected
+                             break; // Exit loop to trigger reconnect logic
                         }
                     }
                 }
-                
-                NinjaTrader.Code.Output.Process("Heartbeat loop exited", PrintTo.OutputTab1);
-            }
-            catch (Exception ex)
-            {
-                NinjaTrader.Code.Output.Process($"Error in heartbeat loop: {ex.Message}", PrintTo.OutputTab1);
+                catch (OperationCanceledException)
+                {
+                    NinjaTrader.Code.Output.Process("PingLoop: OperationCanceledException (expected on timeout/dispose)", PrintTo.OutputTab1);
+                }
+                catch (Exception ex)
+                {
+                    NinjaTrader.Code.Output.Process($"PingLoop: ERROR: {ex.Message}", PrintTo.OutputTab1);
+                }
             }
             
             // If we got here, the connection is probably closed - try to reconnect
@@ -1770,6 +1701,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+  /*
         // Add SendBarFireAndForget method - the new preferred way to send bars
         public bool SendBarFireAndForget(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
@@ -1851,39 +1783,66 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return QueueBar(instrument, timestamp, open, high, low, close, volume, timeframe);
             }
         }
-
+*/
         // Add synchronous methods for direct NinjaTrader integration
         
         // Synchronously send a bar and wait for confirmation
         public bool SendBarSync(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
+            NinjaTrader.Code.Output.Process("SendBarSync: Entered method", PrintTo.OutputTab1);
+            
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
+            {
+                NinjaTrader.Code.Output.Process($"SendBarSync: Exiting early - Disposed={IsDisposed()}, Instrument null/empty={string.IsNullOrEmpty(instrument)}", PrintTo.OutputTab1);
                 return false;
+            }
             
             try
             {
                 NinjaTrader.Code.Output.Process($"SendBarSync: Sending bar for {instrument} @ {timestamp}", PrintTo.OutputTab1);
                 
                 // Check if WebSocket is connected
+                NinjaTrader.Code.Output.Process($"SendBarSync: Checking WebSocket state (Current: {webSocket?.State})", PrintTo.OutputTab1);
                 if (webSocket == null || webSocket.State != WebSocketState.Open)
                 {
                     NinjaTrader.Code.Output.Process("SendBarSync: WebSocket not connected, attempting to connect...", PrintTo.OutputTab1);
                     
-                    // Try to connect synchronously
+                    // Try to connect asynchronously, but wait synchronously
+                    NinjaTrader.Code.Output.Process("SendBarSync: Calling ConnectWebSocketAsync...", PrintTo.OutputTab1);
                     var connectTask = ConnectWebSocketAsync();
-                    connectTask.Wait(3000); // Wait up to 3 seconds
+                    NinjaTrader.Code.Output.Process("SendBarSync: Waiting for ConnectWebSocketAsync (max 3s)...", PrintTo.OutputTab1);
+                    if (!connectTask.Wait(3000)) // Wait up to 3 seconds with timeout
+                    {
+                        NinjaTrader.Code.Output.Process("SendBarSync: WebSocket connection timed out", PrintTo.OutputTab1);
+                        return false;
+                    }
+                    NinjaTrader.Code.Output.Process($"SendBarSync: ConnectWebSocketAsync completed (Result={connectTask.Result})", PrintTo.OutputTab1);
                     
                     if (!connectTask.Result)
                     {
-                        NinjaTrader.Code.Output.Process("SendBarSync: Failed to connect WebSocket", PrintTo.OutputTab1);
+                        NinjaTrader.Code.Output.Process("SendBarSync: Failed to connect WebSocket after wait", PrintTo.OutputTab1);
                         return false;
                     }
+                    // Add a small delay after connection to allow stabilization
+                    NinjaTrader.Code.Output.Process("SendBarSync: Delaying 50ms after connection...", PrintTo.OutputTab1);
+                    Task.Delay(50).Wait(); 
+                    NinjaTrader.Code.Output.Process("SendBarSync: Delay complete", PrintTo.OutputTab1);
+                }
+                
+                // Ensure WebSocket is open after connection attempt
+                NinjaTrader.Code.Output.Process($"SendBarSync: Re-checking WebSocket state (Current: {webSocket?.State})", PrintTo.OutputTab1);
+                if (webSocket == null || webSocket.State != WebSocketState.Open)
+                {
+                    NinjaTrader.Code.Output.Process($"SendBarSync: WebSocket still not open after connection attempt. State: {webSocket?.State}", PrintTo.OutputTab1);
+                    return false;
                 }
                 
                 // Convert timestamp to milliseconds since epoch
+                NinjaTrader.Code.Output.Process("SendBarSync: Converting timestamp...", PrintTo.OutputTab1);
                 long epochMs = (long)(timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds;
                 
                 // Create bar message
+                NinjaTrader.Code.Output.Process("SendBarSync: Creating bar message object...", PrintTo.OutputTab1);
                 var barMessage = new
                 {
                     type = "bar",
@@ -1898,16 +1857,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 };
                 
                 // Serialize to JSON
+                NinjaTrader.Code.Output.Process("SendBarSync: Serializing message to JSON...", PrintTo.OutputTab1);
                 string jsonMessage = JsonConvert.SerializeObject(barMessage);
                 byte[] messageBytes = Encoding.UTF8.GetBytes(jsonMessage);
                 
                 // Send synchronously with timeout
+                NinjaTrader.Code.Output.Process("SendBarSync: Calling SendAsync on WebSocket...", PrintTo.OutputTab1);
                 var sendTask = webSocket.SendAsync(
                     new ArraySegment<byte>(messageBytes),
                     WebSocketMessageType.Text,
                     true,
-                    CancellationToken.None
+                    CancellationToken.None // No cancellation token needed for synchronous Wait
                 );
+                NinjaTrader.Code.Output.Process("SendBarSync: Waiting for SendAsync (max 2s)...", PrintTo.OutputTab1);
                 
                 // Wait for completion with timeout
                 if (sendTask.Wait(2000)) // 2 second timeout
@@ -1921,10 +1883,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return false;
                 }
             }
+            catch (AggregateException aggEx) when (aggEx.InnerException is OperationCanceledException)
+            {
+                NinjaTrader.Code.Output.Process("SendBarSync: Task cancelled (likely timeout)", PrintTo.OutputTab1);
+                return false;
+            }
             catch (Exception ex)
             {
-                NinjaTrader.Code.Output.Process($"SendBarSync ERROR: {ex.Message}", PrintTo.OutputTab1);
+                NinjaTrader.Code.Output.Process($"SendBarSync ERROR: {ex.GetType().Name} - {ex.Message}", PrintTo.OutputTab1);
+                // Log inner exception if present
+                if (ex.InnerException != null)
+                {
+                    NinjaTrader.Code.Output.Process($"  Inner Exception: {ex.InnerException.GetType().Name} - {ex.InnerException.Message}", PrintTo.OutputTab1);
+                }
                 return false;
+            }
+            finally
+            {
+                NinjaTrader.Code.Output.Process("SendBarSync: Exiting method.", PrintTo.OutputTab1);
             }
         }
         
@@ -1994,34 +1970,398 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
         
-        // Combined method to send bar and poll signals in one call
+        // Combined method to send bar and poll signals in one call - Modified to call ASYNC POLL
         public bool SendBarAndPollSync(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
-            // Send the bar synchronously and wait for result
-            bool barSent = SendBarSync(instrument, timestamp, open, high, low, close, volume, timeframe);
+            NinjaTrader.Code.Output.Process("SendBarAndPollSync: Simplified implementation called", PrintTo.OutputTab1);
             
-            // If we couldn't send the bar, return immediately
-            if (!barSent)
+            // Fire and forget the bar data
+            bool success = SendBarFireAndForget(instrument, timestamp, open, high, low, close, volume, timeframe);
+            
+            if (success)
+            {
+                // Also fire and forget the signals check
+                CheckSignalsFireAndForget(instrument);
+                NinjaTrader.Code.Output.Process("SendBarAndPollSync: Both bar and signal requests sent", PrintTo.OutputTab1);
+            }
+            else
+            {
+                NinjaTrader.Code.Output.Process("SendBarAndPollSync: Failed to send bar data", PrintTo.OutputTab1);
+            }
+            
+            return success;
+        }
+
+        // Check if WebSocket is currently connected
+        public bool IsWebSocketConnected()
+        {
+            if (IsDisposed())
                 return false;
+                
+            return webSocket != null && webSocket.State == WebSocketState.Open && webSocketConnected;
+        }
+
+        // Asynchronously poll for signals and update static properties
+        public async Task<bool> PollSignalsAsync(string instrument, CancellationToken cancellationToken = default) // Made async, added CancellationToken
+        {
+            if (IsDisposed() || string.IsNullOrEmpty(instrument))
+                return false;
+
+            // Ensure client is initialized (might need to move initialization logic)
+            if (client == null) 
+            {
+                 client = new HttpClient(); // Simple initialization, consider reusing instance
+                 client.DefaultRequestHeaders.Accept.Clear();
+                 client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                 // Consider setting BaseAddress if appropriate
+            }
             
-            // Start polling in the background without waiting for it
-            Task.Run(() => {
+            try
+            {
+                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Polling signals for {instrument}", PrintTo.OutputTab1);
+                
+                // Build the signals endpoint URL
+                string endpoint = $"{baseUrl}/api/signals/{instrument}";
+                
+                // Use HttpClient for async request
+                HttpResponseMessage response = null;
                 try
                 {
-                    // Give the server a moment to process the bar
-                    System.Threading.Thread.Sleep(100);
+                    // Make request asynchronously with timeout handled by CancellationToken
+                    using (var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                    {
+                        timeoutCts.CancelAfter(15000); // 15 second timeout
+                        NinjaTrader.Code.Output.Process($"PollSignalsAsync: Sending GET request to {endpoint}", PrintTo.OutputTab1);
+                        response = await client.GetAsync(endpoint, timeoutCts.Token);
+                        NinjaTrader.Code.Output.Process($"PollSignalsAsync: Received response status {response.StatusCode}", PrintTo.OutputTab1);
+                    }
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string responseText = await response.Content.ReadAsStringAsync();
+                        var signalResponse = JsonConvert.DeserializeObject<dynamic>(responseText);
+                        
+                        if (signalResponse != null && signalResponse.success == true)
+                        {
+                            // Update the static properties directly
+                            if (signalResponse.signals != null)
+                            {
+                                // Potential improvement: Lock static updates if accessed elsewhere simultaneously
+                                CurrentBullStrength = signalResponse.signals.bull;
+                                CurrentBearStrength = signalResponse.signals.bear;
+                                LastSignalTimestamp = DateTime.Now; // Consider using server timestamp if available
+                                
+                                // Optionally update CurrentMatches if provided by the API
+                                // if (signalResponse.signals.matches != null) {
+                                //     CurrentMatches = signalResponse.signals.matches.ToObject<List<PatternMatch>>();
+                                // } else {
+                                //     CurrentMatches.Clear();
+                                // }
+
+                                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}", PrintTo.OutputTab1);
+                                return true;
+                            }
+                            else
+                            {
+                                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Success response but missing 'signals' data for {instrument}", PrintTo.OutputTab1);
+                            }
+                        }
+                        else
+                        {
+                             NinjaTrader.Code.Output.Process($"PollSignalsAsync: API reported failure or null response for {instrument}. Response: {responseText}", PrintTo.OutputTab1);
+                        }
+                    }
+                    else
+                    {
+                         NinjaTrader.Code.Output.Process($"PollSignalsAsync: HTTP error {response.StatusCode} polling signals for {instrument}", PrintTo.OutputTab1);
+                    }
+                }
+                catch (OperationCanceledException ex) // Catches timeout or external cancellation
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                         NinjaTrader.Code.Output.Process($"PollSignalsAsync: Operation cancelled externally for {instrument}", PrintTo.OutputTab1);
+                    else
+                         NinjaTrader.Code.Output.Process($"PollSignalsAsync ERROR: Request timed out after 15 seconds for {instrument}", PrintTo.OutputTab1);
+                    return false;
+                }
+                catch (HttpRequestException httpEx)
+                {
+                    NinjaTrader.Code.Output.Process($"PollSignalsAsync HTTP ERROR polling signals for {instrument}: {httpEx.Message}", PrintTo.OutputTab1);
+                    return false;
+                }
+                finally
+                {
+                    response?.Dispose(); // Ensure response is disposed
+                }
+                
+                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Failed to get valid signal response for {instrument}", PrintTo.OutputTab1);
+                return false;
+            }
+            catch (Exception ex) // Catch-all for unexpected errors
+            {
+                NinjaTrader.Code.Output.Process($"PollSignalsAsync UNEXPECTED ERROR polling signals for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                return false;
+            }
+        }
+
+        // Ultra-simple bar sender that TRULY never blocks
+        public bool SendBarFireAndForget(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
+        {
+            if (IsDisposed() || string.IsNullOrEmpty(instrument))
+                return false;
+            
+            try
+            {
+                // Log the attempt
+                NinjaTrader.Code.Output.Process($"SendBarFireAndForget: Called for {instrument} @ {timestamp}. WS State: {webSocket?.State}", PrintTo.OutputTab1);
+                
+				long epochMs = (long)(timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds;
+
+                // Try WebSocket first if connected
+                if (webSocket != null && webSocket.State == WebSocketState.Open)
+                {
+                    // Create bar message
+                    var barMessage = new
+                    {
+                        type = "bar",
+                        instrument = instrument,
+                        timestamp = epochMs,
+                        open = Convert.ToDouble(open),
+                        high = Convert.ToDouble(high),
+                        low = Convert.ToDouble(low),
+                        close = Convert.ToDouble(close),
+                        volume = Convert.ToDouble(volume),
+                        timeframe = timeframe
+                    };
+                    string jsonMessage = JsonConvert.SerializeObject(barMessage);
+                    byte[] messageBytes = Encoding.UTF8.GetBytes(jsonMessage);
                     
-                    // Poll for signals - don't wait for result
-                    PollSignalsSync(instrument);
+                    // Fire and forget using WebSocket.SendAsync - don't wait for completion
+                    try
+                    {
+                        webSocket.SendAsync(
+                            new ArraySegment<byte>(messageBytes),
+                            WebSocketMessageType.Text,
+                            true,
+                            CancellationToken.None
+                        );
+                        NinjaTrader.Code.Output.Process($"SendBarFireAndForget Task: SendAsync completed for {instrument}.", PrintTo.OutputTab1);
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        NinjaTrader.Code.Output.Process($"SendBarFireAndForget Task: ERROR sending bar via WebSocket: {ex.Message}", PrintTo.OutputTab1);
+                        // Fall through to fallback method
+                    }
+            }
+            else
+            {
+                    NinjaTrader.Code.Output.Process($"SendBarFireAndForget: WebSocket not connected or null. State: {webSocket?.State}. Attempting fallback QueueBar.", PrintTo.OutputTab1);
+                }
+                
+                // Fallback to HTTP
+                // Build the URL for the endpoint
+                string endpoint = $"{baseUrl}/api/realtime_bars/{instrument}";
+                
+                // Convert timestamp to milliseconds since epoch
+                
+                // Create payload
+                string jsonPayload = $"{{\"timestamp\":{epochMs},\"open\":{open},\"high\":{high},\"low\":{low},\"close\":{close},\"volume\":{volume},\"timeframe\":\"{timeframe}\"}}";
+                byte[] data = Encoding.UTF8.GetBytes(jsonPayload);
+                
+                // Create a non-blocking request
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
+                request.Method = "POST";
+                request.ContentType = "application/json";
+                request.ContentLength = data.Length;
+                request.Timeout = 3000; // 3 second timeout
+                
+                // Begin the request without blocking
+                try
+                {
+                    // Get request stream asynchronously but don't wait
+                    IAsyncResult asyncResult = request.BeginGetRequestStream(
+                        ar => {
+                            try
+                            {
+                                // Check if service is disposed before processing
+                                if (IsDisposed() || IsShuttingDown())
+                                {
+                                    NinjaTrader.Code.Output.Process("SendBarFireAndForget: Aborted due to service shutdown", PrintTo.OutputTab1);
+                                    return;
+                                }
+                                
+                                // In the callback, get the stream and write the data
+                                using (Stream requestStream = request.EndGetRequestStream(ar))
+                                {
+                                    requestStream.Write(data, 0, data.Length);
+                                }
+                                
+                                // Begin getting response but don't wait for it
+                                request.BeginGetResponse(
+                                    responseResult => {
+                                        try
+                                        {
+                                            // Check if service is disposed before processing response
+                                            if (IsDisposed() || IsShuttingDown())
+                                            {
+                                                NinjaTrader.Code.Output.Process("SendBarFireAndForget: Response aborted due to service shutdown", PrintTo.OutputTab1);
+                                                return;
+                                            }
+                                            
+                                            using (WebResponse response = request.EndGetResponse(responseResult))
+                                            {
+                                                // Successfully sent
+                                                NinjaTrader.Code.Output.Process($"SendBarFireAndForget: HTTP bar data sent successfully for {instrument}", PrintTo.OutputTab1);
+                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            // Check if service is being shut down - don't log errors in this case
+                                            if (IsDisposed() || IsShuttingDown())
+                                                return;
+                                            
+                                            // Log error but don't throw - this is fire and forget
+                                            NinjaTrader.Code.Output.Process($"SendBarFireAndForget: HTTP response error for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                                        }
+                                    },
+                                    null // No state object needed
+                                );
+                            }
+                            catch (Exception ex)
+                            {
+                                // Check if service is being shut down - don't log errors in this case
+                                if (IsDisposed() || IsShuttingDown())
+                                    return;
+                                
+                                // Log error but don't throw - this is fire and forget
+                                NinjaTrader.Code.Output.Process($"SendBarFireAndForget: HTTP request stream error for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                            }
+                        },
+                        null // No state object needed
+                    );
+                    
+                    NinjaTrader.Code.Output.Process($"SendBarFireAndForget: HTTP request initiated for {instrument}", PrintTo.OutputTab1);
+                    return true;
                 }
                 catch (Exception ex)
                 {
-                    NinjaTrader.Code.Output.Process($"Background polling error: {ex.Message}", PrintTo.OutputTab1);
+                    NinjaTrader.Code.Output.Process($"SendBarFireAndForget: Error creating HTTP request for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                    return false;
                 }
-            });
-            
-            // Return true as long as the bar was sent - don't wait for polling
-            return barSent;
+            }
+            catch (Exception ex)
+            {
+                NinjaTrader.Code.Output.Process($"SendBarFireAndForget: Unexpected error for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                return false;
+            }
+        }
+        
+        // Ultra-simple signal checker that TRULY never blocks
+        public bool CheckSignalsFireAndForget(string instrument)
+        {
+            if (IsDisposed() || string.IsNullOrEmpty(instrument))
+                return false;
+                
+            try
+            {
+                // Log the attempt
+                NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Checking signals for {instrument}", PrintTo.OutputTab1);
+                
+                // Build the URL for the signals endpoint
+                string endpoint = $"{baseUrl}/api/signals/{instrument}";
+                
+                // Create a non-blocking request
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
+                request.Method = "GET";
+                request.Timeout = 5000; // 5 second timeout
+                
+                // Begin the request without blocking
+                try 
+                {
+                    // Begin getting response but don't wait for it
+                    IAsyncResult asyncResult = request.BeginGetResponse(
+                        ar => {
+                            try
+                            {
+                                // Check if service is disposed before processing response
+                                if (IsDisposed() || IsShuttingDown())
+                                {
+                                    NinjaTrader.Code.Output.Process("CheckSignalsFireAndForget: Aborted due to service shutdown", PrintTo.OutputTab1);
+                                    return;
+                                }
+                                
+                                using (WebResponse response = request.EndGetResponse(ar))
+                                {
+                                    // Read the response stream
+                                    using (Stream stream = response.GetResponseStream())
+                                    using (StreamReader reader = new StreamReader(stream))
+                                    {
+                                        string responseText = reader.ReadToEnd();
+                                        
+                                        // Parse the response
+                                        var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
+                                        
+                                        if (signalResponse != null && signalResponse.success)
+                                        {
+                                            // Update static properties
+                                            if (signalResponse.signals != null)
+                                            {
+                                                // Update bull/bear strengths
+                                                CurrentBullStrength = signalResponse.signals.bull;
+                                                CurrentBearStrength = signalResponse.signals.bear;
+                                                LastSignalTimestamp = DateTime.Now;
+                                                
+                                                // Update pattern matches if available
+                                                if (signalResponse.signals.matches != null)
+                                                {
+                                                    CurrentMatches = signalResponse.signals.matches;
+                                                    PatternName = signalResponse.signals.matches.Count > 0 ? 
+                                                        signalResponse.signals.matches[0].patternName : "No Pattern";
+                                                }
+                                                else
+                                                {
+                                                    CurrentMatches = new List<PatternMatch>();
+                                                    PatternName = "No Pattern";
+                                                }
+                                                
+                                                NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}", PrintTo.OutputTab1);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Invalid response for {instrument}", PrintTo.OutputTab1);
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                // Check if service is being shut down - don't log errors in this case
+                                if (IsDisposed() || IsShuttingDown())
+                                    return;
+                                
+                                // Log error but don't throw - this is fire and forget
+                                NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Response error for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                            }
+                        },
+                        null // No state object needed
+                    );
+                    
+                    NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Request initiated for {instrument}", PrintTo.OutputTab1);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Error creating request for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                NinjaTrader.Code.Output.Process($"CheckSignalsFireAndForget: Unexpected error for {instrument}: {ex.Message}", PrintTo.OutputTab1);
+                return false;
+            }
         }
     }
 
