@@ -376,7 +376,6 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
-		Print($"OBU {CurrentBars[0]}");
 		try
 		{
 			// Skip processing if service isn't available
@@ -424,7 +423,6 @@ public partial class CurvesStrategy : MainStrategy
 				UpdateLocalSignalData();
 			}
 			
-			Print($"CurrentBullStrength {CurrentBullStrength} / CurrentBearStrength {CurrentBearStrength}");
 		}
 		catch (Exception ex)
 		{
