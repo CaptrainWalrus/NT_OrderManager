@@ -328,7 +328,9 @@ public partial class CurvesStrategy : MainStrategy
 			if ((GetMarketPositionByIndex(0) != MarketPosition.Flat && canScaleInAgg) || (GetMarketPositionByIndex(0) == MarketPosition.Flat))
 			{
 
-				if(CurrentBullStrength > CurrentBearStrength * 2 || CurrentBullStrength - CurrentBearStrength > 25 )
+			
+				
+				if(CurrentBullStrength > CurrentBearStrength * 2)
 				{
 					Print($"MICROSTRATEGY LONG Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
 					forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
@@ -346,7 +348,7 @@ public partial class CurvesStrategy : MainStrategy
 						//}
 					
 				}
-				if(CurrentBearStrength > CurrentBullStrength * 2 || CurrentBearStrength - CurrentBullStrength > 25)
+				if(CurrentBearStrength > CurrentBullStrength * 2 )
 				{
 					Print($"MICROSTRATEGY SHORT Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
 					forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
@@ -393,7 +395,7 @@ public partial class CurvesStrategy : MainStrategy
 			
 			// Log connection status periodically
 			if (CurrentBars[0] % 10 == 0) // Log every 10 bars
-				NinjaTrader.Code.Output.Process($"isConnected = {isConnected} , OnBarUpdate: Bar={CurrentBar}, Time={Time[0]}", PrintTo.OutputTab1);
+				//NinjaTrader.Code.Output.Process($"isConnected = {isConnected} , OnBarUpdate: Bar={CurrentBar}, Time={Time[0]}", PrintTo.OutputTab1);
 			
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
 			if (isConnected)

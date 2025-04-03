@@ -70,18 +70,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         public string timeframe { get; set; }
     }
 
-    public class BarDataPacket
-    {
-        public string Instrument { get; set; }
-        public DateTime Timestamp { get; set; }
-        public double Open { get; set; }
-        public double High { get; set; }
-        public double Low { get; set; }
-        public double Close { get; set; }
-        public double Volume { get; set; }
-        public string Timeframe { get; set; }
-    }
-
+        public class BarDataPacket
+        {
+            public string Instrument { get; set; }
+            public DateTime Timestamp { get; set; }
+            public double Open { get; set; }
+            public double High { get; set; }
+            public double Low { get; set; }
+            public double Close { get; set; }
+            public double Volume { get; set; }
+            public string Timeframe { get; set; }
+        }
+        
     public class CurvesV2Service : IDisposable
     {
         private readonly HttpClient client;
@@ -120,7 +120,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             this.baseUrl = config.GetSignalApiEndpoint();
             this.logger = logger ?? ((msg) => { NinjaTrader.Code.Output.Process(msg, PrintTo.OutputTab1); });
             this.disposed = false;
-
+            
             // Initialize HttpClient
             client = new HttpClient();
             client.DefaultRequestHeaders.Accept.Clear();
@@ -133,7 +133,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Logging Helper
         private void Log(string message)
         {
-            //logger?.Invoke($"CurvesV2 [HTTP]: {message}");
+            logger?.Invoke($"CurvesV2 [HTTP]: {message}");
         }
 
         // IDisposable Implementation
@@ -148,9 +148,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     client?.Dispose();
                     disposed = true;
                     Log("[INFO] CurvesV2Service disposed.");
-                }
-                catch (Exception ex)
-                {
+                    }
+                    catch (Exception ex)
+                    {
                     Log($"[ERROR] Error during service disposal: {ex.Message}");
                     disposed = true;
                 }
@@ -175,9 +175,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Log($"[INFO] Health check result: {response.StatusCode} (Success: {isHealthy})");
                     return isHealthy;
                 }
-            }
-            catch (Exception ex)
-            {
+                }
+                catch (Exception ex)
+                {
                 bool wasDisposed; 
                 lock(disposeLock) { wasDisposed = disposed; }
                 if (!wasDisposed) {
@@ -262,7 +262,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                  }
                  return false;
             }
-             finally
+            finally
             {
                  response?.Dispose(); 
             }
@@ -304,8 +304,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                      // Still check status code below, might be informative
                 }
 
-                if (response.IsSuccessStatusCode)
-                {
+                        if (response.IsSuccessStatusCode)
+                        {
                     Log($"[DEBUG] GetSignalsSync: Response content for {instrument}: {responseText.Substring(0, Math.Min(responseText.Length, 100))}...");
                     try {
                         var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
@@ -313,9 +313,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                         {
                             Log($"[INFO] GetSignalsSync: Successfully received signals for {instrument}. Bull: {signalResponse.signals.bull}, Bear: {signalResponse.signals.bear}");
                             return signalResponse.signals; 
-                        }
-                        else
-                        {
+                                    }
+                                    else
+                                    {
                              Log($"[WARN] GetSignalsSync: Invalid response or success=false/null signals for {instrument}. Success: {signalResponse?.success}, Signals Null: {signalResponse?.signals == null}");
                              return null;
                         }
@@ -323,10 +323,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     catch (JsonException jsonEx) {
                         Log($"[ERROR] GetSignalsSync: Failed to parse JSON response for {instrument}: {jsonEx.Message}");
                         return null;
-                    }
-                }
-                else
-                {
+                            }
+                        }
+                        else
+                        {
                      // Log the response body even on error if available
                      Log($"[ERROR] GetSignalsSync: HTTP error {response.StatusCode} fetching signals for {instrument}. Response: {responseText.Substring(0, Math.Min(responseText.Length, 200))}");
                      return null;
@@ -548,6 +548,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                             // Update static properties for backwards compatibility
                             if (signalResponse.signals != null)
                             {
+								Log($"[DEBUG CRITICAL] Setting static properties: Bull={signalResponse.signals.bull}, Bear={signalResponse.signals.bear}");
+
                                 CurrentBullStrength = signalResponse.signals.bull;
                                 CurrentBearStrength = signalResponse.signals.bear;
                                 
@@ -724,7 +726,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool SendBarFireAndForget(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
-                return false;
+		    return false;
             
             try
             {
@@ -736,8 +738,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // --- START TEMPORARY DEBUG: Force HTTP Fallback ---
                 // Always skip WebSocket path for debugging
                 /* 
-                if (webSocket != null && webSocket.State == WebSocketState.Open)
-                {
+            if (webSocket != null && webSocket.State == WebSocketState.Open)
+            {
                     // ... (original WebSocket send logic) ...
                     return true;
                 }
@@ -883,10 +885,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                             CurrentMatches = signalResponse.signals.matches ?? new List<PatternMatch>();
                             PatternName = CurrentMatches.Count > 0 ? (CurrentMatches[0]?.patternName ?? "No Pattern") : "No Pattern";
                             Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-                            return true; 
-                        }
-                        else
-                        {
+                return true;
+            }
+            else
+            {
                              Log($"[DEBUG SYNC] CheckSignalsFireAndForget: 'signals' property missing in successful response for {instrument}");
                         }
                     }
@@ -1328,10 +1330,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                             string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
                             ProcessWebSocketMessage(message);
                         }
-                    }
                 }
-                catch (Exception ex)
-                {
+            }
+            catch (Exception ex)
+            {
                     if (!IsDisposed())
                         Log($"WebSocket receive error: {ex.Message}");
                     
@@ -1349,13 +1351,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 if (response.type == "signal")
                 {
-                    // Update static properties
+                                            // Update static properties
                     if (response.data != null)
                     {
                         CurrentBullStrength = response.data.bull ?? 0;
                         CurrentBearStrength = response.data.bear ?? 0;
-                        LastSignalTimestamp = DateTime.Now;
-                        
+                                                LastSignalTimestamp = DateTime.Now;
+                                                
                         // Update matches if available
                         if (response.data.matches != null)
                         {
@@ -1369,11 +1371,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                         }
                         
                         Log($"WebSocket signal update: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
                 Log($"Error processing WebSocket message: {ex.Message}");
             }
         }
