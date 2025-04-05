@@ -33,6 +33,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int bear { get; set; }
         public List<PatternMatch> matches { get; set; }
         public string lastUpdated { get; set; }
+        public string source { get; set; }
+        public double avgSlope { get; set; }
+        public int slopeImpact { get; set; }
     }
 
     public class PatternMatch
@@ -84,6 +87,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         
     public class CurvesV2Service : IDisposable
     {
+		public string sessionID;
         private readonly HttpClient client;
         private readonly string baseUrl;
         private readonly Action<string> logger;
@@ -107,6 +111,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         public static int CurrentBearStrength { get; private set; }
         public static string PatternName { get; private set; }
         public static DateTime LastSignalTimestamp { get; private set; }
+        public static double CurrentAvgSlope { get; private set; }
+        public static int CurrentSlopeImpact { get; private set; }
         public static List<PatternMatch> CurrentMatches { get; private set; } = new List<PatternMatch>();
         public static bool SignalsAreFresh => (DateTime.Now - LastSignalTimestamp).TotalSeconds < 30;
         
@@ -731,7 +737,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             try
             {
                 // Log the attempt
-                Log($"[DEBUG HTTP] SendBarFireAndForget: Called for {instrument} @ {timestamp}");
+                //Log($"[DEBUG HTTP] SendBarFireAndForget: Called for {instrument} @ {timestamp}");
                 
                 long epochMs = (long)(timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds;
 
@@ -748,12 +754,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                      Log($"SendBarFireAndForget: WebSocket not connected or null. State: {webSocket?.State}. Using HTTP fallback.");
                 } 
                 */
-                Log($"[DEBUG HTTP] SendBarFireAndForget: Skipping WebSocket, forcing HTTP.");
+                //Log($"[DEBUG HTTP] SendBarFireAndForget: Skipping WebSocket, forcing HTTP.");
                 // --- END TEMPORARY DEBUG ---
 
                 // Fallback to HTTP
                 // Build the URL for the endpoint
-                string endpoint = $"{baseUrl}/api/realtime_bars/{instrument}/backtest?matchPatterns=true"; // Use /api/realtime_bars endpoint for NinjaTrader
+                string endpoint = $"{baseUrl}/api/realtime_bars/{instrument}/backtest?matchPatterns=true&sessionId={sessionID}"; // Use /api/realtime_bars endpoint for NinjaTrader
                 
                 // Create payload
                 string jsonPayload = JsonConvert.SerializeObject(new {
@@ -795,7 +801,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                                             if (IsDisposed() || IsShuttingDown()) return;
                                             using (WebResponse response = request.EndGetResponse(responseResult))
                                             {
-                                                Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP bar data sent successfully for {instrument}");
+                                                //Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP bar data sent successfully for {instrument}");
                                             }
                                         }
                                         catch (Exception ex)
@@ -816,7 +822,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         null 
                     );
                     
-                    Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP request initiated for {instrument}");
+                    //Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP request initiated for {instrument}");
                     return true;
                 }
                 catch (Exception ex)
@@ -833,7 +839,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Restore the SYNCHRONOUS debug version of CheckSignalsFireAndForget
-        public bool CheckSignalsFireAndForget(string instrument)
+        public bool CheckSignalsFireAndForget(string timestamp,string instrument)
         {
             // Log("[DEBUG] CheckSignalsFireAndForget called - Synchronous Debug Mode"); 
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
@@ -848,7 +854,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             HttpResponseMessage response = null;
             try
             {
-                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Preparing check for {instrument}");
+                //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Preparing check for {instrument}");
                 string endpoint = $"{baseUrl}/api/signals/{instrument}";
 
                 if (IsDisposed() || IsShuttingDown())
@@ -857,19 +863,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return false; 
                 }
 
-                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Sending GET to {endpoint} (Blocking)");
+                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Sending GET to {endpoint} (Blocking)");
                 
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) 
                 {
                     response = client.GetAsync(endpoint, timeoutCts.Token).GetAwaiter().GetResult(); 
                 }
 
-                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Received status {response.StatusCode} for {instrument}");
+                //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Received status {response.StatusCode} for {instrument}");
 
                 if (response.IsSuccessStatusCode)
                 {
                     string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult(); 
-                    Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Response content for {instrument}: {responseText.Substring(0, Math.Min(responseText.Length, 100))}...");
+                    //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Response content for {instrument}: {responseText.Substring(0, Math.Min(responseText.Length, 100))}...");
 
                     var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
 
@@ -878,17 +884,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                         Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Parsed success for {instrument}");
                         if (signalResponse.signals != null)
                         {                                    
-                            Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Updating signals for {instrument}...");
+                            //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Updating signals for {instrument}...");
                             CurrentBullStrength = signalResponse.signals.bull;
                             CurrentBearStrength = signalResponse.signals.bear;
                             LastSignalTimestamp = DateTime.Now; 
                             CurrentMatches = signalResponse.signals.matches ?? new List<PatternMatch>();
                             PatternName = CurrentMatches.Count > 0 ? (CurrentMatches[0]?.patternName ?? "No Pattern") : "No Pattern";
-                            Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-                return true;
-            }
-            else
-            {
+                            Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
+			                return true;
+			            }
+			            else
+			            {
                              Log($"[DEBUG SYNC] CheckSignalsFireAndForget: 'signals' property missing in successful response for {instrument}");
                         }
                     }
@@ -1117,7 +1123,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (success)
             {
                 // Also fire and forget the signals check
-                CheckSignalsFireAndForget(instrument);
+                CheckSignalsFireAndForget(timestamp.ToString(),instrument);
                 NinjaTrader.Code.Output.Process("SendBarAndPollSync: Both bar and signal requests sent", PrintTo.OutputTab1);
             }
             else
@@ -1186,6 +1192,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                                 CurrentBearStrength = signalResponse.signals.bear;
                                 LastSignalTimestamp = DateTime.Now; // Consider using server timestamp if available
                                 
+                                // Update slope information if available
+                                if (signalResponse.signals.avgSlope != null) {
+                                    CurrentAvgSlope = signalResponse.signals.avgSlope;
+                                    CurrentSlopeImpact = signalResponse.signals.slopeImpact ?? 0;
+                                    NinjaTrader.Code.Output.Process($"PollSignalsAsync: Slope info - Avg={CurrentAvgSlope.ToString("F6")}, Impact={CurrentSlopeImpact}%", PrintTo.OutputTab1);
+                                }
+                                
                                 // Optionally update CurrentMatches if provided by the API
                                 // if (signalResponse.signals.matches != null) {
                                 //     CurrentMatches = signalResponse.signals.matches.ToObject<List<PatternMatch>>();
@@ -1246,6 +1259,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             CurrentBearStrength = 0;
             PatternName = string.Empty;
             LastSignalTimestamp = DateTime.MinValue;
+            CurrentAvgSlope = 0;
+            CurrentSlopeImpact = 0;
             if (CurrentMatches != null)
                 CurrentMatches.Clear();
             else

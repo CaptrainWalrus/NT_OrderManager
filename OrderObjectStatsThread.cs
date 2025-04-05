@@ -22,21 +22,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
     {
         private Thread statsThread; // Worker thread for stats
         private volatile bool stopStatsThread = false; // To signal thread termination
-        private ManualResetEvent stopSignalOrders = new ManualResetEvent(false); // Signal for thread termination
+        
+        // Replace single ManualResetEvent with two event signals
+        private AutoResetEvent workSignal = new AutoResetEvent(false); // Signal to start checking cycle
+        private ManualResetEvent stopSignal = new ManualResetEvent(false); // Signal to terminate thread
+        
         private readonly object statsLock = new object(); // Lock for thread-safe operations
+        
+        // Queue for stops that need stats updated on next cycle
+        private ConcurrentQueue<simulatedStop> statsUpdateQueue = new ConcurrentQueue<simulatedStop>();
 
         // List to hold the order records to be updated
         private List<OrderRecordMasterLite> orderRecords = new List<OrderRecordMasterLite>();
 
-
-       
-
-       
-
         /// <summary>
         /// Starts the stats update thread.
         /// </summary>
-        private void StartOrderObjectStatsThread()
+        public void StartOrderObjectStatsThread()
         {
             Print("StartOrderObjectStatsThread");
 
@@ -47,7 +49,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             }
 
             stopStatsThread = false;
-            stopSignalOrders.Reset(); // Reset the signal
+            stopSignal.Reset(); // Reset stop signal
+            workSignal.Reset(); // Ensure work signal is initially unset
 
             statsThread = new Thread(UpdateStatsWorker)
             {
@@ -63,13 +66,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         {
            // Print("[INFO] Stopping stats thread...");
             stopStatsThread = true;
-            stopSignalOrders.Set(); // Signal the thread to stop
+            stopSignal.Set(); // Signal the thread to stop waiting
+            workSignal.Set(); // Also signal work signal in case it's waiting there
 
             if (statsThread != null && statsThread.IsAlive)
             {
                 try
                 {
-                    statsThread.Join(); // Wait for the thread to terminate
+                    statsThread.Join(1000); // Wait for the thread to terminate with timeout
                 }
                 catch (Exception ex)
                 {
@@ -85,52 +89,76 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         }
 
         /// <summary>
+        /// Call this from OnBarUpdate to trigger background checks
+        /// </summary>
+        public void SignalBackgroundCheck()
+        {
+            if (!stopStatsThread && statsThread != null && statsThread.IsAlive)
+            {
+                workSignal.Set(); // Wake up the worker thread
+            }
+        }
+
+        /// <summary>
         /// Worker thread to update stats for all tracked orders.
         /// </summary>
 		private void UpdateStatsWorker()
 		{
 			string msg = "start";
+            Print("[INFO] UpdateStatsWorker started.");
+            WaitHandle[] waitHandles = { stopSignal, workSignal }; // Wait for either stop or work
+            
 		    try
 		    {
 		        while (!stopStatsThread)
 		        {
-		            try
-		            {
-		                List<simulatedStop> stopsToUpdate;
-						msg = "1";
-		                // Safely process updates
-		                lock (statsLock)
+                    // Wait indefinitely for either stop signal or work signal
+                    int signaledHandle = WaitHandle.WaitAny(waitHandles);
+
+                    if (stopStatsThread || signaledHandle == 0) // Check stop flag after wake-up
+                    {
+                        //Print("[INFO] UpdateStatsWorker stopping loop.");
+                        break;
+                    }
+
+                    // If signaledHandle == 1, it means workSignal was Set
+                    if (signaledHandle == 1)
+                    {
+		                try
 		                {
-		                    stopsToUpdate = MasterSimulatedStops
-		                        .Where(s => s?.OrderRecordMasterLite != null)
-		                        .ToList();
+		                    List<simulatedStop> stopsToCheck;
+						    msg = "1";
+		                    // Safely get the list of stops to check
+		                    lock (statsLock)
+		                    {
+		                        stopsToCheck = MasterSimulatedStops
+		                            .Where(s => s?.OrderRecordMasterLite != null)
+		                            .ToList();
+		                    }
+						    msg = "2";
+		                    foreach (var simStop in stopsToCheck)
+		                    {
+							    msg = "3";
+		                        if (stopStatsThread) break; // Check termination flag inside the loop
+							    msg = "4";
+		                        try
+		                        {
+								    msg = "5";
+                                    // Instead of Dispatcher.Invoke, call UpdateOrderStats directly
+                                    // This is safe because we're in a background thread
+                                    UpdateOrderStats(simStop);
+		                        }
+		                        catch (Exception ex)
+		                        {
+		                            Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
+		                        }
+		                    }
 		                }
-						msg = "2";
-		                foreach (var simStop in stopsToUpdate)
+		                catch (Exception ex)
 		                {
-							msg = "3";
-		                    if (stopStatsThread) break; // Check termination flag inside the loop
-							msg = "4";
-		                    try
-		                    {
-								msg = "5";
-		                        // Process stats update
-		                        Dispatcher.Invoke(() => UpdateOrderStats(simStop));
-		                    }
-		                    catch (Exception ex)
-		                    {
-								
-		                        Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
-		                    }
+		                    Print($"[ERROR] Error during stats processing: {ex.Message} + {msg}");
 		                }
-		            }
-		            catch (Exception ex)
-		            {
-		                Print($"[ERROR] Error during stats processing: {ex.Message} + {msg}");
-		            }
-		
-		            // Wait for stop signal or throttle the loop
-		            if (stopSignalOrders.WaitOne(100)) break;
+                    }
 		        }
 		    }
 		    catch (Exception ex)
@@ -193,10 +221,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						}
 						/// MAX LOSS 
 						/// 
+					
 						msg = "MLL";
 						if(simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady == true)
 						{
-							openOrders.Add(simStop.OrderRecordMasterLite);
+							// NOTE: This might need to be moved to the main thread if it modifies
+							// collections accessed by the main thread
+							if (!statsUpdateQueue.Contains(simStop)) {
+								statsUpdateQueue.Enqueue(simStop);
+							}
 							
 							int instrumentSeriesIndexThis = simStop.OrderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex;
 				            double maxLoss = GetMaxLoss(simStop);
@@ -209,6 +242,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				                order.OrderSupplementals.thisSignalExitAction = order.EntryOrder.OrderAction == OrderAction.Buy ? signalExitAction.MLL : (order.EntryOrder.OrderAction == OrderAction.SellShort ? signalExitAction.MLS : signalExitAction.NA);
 				
 				                // Log or track the flagged order if necessary
+				                // Note: Printing is thread-safe in NinjaTrader
 				                Print($"{Time[0]} Force exit flagged for {order.EntryOrderUUID} at profit: {profit}");
 								
 				            }
@@ -285,7 +319,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										//SubmitOrderUnmanaged(instrumentSeriesIndex, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.OrderRecordMasterLite.EntryOrderUUID, simStop.OrderRecordMasterLite.ExitOrderUUID);
 										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 							      		simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-										
+										Print("Enqueue MastersimulatedStopToDelete");
+							            // Queue for deletion on main thread
 							            MastersimulatedStopToDelete.Enqueue(simStop);
 										break;
 							
@@ -300,6 +335,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							       
 										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 										simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+										Print("Enqueue MastersimulatedStopToDelete");
+							            // Queue for deletion on main thread
 							            MastersimulatedStopToDelete.Enqueue(simStop);
 										break;
 										
@@ -321,6 +358,29 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            Print($"Error in UpdateOrderStats: {ex.Message} + {msg}");
 	        }
 		}
+
+        /// <summary>
+        /// Process the openOrders in statsUpdateQueue - add this to OnBarUpdate
+        /// </summary>
+        private void ProcessStatsQueue()
+        {
+            simulatedStop simStop;
+            while (statsUpdateQueue.TryDequeue(out simStop))
+            {
+                if (simStop?.OrderRecordMasterLite != null)
+                {
+                    try
+                    {
+                        // Add to openOrders collection (this needs to happen on main thread)
+                        openOrders.Add(simStop.OrderRecordMasterLite);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print($"[ERROR] Error processing stats queue item: {ex.Message}");
+                    }
+                }
+            }
+        }
 		
 		private double GetMaxLoss(simulatedStop simStop)
 		{
@@ -339,10 +399,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         {
             return GetCurrentAsk(order.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex) > order.PriceStats.OrderStatsAllTimeHighProfit;
         }
-
-   
-
-     
     }
 }
 

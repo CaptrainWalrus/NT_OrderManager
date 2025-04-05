@@ -457,8 +457,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				
 				NinjaTrader.Gui.Tools.SimpleFont myFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 12) { Size = 12, Bold = false };
-				Draw.Text(this,"1423"+CurrentBar,false,context+"",Offset,y2,Offset,Brushes.White ,myFont, TextAlignment.Center, color, null, 1);
-				Draw.Line(this,"384845"+CurrentBar,true,Offset,y1,Offset,y2,Brushes.Yellow,DashStyleHelper.Solid,2);
+				Draw.Text(this,"1423"+CurrentBar+context+ydir,false,context+"",Offset,y2,Offset,Brushes.White ,myFont, TextAlignment.Center, color, null, 1);
+				Draw.Line(this,"384845"+CurrentBar+context+ydir,true,Offset,y1,Offset,y2,Brushes.Yellow,DashStyleHelper.Solid,2);
 				}
 			
 		}

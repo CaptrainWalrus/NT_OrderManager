@@ -597,13 +597,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							
 							if(executionOrder.OrderAction == OrderAction.BuyToCover)
 							{
-								forceDrawDebug("["+instrument+"] | (EOSC-BuyToCover) $"+Math.Round(profit,2)+"",1,0,Low[0]-(TickSize*10),Brushes.Green,true);	
+								//forceDrawDebug("["+instrument+"] | (EOSC-BuyToCover) $"+Math.Round(profit,2)+"",1,0,Low[0]-(TickSize*10),Brushes.Green,true);	
 								
 							}
 							else if (executionOrder.OrderAction == OrderAction.Sell)
 							{
 								
-								forceDrawDebug("["+instrument+"] | (EOSC-Sell) $"+Math.Round(profit,2)+"",1,0,High[0]+(TickSize*10),Brushes.Green,true);	
+								//forceDrawDebug("["+instrument+"] | (EOSC-Sell) $"+Math.Round(profit,2)+"",1,0,High[0]+(TickSize*10),Brushes.Green,true);	
 
 							}
 						}
@@ -616,7 +616,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						
 						tryCatchSection = "ENTRY IS PAIRED 5";
 						
-						forceDrawDebug("EOSC  profit = "+profit,1,0,High[0],Brushes.Orange,true);
+						//forceDrawDebug("EOSC  profit = "+profit,1,0,High[0],Brushes.Orange,true);
 					}
 					/// *********DRAW LOSS
 					else if(profit < 0) 
@@ -647,13 +647,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							if(executionOrder.OrderAction == OrderAction.BuyToCover )
 							{
 								
-								forceDrawDebug("["+instrument+"] | (EOSC-BuyToCover) $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
+								//forceDrawDebug("["+instrument+"] | (EOSC-BuyToCover) $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
 								
 							}
 							else if (executionOrder.OrderAction == OrderAction.Sell )
 							{
 								
-								forceDrawDebug("["+instrument+"] | (EOSC-Sell) $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
+								//forceDrawDebug("["+instrument+"] | (EOSC-Sell) $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
 
 							}
 							
@@ -793,13 +793,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											string instrument = BarsArray[orderRecordMaster.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex].Instrument.FullName;
 											if(executionOrder.OrderAction == OrderAction.BuyToCover)
 											{
-												forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
+												//forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
 												
 											}
 											else if (executionOrder.OrderAction == OrderAction.Sell)
 											{
 												
-												forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
+												//forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
 
 											}
 										}
@@ -812,7 +812,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										
 										tryCatchSection = "ENTRY IS PAIRED 5";
 										
-										forceDrawDebug("ID "+orderRecordMaster.EntrySignalReturnAction+" profit = "+profit,1,0,High[0],Brushes.Orange,true);
+										//forceDrawDebug("ID "+orderRecordMaster.EntrySignalReturnAction+" profit = "+profit,1,0,High[0],Brushes.Orange,true);
 									}
 									/// *********DRAW LOSS
 									else if(profit < 0) 
@@ -878,14 +878,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											{
 												
 												//forceDrawDebug("("+orderRecordMaster.EntrySignalReturnAction+") $"+Math.Round(profit,2)+" ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+" ) MaxLoss: "+Math.Round(orderRecordMaster.PriceStats.OrderMaxLoss,0)+" ATH: "+Math.Round((double)orderRecordMaster.PriceStats.OrderStatsAllTimeHighProfit)+" PB: "+Math.Round(orderRecordMaster.PriceStats.OrderStatspullBackThreshold,0)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
-												forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
+												//forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
 												
 											}
 											else if (executionOrder.OrderAction == OrderAction.Sell )
 											{
 												
 												//forceDrawDebug("("+orderRecordMaster.EntrySignalReturnAction+") $"+Math.Round(profit,2)+" ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+" ) MaxLoss: "+Math.Round(orderRecordMaster.PriceStats.OrderMaxLoss,0)+" ATH: "+Math.Round((double)orderRecordMaster.PriceStats.OrderStatsAllTimeHighProfit)+" PB: "+Math.Round(orderRecordMaster.PriceStats.OrderStatspullBackThreshold,0)+"",1,0,High[0]-(TickSize*100),Brushes.Red,true);	
-												forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
+												//forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
 
 											}
 											

@@ -22,7 +22,7 @@ public partial class CurvesStrategy : MainStrategy
 {
 	// Restore essential service reference declaration
 	private CurvesV2Service curvesService;
-	
+	private bool somethingWasConnected;
 	// Comment out most custom fields
 	// private readonly TimeSpan updateInterval = TimeSpan.FromMilliseconds(100);
 	// private DateTime lastUpdate = DateTime.MinValue;
@@ -47,7 +47,7 @@ public partial class CurvesStrategy : MainStrategy
 	// public bool historicalSync = false;
 	// private DateTime backtestStartTime; 
 	// private DateTime? firstBarTime; 
-
+	private bool terminatedStatePrinted = false;
 	// Restore NinjaScript Properties
 	[NinjaScriptProperty]    
 	[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
@@ -60,6 +60,10 @@ public partial class CurvesStrategy : MainStrategy
 	[NinjaScriptProperty]    
 	[Display(Name="Use Direct Synchronous Processing", Order=1, GroupName="Class Parameters")]
 	public bool UseDirectSync { get; set; }
+	
+	[NinjaScriptProperty]    
+	[Display(Name="Iniitialize Curves API", Order=2, GroupName="Class Parameters")]
+	public bool InitCurvesAPI { get; set; }
 
 	// Restore Signal class definition
 	public class Signal
@@ -86,7 +90,7 @@ public partial class CurvesStrategy : MainStrategy
 			// Defaults are set as per previous step
 			Description = "Curves strategy"; 
 			Name = "Curves"; 
-			Calculate = Calculate.OnPriceChange;
+			Calculate = Calculate.OnBarClose;
 			EntriesPerDirection = 1;
 			EntryHandling = EntryHandling.UniqueEntries;
 			IsExitOnSessionCloseStrategy = false;
@@ -111,9 +115,9 @@ public partial class CurvesStrategy : MainStrategy
 			PullBackExitEnabled = true;
 			TakeBigProfitEnabled = true;
 			signalsOnly = true;
-			
+			somethingWasConnected = false;
 			// Set default for new property
-			UseDirectSync = true; // Enable synchronous mode by default
+			UseDirectSync = false; // Enable synchronous mode by default
 		}
 		// *** Restore Configure block ***
 		else if (State == State.Configure)
@@ -127,6 +131,10 @@ public partial class CurvesStrategy : MainStrategy
 			Print("Initializing CurvesV2 connection (async)...");
 			try 
 			{ 
+				Print($"Initializing CurvesAPI = {InitCurvesAPI}");
+
+				if(InitCurvesAPI)
+				{
 				var config = ConfigManager.Instance.CurvesV2Config; 
 				
 				// Set synchronous mode in config
@@ -134,8 +142,11 @@ public partial class CurvesStrategy : MainStrategy
 				Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
 				
 				curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
-				Print("CurvesV2Service Initialized (async connection pending).");
 				
+				curvesService.sessionID = GenerateSignalId();
+				
+				Print("CurvesV2Service Initialized (async connection pending).");
+				}
 				// Establish connection after initialization
 				if (UseDirectSync)
 				{
@@ -215,6 +226,8 @@ public partial class CurvesStrategy : MainStrategy
 				Print($"ERROR initializing CurvesV2Service: {ex.Message}");
 				curvesService = null; 
 			}
+		
+
 		}
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
@@ -225,52 +238,51 @@ public partial class CurvesStrategy : MainStrategy
 		// *** Restore Terminated block structure ***
 		else if (State == State.Terminated)
 		{
-			Print("CurvesStrategy.OnStateChange: State.Terminated (No custom logic)");
-			
-			Print("STATE.TERMINATED: Beginning COMPLETE shutdown sequence...");
-			
-			// 1. Reset static data in CurvesV2Service
-			Print("1. Resetting all static data in CurvesV2Service");
-			CurvesV2Service.ResetStaticData();
-			
-			// 2. Properly dispose of the CurvesV2Service instance
-			if (curvesService != null)
+			if(terminatedStatePrinted==false)
 			{
-				try 
+				// 1. Reset static data in CurvesV2Service
+				Print("1. Resetting all static data in CurvesV2Service");
+				CurvesV2Service.ResetStaticData();
+				
+				// 2. Properly dispose of the CurvesV2Service instance
+				if (curvesService != null)
 				{
-					Print("2. Disposing CurvesV2Service instance");
-					curvesService.Dispose();
+					try 
+					{
+						Print("2. Disposing CurvesV2Service instance");
+						curvesService.Dispose();
+					}
+					catch (Exception ex)
+					{
+						Print($"Error disposing CurvesV2Service: {ex.Message}");
+					}
+					finally
+					{
+						curvesService = null;
+					}
 				}
-				catch (Exception ex)
+				else
 				{
-					Print($"Error disposing CurvesV2Service: {ex.Message}");
+					Print("2. No active CurvesV2Service instance to dispose");
 				}
-				finally
-				{
-					curvesService = null;
-				}
+				
+				// 3. (Removed WebSocket handling since it's in the service dispose method)
+				
+				// 4. Clear local collections
+				Print("4. Clearing local collections");
+				CurrentBullStrength = 0;
+				CurrentBearStrength = 0;
+				
+				// 5. (Removed ProcessQueue setting since we're now using fire-and-forget)
+				
+				// 6. Force garbage collection to clean up lingering resources
+				Print("6. Running aggressive garbage collection");
+				GC.Collect(2, GCCollectionMode.Forced);
+				GC.WaitForPendingFinalizers();
+				
+				Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
+				terminatedStatePrinted = true;
 			}
-			else
-			{
-				Print("2. No active CurvesV2Service instance to dispose");
-			}
-			
-			// 3. (Removed WebSocket handling since it's in the service dispose method)
-			
-			// 4. Clear local collections
-			Print("4. Clearing local collections");
-			CurrentBullStrength = 0;
-			CurrentBearStrength = 0;
-			
-			// 5. (Removed ProcessQueue setting since we're now using fire-and-forget)
-			
-			// 6. Force garbage collection to clean up lingering resources
-			Print("6. Running aggressive garbage collection");
-			GC.Collect(2, GCCollectionMode.Forced);
-			GC.WaitForPendingFinalizers();
-			
-			Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
-			Print("Calling base.OnStateChange() for Terminated state");
 		}
 	}
 
@@ -291,7 +303,7 @@ public partial class CurvesStrategy : MainStrategy
 		
 		if(CurrentBars[0] < BarsRequiredToTrade)
 		{
-			Print($"{CurrentBars[0]} < {BarsRequiredToTrade}");
+			//Print($"{CurrentBars[0]} < {BarsRequiredToTrade}");
 			FRS = FunctionResponses.NoAction;
 			return FRS;
 		}
@@ -300,6 +312,8 @@ public partial class CurvesStrategy : MainStrategy
 			FRS = FunctionResponses.NoAction;
 			return FRS;
 		}
+		
+		
 		// Check if we're enabled to accept signals
 		//if (!SignalExchangeManager.IsAcceptingEnabled(Name, Instrument.FullName))
 		//{
@@ -311,7 +325,7 @@ public partial class CurvesStrategy : MainStrategy
 		// If confluence is 0, the other instrument doesn't exist, allow trading
 		// If confluence is 1, both instruments agree, allow trading
 		
-
+		Print($"Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
 		TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
 		/// dont run more than 1 time every 30 sec
 	
@@ -328,10 +342,9 @@ public partial class CurvesStrategy : MainStrategy
 			if ((GetMarketPositionByIndex(0) != MarketPosition.Flat && canScaleInAgg) || (GetMarketPositionByIndex(0) == MarketPosition.Flat))
 			{
 
-			
-				
-				if(CurrentBullStrength > CurrentBearStrength * 2)
+				if(CurrentBullStrength > CurrentBearStrength * 2 && CurrentBullStrength > 75)
 				{
+					
 					Print($"MICROSTRATEGY LONG Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
 					forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
 
@@ -348,7 +361,7 @@ public partial class CurvesStrategy : MainStrategy
 						//}
 					
 				}
-				if(CurrentBearStrength > CurrentBullStrength * 2 )
+				if(CurrentBearStrength > CurrentBullStrength* 2 && CurrentBearStrength > 75)
 				{
 					Print($"MICROSTRATEGY SHORT Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
 					forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
@@ -378,6 +391,7 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
+	
 		try
 		{
 			// Skip processing if service isn't available
@@ -388,17 +402,19 @@ public partial class CurvesStrategy : MainStrategy
 				return;
 			}
 			
+			
 			bool isConnected = curvesService.IsConnected;
 				
+			
+			
+			
 			if (BarsInProgress != 0) return;
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
 			
 			// Log connection status periodically
-			if (CurrentBars[0] % 10 == 0) // Log every 10 bars
-				//NinjaTrader.Code.Output.Process($"isConnected = {isConnected} , OnBarUpdate: Bar={CurrentBar}, Time={Time[0]}", PrintTo.OutputTab1);
 			
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
-			if (isConnected)
+			if (isConnected && BarsInProgress == 0)
 			{
 				// Extract instrument code
 				string instrumentCode = GetInstrumentCode();
@@ -414,15 +430,17 @@ public partial class CurvesStrategy : MainStrategy
 					Volume[0],
 					IsInStrategyAnalyzer ? "backtest" : "1m"
 				);
-				
+				Print($"{Time[0]} : barSent {barSent}");
 				// 2. Simple, direct signal check - fire and forget  
 				if (barSent)
 				{
-					curvesService.CheckSignalsFireAndForget(instrumentCode);
+					Print($"{Time[0]} : Check Signal");
+					curvesService.CheckSignalsFireAndForget(Time[0].ToString(),instrumentCode);
 				}
 				
 				// 3. Read current signals from static properties
 				UpdateLocalSignalData();
+			
 			}
 			
 		}

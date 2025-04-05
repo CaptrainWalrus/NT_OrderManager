@@ -414,7 +414,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				Description									= @"Management of order handling and responses to entry signals, logic for exits";
 				Name										= "OrganizedStrategy_MainStrategy";
-				Calculate									= Calculate.OnPriceChange;
+				Calculate									= Calculate.OnBarClose;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
 				IsExitOnSessionCloseStrategy				= true;
@@ -520,7 +520,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			else if (State == State.Configure)
 			{
 				ClearOutputWindow();
-				Print("BEGIN CONFIGURE");
 				
 				// Core series initialization (no Python)        
 				//restingSeries = new Series<double>(this);
@@ -550,7 +549,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            
 	            if (IsInStrategyAnalyzer)
 	            {
-	                AddDataSeries(Instrument.FullName, BarsPeriodType.Second, 10);
+	                AddDataSeries(Instrument.FullName, BarsPeriodType.Second, 30);
 	            }
 	         
 			}
@@ -616,118 +615,55 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 				
 			
-		    // Now, smallestBarsInProgress contains the BarsInProgress for the smallest minute value series
-		    // You can use this information to execute specific code for the smallest minute series
-			  // Specify the file path from where you want to load the XML file
-	                // Initialize StartDate and EndDate based on the performance data
-			
- 			//stores the sessions once bars are ready, but before OnBarUpdate is called
-    		sessionIterator = new SessionIterator(Bars);
-		
-		
-			
-			}
-			else if (State == State.Realtime)
-		    {
-				isRealTime = true;
-				MasterSimulatedStops.Clear();
-				MasterSimulatedEntries.Clear();
-				/// Flatten the position if it's not already flat
-				if (Position.MarketPosition != MarketPosition.Flat)
-				{
-				    //Print("Flattening position before real-time trading starts.");
-				    ExitActiveOrders(ExitOrderType.ASAP_Other,signalExitAction.FE_EXIT3,false);
-				}		
+			    // Now, smallestBarsInProgress contains the BarsInProgress for the smallest minute value series
+			    // You can use this information to execute specific code for the smallest minute series
+				  // Specify the file path from where you want to load the XML file
+		                // Initialize StartDate and EndDate based on the performance data
 				
+	 			//stores the sessions once bars are ready, but before OnBarUpdate is called
+	    		sessionIterator = new SessionIterator(Bars);
 				/// threading
-				StartOrderObjectStatsThread();
-				
-				
-			}
-			else if (State == State.Historical)
-			{
-				///threads
-				
-
+					StartOrderObjectStatsThread();
 			
-			}
-			
-			else if (State == State.Terminated)
-			{
-			
-				/// threads
-				Print("State == State.Terminated");
-				StopOrderObjectStatsThread();
-       	
 				
-				if(IsInStrategyAnalyzer && CurrentBars[0] > 0)
-				{
-					
-					DebugPrint(debugSection.Terminated,"Terminated 2 ");
-					if(isTerminatedPrintOut == false)
+				}
+				else if (State == State.Realtime)
+			    {
+					isRealTime = true;
+					MasterSimulatedStops.Clear();
+					MasterSimulatedEntries.Clear();
+					/// Flatten the position if it's not already flat
+					if (Position.MarketPosition != MarketPosition.Flat)
 					{
-						List<string> patternsToAppend = new List<string>();
-
-						Print("T3");
-						Print("Instrument "+Instrument.FullName);
-						
-					    Print("Lowest PNL = "+lowest_PNL);
-
-						if( IsInStrategyAnalyzer) Print("End Cash Value $"+ virtualCashAccount);
-						Print("Pattern Stats: ");
-						
-						Print("/////////// OrderFlowPatterns //////////");
-						// Prepare the container to hold all patterns
-						var container = new OrderFlowPatternTrailContainer();
-						Print("-------STOPS STATS ------------------");
-						//var sortedByKeys = PatternObject.similarityCounter.OrderBy(kvp => kvp.Key);
-						if(MasterSimulatedStops.Count() > 0)
-						{
-							foreach(simulatedStop simStop in MasterSimulatedStops) 
-							{	
-							
-								Print($"STOP : {simStop.EntryOrderUUID} > {simStop.ExitOrderUUID} > ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit}");
-							}
-							
-						}
+					    //Print("Flattening position before real-time trading starts.");
+					    ExitActiveOrders(ExitOrderType.ASAP_Other,signalExitAction.FE_EXIT3,false);
+					}		
 					
-						if(patternsToAppend.Count() > 0)
-						{
-							
-						}
-						
-						
-						double profitLoss = 0;
-						int count = 0;
-						Print("-------LOSERS ------------------");
-						
-						
-						foreach(var OFV in OrderFlowPatternATH)
-						{
-							
-							OrderFlowPattern OF = OFV.Value;
-							if(OF.trackedProfitability < 0)
-							{
-								profitLoss +=OF.trackedProfitability;
-								count++;
-							}
-							
-							
-						}
-	
-						
-			
+				
+					
+					
 				}
-				DebugPrint(debugSection.Terminated,"Terminated 5 ");
-				isTerminatedPrintOut = true;
+				else if (State == State.Historical)
+				{
+					///threads
+					/// threading
+	
+				
 				}
 				
-			
-				}}
-				catch (Exception ex)
+				else if (State == State.Terminated)
 				{
-				    Print("Error in OnStateChange during " + State.ToString() + ": " + ex.Message + " StackTrace: " + ex.StackTrace);
+				
+					/// threads
+					Print("State == State.Terminated");
+					StopOrderObjectStatsThread();
+	       	
 				}
+			}
+			catch (Exception ex)
+			{
+			    Print("Error in OnStateChange during " + State.ToString() + ": " + ex.Message + " StackTrace: " + ex.StackTrace);
+			}
 			
 			
 		}
@@ -1110,7 +1046,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			int totalAccountQuantity = getAllcustomPositionsCombined();
 			
 			
-			
+			if(BarsInProgress == 1)
+			{
+				// Add these two lines:
+			    SignalBackgroundCheck(); // Signal the background thread to check stops
+			    ProcessStatsQueue();     // Process any pending updates to collections
+			}
 						
 			
 			///get entry signals
@@ -1205,7 +1146,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							
 					        if (!isRealTime) 
 					        { //  
-					            Print(Time[0] + " SIGNAL (" + thisSignalPackage.SignalReturnAction.SignalName + ") BULL SIGNAL");
+					            //Print(Time[0] + " SIGNAL (" + thisSignalPackage.SignalReturnAction.SignalName + ") BULL SIGNAL");
 					        }
 					        
 					    }
@@ -1213,7 +1154,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					    {
 					        if (!isRealTime) 
 					        {
-					            Print(Time[0] + " SIGNAL (" + thisSignalPackage.SignalReturnAction.SignalName + ") BEAR SIGNAL");
+					            //Print(Time[0] + " SIGNAL (" + thisSignalPackage.SignalReturnAction.SignalName + ") BEAR SIGNAL");
 					        }
 					       
 					    }
