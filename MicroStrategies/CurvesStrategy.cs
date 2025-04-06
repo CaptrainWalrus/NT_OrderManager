@@ -17,12 +17,27 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	using System.Threading.Tasks;
 	using Newtonsoft.Json;
 	using System.Collections.Concurrent;
+	using System.Xml.Serialization;
 
 public partial class CurvesStrategy : MainStrategy
 {
-	// Restore essential service reference declaration
+	// Mark non-serializable fields with XmlIgnore
+	[XmlIgnore]
 	private CurvesV2Service curvesService;
+	
+	[XmlIgnore]
 	private bool somethingWasConnected;
+	
+	// Make properties fully public or XmlIgnore if they shouldn't be serialized
+	[XmlIgnore]
+	public double CurrentBullStrength { get; set; } 
+	
+	[XmlIgnore]
+	public double CurrentBearStrength { get; set; } 
+	
+	[XmlIgnore]
+	private bool terminatedStatePrinted = false;
+	
 	// Comment out most custom fields
 	// private readonly TimeSpan updateInterval = TimeSpan.FromMilliseconds(100);
 	// private DateTime lastUpdate = DateTime.MinValue;
@@ -31,8 +46,6 @@ public partial class CurvesStrategy : MainStrategy
 	// private bool isProcessingQueue;
 	// private Dictionary<string, double> signalStrengths = new Dictionary<string, double>();
 	// private Dictionary<string, DateTime> lastSignalTimes = new Dictionary<string, DateTime>();
-	 public double CurrentBullStrength { get; private set; } 
-	 public double CurrentBearStrength { get; private set; } 
 	// public static double CurrentResistance { get; private set; } 
 	// public static double CurrentSupport { get; private set; }
 	// public static double ConfluencePair { get; private set; }
@@ -47,7 +60,7 @@ public partial class CurvesStrategy : MainStrategy
 	// public bool historicalSync = false;
 	// private DateTime backtestStartTime; 
 	// private DateTime? firstBarTime; 
-	private bool terminatedStatePrinted = false;
+
 	// Restore NinjaScript Properties
 	[NinjaScriptProperty]    
 	[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
@@ -65,7 +78,8 @@ public partial class CurvesStrategy : MainStrategy
 	[Display(Name="Iniitialize Curves API", Order=2, GroupName="Class Parameters")]
 	public bool InitCurvesAPI { get; set; }
 
-	// Restore Signal class definition
+	// Make the Signal class serializable
+	[Serializable]
 	public class Signal
 	{
 		public string type { get; set; }
@@ -143,7 +157,8 @@ public partial class CurvesStrategy : MainStrategy
 				
 				curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
 				
-				curvesService.sessionID = GenerateSignalId();
+				// Use a simple GUID instead of the previous GenerateSignalId method
+				curvesService.sessionID = Guid.NewGuid().ToString();
 				
 				Print("CurvesV2Service Initialized (async connection pending).");
 				}
