@@ -246,6 +246,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				                Print($"{Time[0]} Force exit flagged for {order.EntryOrderUUID} at profit: {profit}");
 								
 				            }
+							else if(order.EntryOrder.OrderAction == OrderAction.Buy && profit > SoftTakeProfit && CurrentBearStrength > CurrentBullStrength * 4)
+							{
+								 order.OrderSupplementals.forceExit = true;
+								
+								order.OrderSupplementals.thisSignalExitAction = signalExitAction.PBL;				
+							}
+							else if(order.EntryOrder.OrderAction == OrderAction.SellShort && profit > SoftTakeProfit && CurrentBullStrength > CurrentBearStrength * 4)
+							{
+								 order.OrderSupplementals.forceExit = true;
+								
+				                order.OrderSupplementals.thisSignalExitAction = signalExitAction.PBS;
+				
+							}
+								
 
 						}
 						
@@ -316,7 +330,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							            simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
 							            Print($"{Time[0]}  SELL {simStop.OrderRecordMasterLite.ExitOrderUUID} to Close {simStop.OrderRecordMasterLite.EntryOrderUUID} at {thisSignalExitAction} PROFIT ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit} ");
 										
-										//SubmitOrderUnmanaged(instrumentSeriesIndex, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.OrderRecordMasterLite.EntryOrderUUID, simStop.OrderRecordMasterLite.ExitOrderUUID);
+										SubmitOrderUnmanaged(1, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.OrderRecordMasterLite.EntryOrderUUID, simStop.OrderRecordMasterLite.ExitOrderUUID);
+										openOrderTest += simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+										
 										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 							      		simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
 										Print("Enqueue MastersimulatedStopToDelete");
@@ -333,6 +349,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							            simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
 										Print($"{Time[0]} BUYTOCOVER {simStop.OrderRecordMasterLite.ExitOrderUUID} to Close {simStop.OrderRecordMasterLite.EntryOrderUUID} at {thisSignalExitAction} PROFIT ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit}  ");								
 							       
+										SubmitOrderUnmanaged(1, OrderAction.BuyToCover, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.OrderRecordMasterLite.EntryOrderUUID, simStop.OrderRecordMasterLite.ExitOrderUUID);
+										openOrderTest += simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+										
 										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 										simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
 										Print("Enqueue MastersimulatedStopToDelete");

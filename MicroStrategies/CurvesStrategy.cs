@@ -29,11 +29,7 @@ public partial class CurvesStrategy : MainStrategy
 	private bool somethingWasConnected;
 	
 	// Make properties fully public or XmlIgnore if they shouldn't be serialized
-	[XmlIgnore]
-	public double CurrentBullStrength { get; set; } 
-	
-	[XmlIgnore]
-	public double CurrentBearStrength { get; set; } 
+
 	
 	[XmlIgnore]
 	private bool terminatedStatePrinted = false;
@@ -300,109 +296,9 @@ public partial class CurvesStrategy : MainStrategy
 			}
 		}
 	}
-
-	// Helper methods remain commented out
-	/*
-	private void InitializeCurvesV2()
-	{
-		// ... (keep commented out) ...
-	}
-	*/
-
-	// Restore BuildNewSignal method definition
-	protected override FunctionResponses BuildNewSignal()
-	{
-	
-		
-		FunctionResponses FRS = FunctionResponses.NoAction;
-		
-		if(CurrentBars[0] < BarsRequiredToTrade)
-		{
-			//Print($"{CurrentBars[0]} < {BarsRequiredToTrade}");
-			FRS = FunctionResponses.NoAction;
-			return FRS;
-		}
-		if(BarsInProgress != 0)
-		{
-			FRS = FunctionResponses.NoAction;
-			return FRS;
-		}
-		
-		
-		// Check if we're enabled to accept signals
-		//if (!SignalExchangeManager.IsAcceptingEnabled(Name, Instrument.FullName))
-		//{
-		//	Print("Is NOT AcceptingEnabled");
-		//	return FunctionResponses.NoAction;
-		//}
-
-		// If confluence is -1, there's a conflict between ES and NQ, don't trade
-		// If confluence is 0, the other instrument doesn't exist, allow trading
-		// If confluence is 1, both instruments agree, allow trading
-		
-		Print($"Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
-		TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
-		/// dont run more than 1 time every 30 sec
-	
-		if (getAllcustomPositionsCombined() < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
-		{
-			//if(CurrentSupport != 0) Draw.Dot(this,"CurrentSupport"+CurrentBars[0],true,0,CurrentSupport,Brushes.Lime);
-			//if(CurrentResistance != 0) Draw.Dot(this,"CurrentResistance"+CurrentBars[0],true,0,CurrentResistance,Brushes.Red);
-			//if(CurrentSupport != 0) Draw.HorizontalLine(this,"CurrentSupport",CurrentSupport,Brushes.Lime);
-			//if(CurrentResistance != 0) Draw.HorizontalLine(this,"CurrentResistance",CurrentResistance,Brushes.Red);
-			
-			bool canScaleInAgg = CalculateTotalOpenPositionProfit() > (scaleInRisk);
-			double microInstrumentOpenProfit = CalculateTotalOpenPositionProfitForInstrument(1);
-
-			if ((GetMarketPositionByIndex(0) != MarketPosition.Flat && canScaleInAgg) || (GetMarketPositionByIndex(0) == MarketPosition.Flat))
-			{
-
-				if(CurrentBullStrength > CurrentBearStrength * 2 && CurrentBullStrength > 75)
-				{
-					
-					Print($"MICROSTRATEGY LONG Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
-					forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
-
-						//if(LastBullStrength != CurrentBullStrength)
-						//{
-							
-						//	LastBullStrength = CurrentBullStrength;
-							
-							ThrottleAll = Times[BarsInProgress][0];
-							FRS = FunctionResponses.EnterLong;
-							
-							return FRS;
-						
-						//}
-					
-				}
-				if(CurrentBearStrength > CurrentBullStrength* 2 && CurrentBearStrength > 75)
-				{
-					Print($"MICROSTRATEGY SHORT Bull: {CurrentBullStrength}, Bear: {CurrentBearStrength}");
-					forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
-						//if(LastBearStrength != CurrentBearStrength)
-						//{
-							
-
-						//	LastBearStrength = CurrentBearStrength;
-							 
-							//
-							ThrottleAll = Times[BarsInProgress][0];
-							FRS = FunctionResponses.EnterShort;
-							
-							return FRS;
-						//}
-					
-				}
-			}
-		}
-						
-		FRS = FunctionResponses.NoAction;
-		return FRS;
-	}
-	// Keep ProcessSignal commented out
-	// private void ProcessSignal(dynamic signal) { ... }
-
+	////////////////////////////
+	//////////////////////////// ON BAR UPDATE
+	////////////////////////////
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
@@ -445,11 +341,11 @@ public partial class CurvesStrategy : MainStrategy
 					Volume[0],
 					IsInStrategyAnalyzer ? "backtest" : "1m"
 				);
-				Print($"{Time[0]} : barSent {barSent}");
+				//Print($"{Time[0]} : barSent {barSent}");
 				// 2. Simple, direct signal check - fire and forget  
 				if (barSent)
 				{
-					Print($"{Time[0]} : Check Signal");
+					//Print($"{Time[0]} : Check Signal");
 					curvesService.CheckSignalsFireAndForget(Time[0].ToString(),instrumentCode);
 				}
 				
@@ -464,6 +360,70 @@ public partial class CurvesStrategy : MainStrategy
 			NinjaTrader.Code.Output.Process($"Error in OnBarUpdate: {ex.Message}", PrintTo.OutputTab1); 
 		}
 	}
+	// Fix BuildNewSignal to actually return entry signals
+	protected override FunctionResponses BuildNewSignal()
+	{
+	    FunctionResponses FRS = FunctionResponses.NoAction;
+	    
+	    if(CurrentBars[0] < BarsRequiredToTrade)
+	    {
+	        return FRS;
+	    }
+	    if(BarsInProgress != 0)
+	    {
+	        return FRS;
+	    }
+	    
+	    // Calculate total positions and working orders
+	    int totalPositions = getAllcustomPositionsCombined();
+	    
+	    // Debug output for diagnostic purposes
+	    if (CurrentBars[0] % 20 == 0)
+	    {
+	        Print($"Position check: totalPositions={totalPositions}, accountMaxQuantity={accountMaxQuantity}");
+	    }
+	    
+	    // Check if we have room for more positions
+	    TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
+	    
+	    // Critical safety limit - don't allow more than the max quantity
+	    if (totalPositions >= accountMaxQuantity )
+	    {
+	        Print($"*** SAFETY HALT - Position limit reached: positions={totalPositions},  max={accountMaxQuantity}");
+	        return FunctionResponses.NoAction;
+	    }
+	    
+	    // Regular position check with throttle timing
+	    if (totalPositions < accountMaxQuantity && 
+	        timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
+	    {
+	        // Signal detection logic
+	        if(CurrentBullStrength > CurrentBearStrength * 2 && CurrentBullStrength > 75)
+	        {
+	            Print($"LONG SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
+	            //forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
+	            forceDrawDebug($"{totalPositions}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
+
+	            ThrottleAll = Times[BarsInProgress][0];
+	            return FunctionResponses.EnterLong; // Actually return signal instead of NoAction
+	        }
+	        
+	        if(CurrentBearStrength > CurrentBullStrength * 2 && CurrentBearStrength > 75)
+	        {
+	            Print($"SHORT SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
+	            //forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
+	            forceDrawDebug($"{totalPositions}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
+	            ThrottleAll = Times[BarsInProgress][0];
+	            return FunctionResponses.EnterShort; // Actually return signal instead of NoAction
+	        }
+	    }
+	    
+	    return FunctionResponses.NoAction;
+	}
+	// Keep ProcessSignal commented out
+	// private void ProcessSignal(dynamic signal) { ... }
+
+	
 
 	// Keep the original methods but don't use them
 	private void ProcessBarData() 

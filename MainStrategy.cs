@@ -51,7 +51,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	[Gui.CategoryOrder("Entry Types", 15)]
 	public partial class MainStrategy : Strategy
 	{
+		public int openOrderTest = 0;
+		[XmlIgnore]
+		public double CurrentBullStrength { get; set; } 
 		
+		[XmlIgnore]
+		public double CurrentBearStrength { get; set; } 
 		
 		public string contract;
 		/// threads
@@ -850,7 +855,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                simStop.OrderRecordMasterLite.EntryOrderUUID,
 					                simStop.OrderRecordMasterLite.ExitOrderUUID
 					            );
-					
 					            // Reset the flag to prevent duplicate submissions
 					            simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = false;
 					
@@ -1540,7 +1544,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			}
 			else if(IsUnmanaged == true)
 			{
-				totalAccountQuantity = GetPositionCountByIndex(1)+GetPositionCountByIndex(5);
+				//Print($"getAllcustomPositionsCombined : {GetPositionCountByIndex(0)} + {GetPositionCountByIndex(1)}");
+				totalAccountQuantity = GetPositionCountByIndex(0) + GetPositionCountByIndex(1);
 			}
 		
 		    /// Return the total combined quantity

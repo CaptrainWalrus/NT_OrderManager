@@ -37,7 +37,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 		try
 		{
-		Print(tryCatchSection);
+		//Print(tryCatchSection);
 		
 		// Usage in your logic
 		/// eg instrument 3L
@@ -64,7 +64,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					string exitUUID = uuid+"_Exit"+"_series_"+signalPackageParam.instrumentSeriesIndex;
 					
 
-					Print($"BarsInProgress {BarsInProgress} BAR: {CurrentBars[BarsInProgress]}  TIME{Time[0]}, EntryLimitFunctionLite entryUUID created {entryUUID}");
+					//Print($"BarsInProgress {BarsInProgress} BAR: {CurrentBars[BarsInProgress]}  TIME{Time[0]}, EntryLimitFunctionLite entryUUID created {entryUUID}");
 			
 					tryCatchSection = "Section 3b Order Management Lite ";
 					
@@ -171,13 +171,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					//Print("Storing "+entryUUID);
 					if(OrderRecordMasterLiteEntrySignals.ContainsKey(entryUUID))
 					{
-						Print("OrderRecordMasterLiteEntrySignals EntryUUID stored: "+entryUUID);
+						//Print("OrderRecordMasterLiteEntrySignals EntryUUID stored: "+entryUUID);
 						
 					}
 					
 					if(MasterSimulatedEntries.Contains(orderSupplementals.SimulatedEntry))
 					{
-						Print("MasterSimulatedEntries EntryUUID stored: "+orderSupplementals.SimulatedEntry.EntryOrderUUID);
+						//Print("MasterSimulatedEntries EntryUUID stored: "+orderSupplementals.SimulatedEntry.EntryOrderUUID);
 						
 					}
 					

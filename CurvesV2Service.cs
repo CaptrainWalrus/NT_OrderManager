@@ -863,7 +863,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return false; 
                 }
 
-                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Sending GET to {endpoint} (Blocking)");
+                //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Sending GET to {endpoint} (Blocking)");
                 
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) 
                 {
@@ -881,7 +881,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     if (signalResponse != null && signalResponse.success)
                     {
-                        Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Parsed success for {instrument}");
+                        //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Parsed success for {instrument}");
                         if (signalResponse.signals != null)
                         {                                    
                             //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Updating signals for {instrument}...");
@@ -890,7 +890,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                             LastSignalTimestamp = DateTime.Now; 
                             CurrentMatches = signalResponse.signals.matches ?? new List<PatternMatch>();
                             PatternName = CurrentMatches.Count > 0 ? (CurrentMatches[0]?.patternName ?? "No Pattern") : "No Pattern";
-                            Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
+                            //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
 			                return true;
 			            }
 			            else
@@ -1172,7 +1172,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     using (var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                     {
                         timeoutCts.CancelAfter(15000); // 15 second timeout
-                        NinjaTrader.Code.Output.Process($"PollSignalsAsync: Sending GET request to {endpoint}", PrintTo.OutputTab1);
+                       // NinjaTrader.Code.Output.Process($"PollSignalsAsync: Sending GET request to {endpoint}", PrintTo.OutputTab1);
                         response = await client.GetAsync(endpoint, timeoutCts.Token);
                         NinjaTrader.Code.Output.Process($"PollSignalsAsync: Received response status {response.StatusCode}", PrintTo.OutputTab1);
                     }

@@ -272,6 +272,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			{
 				if ((order.OrderAction == OrderAction.Buy || order.OrderAction == OrderAction.SellShort) && order.OrderState == OrderState.Filled)
 				{
+					openOrderTest++;
 					if(debugOrderPrints) Print($" RECIEVED customOnOrderUpdate for {order.Name} , {order.OrderAction}-{order.OrderState}");
 					
 					tryCatchSection = "customOnOrderUpdate 1";
@@ -318,6 +319,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				else if ((order.OrderAction == OrderAction.Sell || order.OrderAction == OrderAction.BuyToCover) && order.OrderState == OrderState.Filled)
 				{
 				   
+						
+					
+					 // Extra safety check - recreate counter if needed
+					    
 					
 		              	if(debugOrderPrints) Print($" RECIEVED customOnOrderUpdate for {order.Name} , {order.OrderAction}-{order.OrderState}");
 
@@ -396,6 +401,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			            }
 			        }
 			    }
+			   
+			   
 				
 			}
 			catch (Exception ex)
@@ -1321,7 +1328,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 
 	
-
+	///  nonstandard exits: EOSC, OOM, etc
 	protected void ExitActiveOrders(ExitOrderType exitOrderType, signalExitAction exitSignalAction, bool reEnter)
 	{
 	    lastFunction = "ExitActiveOrders";
@@ -1343,10 +1350,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		            if (orderRecordMaster.EntryOrder.OrderAction == OrderAction.Buy && orderRecordMaster.OrderSupplementals.SimulatedStop.isExitReady == true)
 		            {
 		                orderRecordMaster.OrderSupplementals.thisSignalExitAction = exitSignalAction;
-					    if(debugOrderPrints) Print($"{CurrentBars[0]} > EXIT ACTIVE ORDERS (SELL) : Series Index: {seriesIndex}, EntryUUID: {orderRecordMaster.EntryOrderUUID}, ExitUUID: {orderRecordMaster.ExitOrderUUID} DailyProfit {unrealizedDailyProfit}");
+					    //if(debugOrderPrints) Print($"{CurrentBars[0]} > EXIT ACTIVE ORDERS (SELL) : Series Index: {seriesIndex}, EntryUUID: {orderRecordMaster.EntryOrderUUID}, ExitUUID: {orderRecordMaster.ExitOrderUUID} DailyProfit {unrealizedDailyProfit}");
 		
+						OrderAction determinedExitAction = (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long) ? OrderAction.Sell : OrderAction.BuyToCover;
+						string exitSignalName = orderRecordMaster.ExitOrderUUID + "_Exit";
+						
+						Print($"DEBUG ExitActiveOrders: Exiting {GetMarketPositionByIndex(1)}/{GetMarketPositionByIndex(0)}  for EntryUUID {orderRecordMaster.EntryOrderUUID}. Submitting Action: {determinedExitAction}, Name: {exitSignalName}");
+						
 		                SubmitOrderUnmanaged(
-		                    seriesIndex,
+		                    1,
 		                    OrderAction.Sell,
 		                    OrderType.Market,
 		                    orderRecordMaster.EntryOrder.Quantity,
@@ -1355,6 +1367,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		                    orderRecordMaster.EntryOrderUUID+" exit ",
 		                    orderRecordMaster.ExitOrderUUID
 		                );
+						
 						orderRecordMaster.OrderSupplementals.SimulatedStop.isExitReady = false;
 		            }
 		            // Handle Short Positions
@@ -1364,7 +1377,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		                  if(debugOrderPrints) Print($"{CurrentBars[0]} > EXIT ACTIVE ORDERS (BUYTOCOVER) : Series Index: {seriesIndex}, EntryUUID: {orderRecordMaster.EntryOrderUUID}, ExitUUID: {orderRecordMaster.ExitOrderUUID}");
 		                SubmitOrderUnmanaged(
-		                    seriesIndex,
+		                    1,
 		                    OrderAction.BuyToCover,
 		                    OrderType.Market,
 		                    orderRecordMaster.EntryOrder.Quantity,
