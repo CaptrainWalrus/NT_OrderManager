@@ -22,8 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 public partial class CurvesStrategy : MainStrategy
 {
 	// Mark non-serializable fields with XmlIgnore
-	[XmlIgnore]
-	private CurvesV2Service curvesService;
+	
 	
 	[XmlIgnore]
 	private bool somethingWasConnected;
@@ -66,13 +65,8 @@ public partial class CurvesStrategy : MainStrategy
 	[Display(Name="Stream Historical Data", Order=2, GroupName="Class Parameters")]
 	public bool HistoricalData { get; set; }
 
-	[NinjaScriptProperty]    
-	[Display(Name="Use Direct Synchronous Processing", Order=1, GroupName="Class Parameters")]
-	public bool UseDirectSync { get; set; }
-	
-	[NinjaScriptProperty]    
-	[Display(Name="Iniitialize Curves API", Order=2, GroupName="Class Parameters")]
-	public bool InitCurvesAPI { get; set; }
+
+	private int stopTest = 0;
 
 	// Make the Signal class serializable
 	[Serializable]
@@ -138,105 +132,7 @@ public partial class CurvesStrategy : MainStrategy
 		{   
 			Print("CurvesStrategy.OnStateChange: Handling State.DataLoaded");
 			// Initialize the service asynchronously
-			Print("Initializing CurvesV2 connection (async)...");
-			try 
-			{ 
-				Print($"Initializing CurvesAPI = {InitCurvesAPI}");
-
-				if(InitCurvesAPI)
-				{
-				var config = ConfigManager.Instance.CurvesV2Config; 
-				
-				// Set synchronous mode in config
-				config.EnableSyncMode = UseDirectSync;
-				Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
-				
-				curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
-				
-				// Use a simple GUID instead of the previous GenerateSignalId method
-				curvesService.sessionID = Guid.NewGuid().ToString();
-				
-				Print("CurvesV2Service Initialized (async connection pending).");
-				}
-				// Establish connection after initialization
-				if (UseDirectSync)
-				{
-					Print("Attempting to establish connection immediately...");
-					
-					// Create a task to connect with a timeout
-					var connectTask = Task.Run(async () => {
-						try 
-						{
-							// Connect to the WebSocket first
-							bool wsConnected = await curvesService.ConnectWebSocketAsync();
-							
-							if (wsConnected)
-							{
-								Print("WebSocket connection established successfully");
-								return true;
-							}
-
-							// If WebSocket fails, try the health check
-							bool healthy = await curvesService.CheckHealth();
-							return healthy;
-						}
-						catch (Exception ex)
-						{
-							Print($"Connection check failed: {ex.Message}");
-							return false;
-						}
-					});
-					
-					// Set a reasonable timeout for connection
-					bool connected = false;
-					try
-					{
-						// Wait up to 15 seconds for connection (increased from 10)
-						if (connectTask.Wait(15000))
-						{
-							connected = connectTask.Result;
-							if (connected)
-							{
-								Print("Connection established successfully");
-							}
-							else
-							{
-								Print("Connection check failed - server may be unavailable");
-							}
-						}
-						else
-						{
-							Print("Connection timeout after 15 seconds");
-						}
-					}
-					catch (Exception ex)
-					{
-						Print($"Error during connection: {ex.Message}");
-					}
-					
-					// In backtest mode, continue even without connection
-					if (!connected && IsInStrategyAnalyzer)
-					{
-						// Check if WebSocket is actually connected despite health check failure
-						bool wsConnected = curvesService?.IsWebSocketConnected() ?? false;
-						
-						if (wsConnected)
-						{
-							Print("WebSocket is connected - proceeding with backtest");
-							connected = true;
-						}
-						else
-						{
-							Print("WARNING: Starting backtest with no server connection - using local data only");
-						}
-					}
-				}
-			}
-			catch (Exception ex)
-			{   
-				Print($"ERROR initializing CurvesV2Service: {ex.Message}");
-				curvesService = null; 
-			}
+			
 		
 
 		}
@@ -251,31 +147,7 @@ public partial class CurvesStrategy : MainStrategy
 		{
 			if(terminatedStatePrinted==false)
 			{
-				// 1. Reset static data in CurvesV2Service
-				Print("1. Resetting all static data in CurvesV2Service");
-				CurvesV2Service.ResetStaticData();
 				
-				// 2. Properly dispose of the CurvesV2Service instance
-				if (curvesService != null)
-				{
-					try 
-					{
-						Print("2. Disposing CurvesV2Service instance");
-						curvesService.Dispose();
-					}
-					catch (Exception ex)
-					{
-						Print($"Error disposing CurvesV2Service: {ex.Message}");
-					}
-					finally
-					{
-						curvesService = null;
-					}
-				}
-				else
-				{
-					Print("2. No active CurvesV2Service instance to dispose");
-				}
 				
 				// 3. (Removed WebSocket handling since it's in the service dispose method)
 				
@@ -302,7 +174,7 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
-	
+		
 		try
 		{
 			// Skip processing if service isn't available
@@ -321,15 +193,14 @@ public partial class CurvesStrategy : MainStrategy
 			
 			if (BarsInProgress != 0) return;
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
-			
 			// Log connection status periodically
-			
+			CurvesV2Service.CurrentContextId = null;
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
 			if (isConnected && BarsInProgress == 0)
 			{
 				// Extract instrument code
 				string instrumentCode = GetInstrumentCode();
-				
+			
 				// 1. Simple, direct send of bar data - fire and forget
 				bool barSent = curvesService.SendBarFireAndForget(
 					instrumentCode,
@@ -363,6 +234,7 @@ public partial class CurvesStrategy : MainStrategy
 	// Fix BuildNewSignal to actually return entry signals
 	protected override FunctionResponses BuildNewSignal()
 	{
+		//Print($"FunctionResponses Begin: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
 	    FunctionResponses FRS = FunctionResponses.NoAction;
 	    
 	    if(CurrentBars[0] < BarsRequiredToTrade)
@@ -397,25 +269,26 @@ public partial class CurvesStrategy : MainStrategy
 	    if (totalPositions < accountMaxQuantity && 
 	        timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 	    {
-	        // Signal detection logic
-	        if(CurrentBullStrength > CurrentBearStrength * 2 && CurrentBullStrength > 75)
-	        {
-	            Print($"LONG SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-	            //forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
-	            forceDrawDebug($"{totalPositions}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
-
-	            ThrottleAll = Times[BarsInProgress][0];
-	            return FunctionResponses.EnterLong; // Actually return signal instead of NoAction
-	        }
-	        
-	        if(CurrentBearStrength > CurrentBullStrength * 2 && CurrentBearStrength > 75)
-	        {
-	            Print($"SHORT SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-	            //forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
-	            forceDrawDebug($"{totalPositions}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
-	            ThrottleAll = Times[BarsInProgress][0];
-	            return FunctionResponses.EnterShort; // Actually return signal instead of NoAction
-	        }
+			
+		        if( VWAP1[0] < EMA3[0] && CurrentBullStrength > CurrentBearStrength * 2 && CurrentBullStrength > .8 && GetMarketPositionByIndex(1) != MarketPosition.Short)
+		        {
+		            Print($"LONG SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
+		            //forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
+		            //forceDrawDebug($"{totalPositions}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
+	
+		            ThrottleAll = Times[BarsInProgress][0];
+		            return FunctionResponses.EnterLong; // Actually return signal instead of NoAction
+		        }
+		        
+		        if( VWAP1[0] > EMA3[0] &&CurrentBearStrength > CurrentBullStrength * 2 && CurrentBearStrength > .8 && GetMarketPositionByIndex(1) != MarketPosition.Long)
+		        {
+		            Print($"SHORT SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
+		            //forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
+		            //forceDrawDebug($"{totalPositions}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
+		            ThrottleAll = Times[BarsInProgress][0];
+		            return FunctionResponses.EnterShort; // Actually return signal instead of NoAction
+		        }
+			
 	    }
 	    
 	    return FunctionResponses.NoAction;
@@ -490,20 +363,7 @@ public partial class CurvesStrategy : MainStrategy
 		return sent;
 	}
 
-	// Restore ProcessSignals method definition
-	private void ProcessSignals(string instrumentCode)
-	{
-		// Skip if we're in terminated state
-		if (State == State.Terminated)
-		{
-			Print("ProcessSignals: State == State.Terminated - skipping signal processing");
-			return;
-		}
-
-		// In both backtest and live mode, simply update directly from CurvesV2Service
-		UpdateLocalSignalData();
-	}
-
+	
 	// Restore UpdateLocalSignalData method definition
 	private void UpdateLocalSignalData()
 	{

@@ -20,15 +20,17 @@ namespace NinjaTrader.NinjaScript.Strategies
     // CurvesV2 signal response format
     public class CurvesV2Response
     {
-        public bool success { get; set; }
-        public string instrument { get; set; }
-        public string timestamp { get; set; }
-        public SignalData signals { get; set; }
-        public string requestId { get; set; }
+	    public bool success { get; set; }
+	    public string instrument { get; set; }
+	    public double bullScore { get; set; } // Match API field name and type
+	    public double bearScore { get; set; } // Match API field name and type
+	    public string contextId { get; set; }
+	    public string timestamp { get; set; }
     }
 
     public class SignalData
     {
+		public string contextId { get; set; }
         public int bull { get; set; }
         public int bear { get; set; }
         public List<PatternMatch> matches { get; set; }
@@ -62,6 +64,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         public string status { get; set; }
     }
 
+    // Pattern performance timeline record for NinjaTrader to report trade outcomes
+    public class PatternPerformanceRecord
+    {
+        public string signalContextId { get; set; }
+        public long timestamp_ms { get; set; }
+        public long bar_timestamp_ms { get; set; }
+        public float outcome_score { get; set; }
+        public double pnl { get; set; }
+    }
+
     public class BarData
     {
         public long timestamp { get; set; }
@@ -87,6 +99,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         
     public class CurvesV2Service : IDisposable
     {
+        public static string CurrentContextId { get; set; }
 		public string sessionID;
         private readonly HttpClient client;
         private readonly string baseUrl;
@@ -94,6 +107,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool disposed = false;
         private readonly object disposeLock = new object();
         private readonly OrganizedStrategy.CurvesV2Config config;
+        
+        // Pattern performance timeline tracking
+        private readonly Dictionary<string, string> signalContextToEntryMap = new Dictionary<string, string>();
+        private readonly object signalContextLock = new object();
         
         // Add missing fields
         private bool IsDisposed() => disposed;
@@ -107,17 +124,20 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool webSocketConnected = false;
         
         // Static properties for signal data
-        public static int CurrentBullStrength { get; private set; }
-        public static int CurrentBearStrength { get; private set; }
+        public static double CurrentBullStrength { get; private set; }
+        public static double CurrentBearStrength { get; private set; }
         public static string PatternName { get; private set; }
         public static DateTime LastSignalTimestamp { get; private set; }
         public static double CurrentAvgSlope { get; private set; }
         public static int CurrentSlopeImpact { get; private set; }
         public static List<PatternMatch> CurrentMatches { get; private set; } = new List<PatternMatch>();
         public static bool SignalsAreFresh => (DateTime.Now - LastSignalTimestamp).TotalSeconds < 30;
-        
         // Connection status property
         public bool IsConnected => !disposed && client != null;
+
+        // Backtest visualization service URL
+        private readonly string visualizationUrl = "http://localhost:3007";
+        private readonly HttpClient visualizationClient;
 
         // Constructor
         public CurvesV2Service(CurvesV2Config config, Action<string> logger = null)
@@ -132,7 +152,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             client.DefaultRequestHeaders.Accept.Clear();
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             client.Timeout = TimeSpan.FromSeconds(10); // Default timeout
+            
+            // Initialize visualization client
+            visualizationClient = new HttpClient();
+            visualizationClient.DefaultRequestHeaders.Accept.Clear();
+            visualizationClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            visualizationClient.Timeout = TimeSpan.FromSeconds(2); // Short timeout for visualization
 
+			sessionID = Guid.NewGuid().ToString();
+			CurrentContextId = null;
             Log("[INFO] CurvesV2Service (HTTP Refactor) Initialized.");
         }
 
@@ -152,6 +180,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     Log("[INFO] Disposing CurvesV2Service...");
                     client?.Dispose();
+                    visualizationClient?.Dispose();
                     disposed = true;
                     Log("[INFO] CurvesV2Service disposed.");
                     }
@@ -162,6 +191,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
             GC.SuppressFinalize(this);
+        }
+
+        /// <summary>
+        /// Converts DateTime to Unix timestamp (milliseconds)
+        /// </summary>
+        private long DateTimeToUnixMs(DateTime dateTime)
+        {
+            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            return (long)(dateTime.ToUniversalTime() - epoch).TotalMilliseconds;
         }
 
         // Health Check
@@ -274,95 +312,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-         // Synchronous Signal Fetch
-        // Returns SignalData directly, or null on failure/error
-        public SignalData GetSignalsSync(string instrument)
-        {
-            lock(disposeLock) { if(disposed) return null; }
-
-            if (string.IsNullOrEmpty(instrument))
-            {
-                 Log("[WARN] GetSignalsSync: Instrument cannot be null or empty.");
-                 return null;
-            }
-
-            HttpResponseMessage response = null;
-            string endpoint = $"{baseUrl}/api/signals/{instrument}";
-
-            try
-            {
-                Log($"[DEBUG] GetSignalsSync: Fetching signals for {instrument} from {endpoint} (Blocking)");
-
-                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) 
-                {
-                    // BLOCKING CALL
-                    response = client.GetAsync(endpoint, timeoutCts.Token).GetAwaiter().GetResult();
-                }
-
-                Log($"[DEBUG] GetSignalsSync: Received status {response.StatusCode} for {instrument}");
-                string responseText = ""; 
-                try { 
-                    // BLOCKING CALL
-                    responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult(); 
-                }
-                catch (Exception readEx) {
-                     Log($"[ERROR] GetSignalsSync: Failed to read response content: {readEx.Message}");
-                     // Still check status code below, might be informative
-                }
-
-                        if (response.IsSuccessStatusCode)
-                        {
-                    Log($"[DEBUG] GetSignalsSync: Response content for {instrument}: {responseText.Substring(0, Math.Min(responseText.Length, 100))}...");
-                    try {
-                        var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
-                        if (signalResponse != null && signalResponse.success && signalResponse.signals != null)
-                        {
-                            Log($"[INFO] GetSignalsSync: Successfully received signals for {instrument}. Bull: {signalResponse.signals.bull}, Bear: {signalResponse.signals.bear}");
-                            return signalResponse.signals; 
-                                    }
-                                    else
-                                    {
-                             Log($"[WARN] GetSignalsSync: Invalid response or success=false/null signals for {instrument}. Success: {signalResponse?.success}, Signals Null: {signalResponse?.signals == null}");
-                             return null;
-                        }
-                    }
-                    catch (JsonException jsonEx) {
-                        Log($"[ERROR] GetSignalsSync: Failed to parse JSON response for {instrument}: {jsonEx.Message}");
-                        return null;
-                            }
-                        }
-                        else
-                        {
-                     // Log the response body even on error if available
-                     Log($"[ERROR] GetSignalsSync: HTTP error {response.StatusCode} fetching signals for {instrument}. Response: {responseText.Substring(0, Math.Min(responseText.Length, 200))}");
-                     return null;
-                }
-            }
-            catch (OperationCanceledException) // Catches timeout from CancellationTokenSource
-            {
-                 bool wasDisposed; 
-                 lock(disposeLock) { wasDisposed = disposed; }
-                 if (!wasDisposed) {
-                    Log($"[ERROR] GetSignalsSync: Request timed out fetching signals for {instrument} (5s)");
-                 }
-                return null;
-            }
-            catch (Exception ex)
-            {
-                 bool wasDisposed; 
-                 lock(disposeLock) { wasDisposed = disposed; }
-                 if (!wasDisposed) {
-                    Log($"[ERROR] GetSignalsSync: Error fetching signals for {instrument}: {ex.GetType().Name} - {ex.Message}");
-                    if(ex.InnerException != null) Log($"  Inner: {ex.InnerException.Message}");
-                 }
-                return null;
-            }
-            finally
-            {
-                response?.Dispose(); 
-            }
-        }
-
+     
         // Test connection to server
         public async Task<bool> TestConnectionAsync()
         {
@@ -513,77 +463,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
         }
-
-        // Check for high-confidence signals
-        public async Task<bool> CheckHighConfidenceSignalsAsync(string instrument, int minConfidence = 90)
-        {
-            if (IsDisposed()) return false;
-            
-            // Rate limiting - only check every 3 seconds at most
-            if ((DateTime.Now - lastSignalCheck).TotalMilliseconds < 3000)
-                return false;
-            
-            lastSignalCheck = DateTime.Now;
-            
-            try
-            {
-                // Build the URL - use the high_confidence endpoint
-                string endpoint = $"{baseUrl}/api/signals/{instrument}/high_confidence?min_confidence={minConfidence}";
-                
-                // Use HttpWebRequest with Timeout
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
-                request.Method = "GET";
-                request.Timeout = 2000; // 2 second timeout
-                
-                // Get response
-                using (WebResponse response = await Task.Factory.FromAsync(
-                    request.BeginGetResponse,
-                    request.EndGetResponse,
-                    null))
-                {
-                    using (Stream stream = response.GetResponseStream())
-                    using (StreamReader reader = new StreamReader(stream))
-                    {
-                        string responseText = await reader.ReadToEndAsync();
-                        
-                        // Parse the response
-                        var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
-                        
-                        if (signalResponse != null && signalResponse.success)
-                        {
-                            // Update static properties for backwards compatibility
-                            if (signalResponse.signals != null)
-                            {
-								Log($"[DEBUG CRITICAL] Setting static properties: Bull={signalResponse.signals.bull}, Bear={signalResponse.signals.bear}");
-
-                                CurrentBullStrength = signalResponse.signals.bull;
-                                CurrentBearStrength = signalResponse.signals.bear;
-                                
-                                if (signalResponse.signals.matches != null && signalResponse.signals.matches.Count > 0)
-                                {
-                                    CurrentMatches = signalResponse.signals.matches;
-                                    PatternName = signalResponse.signals.matches[0].patternName;
-                                }
-                                else
-                                {
-                                    CurrentMatches = new List<PatternMatch>();
-                                    PatternName = string.Empty;
-                                }
-                            }
-                            
-                            return true;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"Error checking high-confidence signals: {ex.Message}");
-            }
-            
-            return false;
-        }
-
+		
         // Update the SendBar method to use WebSocket for backtest if available
         public bool SendBar(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, bool isHistorical = false, string timeframe = "1m")
         {
@@ -591,143 +471,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             return SendBarFireAndForget(instrument, timestamp, open, high, low, close, volume, timeframe);
         }
 
-        // Add automatic signal polling
-        private void StartSignalPolling()
-        {
-            // Cancel any existing polling task
-            if (signalPollCts != null && !signalPollCts.IsCancellationRequested)
-            {
-                signalPollCts.Cancel();
-                signalPollCts.Dispose();
-            }
-            
-            // Create a new cancellation token source
-            signalPollCts = new CancellationTokenSource();
-            
-            // Start polling task
-            Task.Run(async () => 
-            {
-                try
-                {
-                    NinjaTrader.Code.Output.Process("Starting automatic signal polling", PrintTo.OutputTab1);
-                    
-                    while (!IsDisposed() && !signalPollCts.IsCancellationRequested)
-                    {
-                        try
-                        {
-                            // Poll for signals for active instruments
-                            // For simplicity, we'll poll for ES, NQ, and MES - these are the most common
-                            string[] instruments = new string[] { "ES", "NQ", "MES" };
-                            
-                            foreach (string instrument in instruments)
-                            {
-                                await PollSignalsForInstrument(instrument);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            // Just log errors but keep polling
-                            NinjaTrader.Code.Output.Process($"Error during signal polling: {ex.Message}", PrintTo.OutputTab1);
-                        }
-                        
-                        // Wait for the next poll interval
-                        await Task.Delay(signalPollIntervalMs, signalPollCts.Token);
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Normal cancellation, just exit
-                    NinjaTrader.Code.Output.Process("Signal polling cancelled", PrintTo.OutputTab1);
-                }
-                catch (Exception ex)
-                {
-                    NinjaTrader.Code.Output.Process($"Unhandled error in signal polling: {ex.Message}", PrintTo.OutputTab1);
-                }
-            }, signalPollCts.Token);
-        }
-
-        // Helper method to poll signals for a specific instrument
-        private async Task PollSignalsForInstrument(string instrument)
-        {
-            if (IsDisposed() || string.IsNullOrEmpty(instrument))
-                return;
-            
-            try
-            {
-                // Build the signals endpoint URL
-                string endpoint = $"{baseUrl}/api/signals/{instrument}";
-                
-                // Create a request with timeout
-                var request = (HttpWebRequest)WebRequest.Create(endpoint);
-                request.Method = "GET";
-                request.Timeout = 2000; // 2 second timeout
-                
-                // Get response
-                using (var response = (HttpWebResponse)await Task.Factory.FromAsync(
-                    request.BeginGetResponse, 
-                    request.EndGetResponse, 
-                    null))
-		        {
-		            if (response.StatusCode == HttpStatusCode.OK)
-		            {
-		                using (var reader = new StreamReader(response.GetResponseStream()))
-		                {
-                            string responseText = await reader.ReadToEndAsync();
-		                    var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
-		                    
-                            if (signalResponse != null && signalResponse.success && signalResponse.signals != null)
-		                    {
-                                // Update the static properties
-		                        CurrentBullStrength = signalResponse.signals.bull;
-		                        CurrentBearStrength = signalResponse.signals.bear;
-		                        
-                                // Update matches and pattern name
-		                        if (signalResponse.signals.matches != null && signalResponse.signals.matches.Count > 0)
-		                        {
-		                            CurrentMatches = signalResponse.signals.matches;
-		                            PatternName = signalResponse.signals.matches[0].patternName;
-		                        }
-		                        else
-		                        {
-		                            CurrentMatches = new List<PatternMatch>();
-		                            PatternName = string.Empty;
-		                        }
-                                
-                                // Update timestamp from the server or use current time
-                                DateTime timestamp;
-                                if (!string.IsNullOrEmpty(signalResponse.timestamp))
-                                {
-                                    // Try to parse the server timestamp
-                                    if (DateTime.TryParse(signalResponse.timestamp, out DateTime parsedTime))
-                                    {
-                                        timestamp = parsedTime;
-                                    }
-                                    else
-                                    {
-                                        timestamp = DateTime.Now;
-                                    }
-                                }
-                                else
-                                {
-                                    timestamp = DateTime.Now;
-                                }
-                                
-                                LastSignalTimestamp = timestamp;
-                                
-                                // Log successful update with minimal output
-                                Log($"Updated signals for {instrument}: Bull {CurrentBullStrength}, Bear {CurrentBearStrength}");
-                            }
-		                }
-		            }
-		        }
-		    }
-		    catch (Exception ex)
-		    {
-                // Non-blocking error - just log
-                Log($"Error polling signals for {instrument}: {ex.Message}");
-            }
-        }
-
+		/// send currentbars for Qdrant
         // Ultra-simple bar sender that TRULY never blocks - MODIFIED FOR DEBUG: ALWAYS USE HTTP
         public bool SendBarFireAndForget(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
@@ -760,7 +504,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Fallback to HTTP
                 // Build the URL for the endpoint
                 string endpoint = $"{baseUrl}/api/realtime_bars/{instrument}/backtest?matchPatterns=true&sessionId={sessionID}"; // Use /api/realtime_bars endpoint for NinjaTrader
-                
                 // Create payload
                 string jsonPayload = JsonConvert.SerializeObject(new {
                      timestamp = epochMs,
@@ -807,7 +550,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                                         catch (Exception ex)
                                         {
                                             if (IsDisposed() || IsShuttingDown()) return;
-                                            Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP response error for {instrument}: {ex.Message}");
+                                            Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP response error for {instrument} at {endpoint}: {ex.Message}");
                                         }
                                     },
                                     null 
@@ -877,31 +620,75 @@ namespace NinjaTrader.NinjaScript.Strategies
                     string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult(); 
                     //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Response content for {instrument}: {responseText.Substring(0, Math.Min(responseText.Length, 100))}...");
 
-                    var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
+					var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
+					if (signalResponse != null && signalResponse.success) // Check success directly
+					{
+					    string responseJsonForLog = JsonConvert.SerializeObject(signalResponse, Formatting.None); // Formatting.None for compact log
 
-                    if (signalResponse != null && signalResponse.success)
-                    {
-                        //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Parsed success for {instrument}");
-                        if (signalResponse.signals != null)
-                        {                                    
-                            //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Updating signals for {instrument}...");
-                            CurrentBullStrength = signalResponse.signals.bull;
-                            CurrentBearStrength = signalResponse.signals.bear;
-                            LastSignalTimestamp = DateTime.Now; 
-                            CurrentMatches = signalResponse.signals.matches ?? new List<PatternMatch>();
-                            PatternName = CurrentMatches.Count > 0 ? (CurrentMatches[0]?.patternName ?? "No Pattern") : "No Pattern";
-                            //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-			                return true;
-			            }
-			            else
-			            {
-                             Log($"[DEBUG SYNC] CheckSignalsFireAndForget: 'signals' property missing in successful response for {instrument}");
-                        }
-                    }
-                    else
-                    {
-                        Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Invalid response or success=false for {instrument}. Success: {signalResponse?.success}");
-                    }
+					    // Log the serialized JSON
+					    // Check contextId directly
+					    if (signalResponse.contextId != "nullscore")
+					    {
+					        // Store the context ID directly
+					        CurrentContextId = signalResponse.contextId;
+					
+					        // Update static properties directly
+					        CurrentBullStrength = signalResponse.bullScore; // Use bullScore
+					        CurrentBearStrength = signalResponse.bearScore; // Use bearScore
+							if(CurrentBullStrength > 0 || CurrentBearStrength > 0)
+							{
+								//Log("*****************************************************************************");
+								//Log($"[INFO] GetSignalsSync: bull {CurrentBullStrength}, bear {CurrentBearStrength} ");
+								//Log("*****************************************************************************");
+							}
+					      
+
+	                        // Now, attempt the parse (still recommend TryParse)
+	                        try // Add specific try-catch for safety, or use TryParse
+	                        {
+	                            if (!string.IsNullOrEmpty(signalResponse.timestamp) || signalResponse.timestamp == "null")
+	                            {
+	                                // Use TryParse for safety
+	                                if (DateTime.TryParse(signalResponse.timestamp, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime parsedTimestamp))
+	                                {
+	                                    LastSignalTimestamp = parsedTimestamp;
+	                                }
+	                                else
+	                                {
+	                                    Log($"[WARN] GetSignalsSync: Failed to parse non-null timestamp '{signalResponse.timestamp}' for instrument {instrument}.");
+	                                    LastSignalTimestamp = DateTime.MinValue; // Default on parse failure
+	                                }
+	                            }
+	                            else
+	                            {
+									if(CurrentBullStrength > 0 || CurrentBearStrength > 0)
+									{
+										Log("*****************************************************************************");
+										Log($"[WARN] GetSignalsSync: Timestamp was null or empty in the valid signal response for instrument {instrument}. Response: {responseJsonForLog}");
+										Log("*****************************************************************************");
+									}
+	                                // This case confirms the timestamp was null or empty BEFORE parsing
+	                                LastSignalTimestamp = DateTime.MinValue; // Default on missing timestamp
+	                            }
+	                        }
+	                        catch (Exception parseEx)
+	                        {
+	                           Log($"[ERROR] GetSignalsSync: CRITICAL error parsing timestamp for {instrument}. Value was '{(signalResponse.timestamp == null ? "NULL" : signalResponse.timestamp)}'. Error: {parseEx.Message}");
+	                           // Handle the fact that the timestamp couldn't be set
+	                           LastSignalTimestamp = DateTime.MinValue; // Ensure a default
+	                        }
+							
+					      
+					    }
+					   
+					    return true; // Or adjust as needed
+					}
+					else
+					{
+						
+					    Log($"[WARN] GetSignalsSync: Invalid response or success=false for {instrument}. Success: {signalResponse?.success}");
+					    return false; // Or appropriate default/error value
+					}
                 }
                 else
                 {
@@ -1045,73 +832,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 NinjaTrader.Code.Output.Process("SendBarSync: Exiting method.", PrintTo.OutputTab1);
             }
         }
-        
-        // Synchronously poll for signals and update static properties
-        public bool PollSignalsSync(string instrument)
-        {
-            if (IsDisposed() || string.IsNullOrEmpty(instrument))
-                return false;
-            
-            try
-            {
-                NinjaTrader.Code.Output.Process($"PollSignalsSync: Polling signals for {instrument}", PrintTo.OutputTab1);
-                
-                // Build the signals endpoint URL
-                string endpoint = $"{baseUrl}/api/signals/{instrument}";
-                
-                // Create a request with timeout
-                var request = (HttpWebRequest)WebRequest.Create(endpoint);
-                request.Method = "GET";
-                request.Timeout = 15000; // 15 second timeout
-                
-                try 
-                {
-                    // Get response synchronously
-                    using (var response = (HttpWebResponse)request.GetResponse())
-                    {
-                        if (response.StatusCode == HttpStatusCode.OK)
-                        {
-                            using (var reader = new StreamReader(response.GetResponseStream()))
-                            {
-                                string responseText = reader.ReadToEnd();
-                                var signalResponse = JsonConvert.DeserializeObject<dynamic>(responseText);
-                                
-                                if (signalResponse != null && signalResponse.success == true)
-                                {
-                                    // Update the static properties directly
-                                    // Use the signals property from the response with bull/bear values
-                                    if (signalResponse.signals != null)
-                                    {
-                                        CurrentBullStrength = signalResponse.signals.bull;
-                                        CurrentBearStrength = signalResponse.signals.bear;
-                                        
-                                        // Update timestamp
-                                        LastSignalTimestamp = DateTime.Now;
-                                        
-                                        NinjaTrader.Code.Output.Process($"[PollSignalsSync] Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}", PrintTo.OutputTab1);
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (WebException webEx) when (webEx.Status == WebExceptionStatus.Timeout)
-                {
-                    NinjaTrader.Code.Output.Process($"PollSignalsSync ERROR: The request timed out after 15 seconds", PrintTo.OutputTab1);
-                    return false;
-                }
-                
-                NinjaTrader.Code.Output.Process($"PollSignalsSync: Failed to get valid signal response", PrintTo.OutputTab1);
-                return false;
-            }
-            catch (Exception ex)
-            {
-                NinjaTrader.Code.Output.Process($"PollSignalsSync ERROR: {ex.Message}", PrintTo.OutputTab1);
-                return false;
-            }
-        }
-        
+       
         // Combined method to send bar and poll signals in one call - Modified to call ASYNC POLL
         public bool SendBarAndPollSync(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
@@ -1141,115 +862,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
                 
             return webSocket != null && webSocket.State == WebSocketState.Open && webSocketConnected;
-        }
-
-        // Asynchronously poll for signals and update static properties
-        public async Task<bool> PollSignalsAsync(string instrument, CancellationToken cancellationToken = default) // Made async, added CancellationToken
-        {
-            if (IsDisposed() || string.IsNullOrEmpty(instrument))
-                return false;
-
-            // Ensure client is initialized (might need to move initialization logic)
-            if (client == null) 
-            {
-                 // Cannot reassign readonly field, log a warning instead
-                 NinjaTrader.Code.Output.Process("PollSignalsAsync: HttpClient is null, cannot proceed with request", PrintTo.OutputTab1);
-                 return false;
-            }
-            
-            try
-            {
-                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Polling signals for {instrument}", PrintTo.OutputTab1);
-                
-                // Build the signals endpoint URL
-                string endpoint = $"{baseUrl}/api/signals/{instrument}";
-                
-                // Use HttpClient for async request
-                HttpResponseMessage response = null;
-                try
-                {
-                    // Make request asynchronously with timeout handled by CancellationToken
-                    using (var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-                    {
-                        timeoutCts.CancelAfter(15000); // 15 second timeout
-                       // NinjaTrader.Code.Output.Process($"PollSignalsAsync: Sending GET request to {endpoint}", PrintTo.OutputTab1);
-                        response = await client.GetAsync(endpoint, timeoutCts.Token);
-                        NinjaTrader.Code.Output.Process($"PollSignalsAsync: Received response status {response.StatusCode}", PrintTo.OutputTab1);
-                    }
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        string responseText = await response.Content.ReadAsStringAsync();
-                        var signalResponse = JsonConvert.DeserializeObject<dynamic>(responseText);
-                        
-                        if (signalResponse != null && signalResponse.success == true)
-                        {
-                            // Update the static properties directly
-                            if (signalResponse.signals != null)
-                            {
-                                // Potential improvement: Lock static updates if accessed elsewhere simultaneously
-                                CurrentBullStrength = signalResponse.signals.bull;
-                                CurrentBearStrength = signalResponse.signals.bear;
-                                LastSignalTimestamp = DateTime.Now; // Consider using server timestamp if available
-                                
-                                // Update slope information if available
-                                if (signalResponse.signals.avgSlope != null) {
-                                    CurrentAvgSlope = signalResponse.signals.avgSlope;
-                                    CurrentSlopeImpact = signalResponse.signals.slopeImpact ?? 0;
-                                    NinjaTrader.Code.Output.Process($"PollSignalsAsync: Slope info - Avg={CurrentAvgSlope.ToString("F6")}, Impact={CurrentSlopeImpact}%", PrintTo.OutputTab1);
-                                }
-                                
-                                // Optionally update CurrentMatches if provided by the API
-                                // if (signalResponse.signals.matches != null) {
-                                //     CurrentMatches = signalResponse.signals.matches.ToObject<List<PatternMatch>>();
-                                // } else {
-                                //     CurrentMatches.Clear();
-                                // }
-
-                                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Updated signals for {instrument}: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}", PrintTo.OutputTab1);
-                                return true;
-                            }
-                            else
-                            {
-                                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Success response but missing 'signals' data for {instrument}", PrintTo.OutputTab1);
-                            }
-                        }
-                        else
-                        {
-                             NinjaTrader.Code.Output.Process($"PollSignalsAsync: API reported failure or null response for {instrument}. Response: {responseText}", PrintTo.OutputTab1);
-                        }
-                    }
-                    else
-                    {
-                         NinjaTrader.Code.Output.Process($"PollSignalsAsync: HTTP error {response.StatusCode} polling signals for {instrument}", PrintTo.OutputTab1);
-                    }
-                }
-                catch (OperationCanceledException ex) // Catches timeout or external cancellation
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                         NinjaTrader.Code.Output.Process($"PollSignalsAsync: Operation cancelled externally for {instrument}", PrintTo.OutputTab1);
-                    else
-                         NinjaTrader.Code.Output.Process($"PollSignalsAsync ERROR: Request timed out after 15 seconds for {instrument}", PrintTo.OutputTab1);
-                    return false;
-                }
-                catch (HttpRequestException httpEx)
-                {
-                    NinjaTrader.Code.Output.Process($"PollSignalsAsync HTTP ERROR polling signals for {instrument}: {httpEx.Message}", PrintTo.OutputTab1);
-                    return false;
-                }
-                finally
-                {
-                    response?.Dispose(); // Ensure response is disposed
-                }
-                
-                NinjaTrader.Code.Output.Process($"PollSignalsAsync: Failed to get valid signal response for {instrument}", PrintTo.OutputTab1);
-                return false;
-            }
-            catch (Exception ex) // Catch-all for unexpected errors
-            {
-                NinjaTrader.Code.Output.Process($"PollSignalsAsync UNEXPECTED ERROR polling signals for {instrument}: {ex.Message}", PrintTo.OutputTab1);
-                return false;
-            }
         }
 
         // Reset static data method
@@ -1406,6 +1018,101 @@ namespace NinjaTrader.NinjaScript.Strategies
         public async Task<bool> CheckHealth()
         {
             return await CheckHealthAsync();
+        }
+
+        // Store mapping between signalContextId and entryUuid
+        public void StoreSignalContextMapping(string signalContextId, string entryUuid)
+        {
+            if (string.IsNullOrEmpty(signalContextId) || string.IsNullOrEmpty(entryUuid))
+            {
+                Log($"[WARN] Invalid signalContextId ({signalContextId}) or entryUuid ({entryUuid}) provided");
+                return;
+            }
+
+            lock (signalContextLock)
+            {
+                signalContextToEntryMap[signalContextId] = entryUuid;
+                Log($"[INFO] Stored mapping: signalContextId {signalContextId} -> entryUuid {entryUuid}");
+            }
+        }
+
+        // Get entryUuid for a given signalContextId
+        public string GetEntryUuidForSignalContext(string signalContextId)
+        {
+            if (string.IsNullOrEmpty(signalContextId))
+            {
+                return null;
+            }
+
+            lock (signalContextLock)
+            {
+                if (signalContextToEntryMap.TryGetValue(signalContextId, out string entryUuid))
+                {
+                    return entryUuid;
+                }
+            }
+
+            return null;
+        }
+
+        // Add a method to submit pattern performance record
+        public async Task<bool> RecordPatternPerformanceAsync(PatternPerformanceRecord record)
+        {
+            if (IsDisposed()) return false;
+
+            try
+            {
+                // Validate required fields
+                if (string.IsNullOrEmpty(record.signalContextId))
+                {
+                    Log("[ERROR] RecordPatternPerformance: signalContextId is required");
+                    return false;
+                }
+
+                // Use endpoint URL pointing to CurvesV2 API server on port 3002
+                string endpoint = "http://localhost:3002/api/pattern-timeline/record";
+                
+                // Serialize the record to JSON
+                string jsonPayload = JsonConvert.SerializeObject(record);
+                using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
+                {
+                    // Send request to the server
+                    using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                    {
+                        var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                        
+                        if (response.IsSuccessStatusCode)
+                        {
+                            string responseText = await response.Content.ReadAsStringAsync();
+                            Log($"[INFO] Pattern performance record sent successfully: {record.signalContextId}, outcome: {record.outcome_score}");
+                            
+                            // Remove the mapping after successful recording
+                            lock (signalContextLock)
+                            {
+                                signalContextToEntryMap.Remove(record.signalContextId);
+                            }
+                            
+                            return true;
+                        }
+                        else
+                        {
+                            string responseText = await response.Content.ReadAsStringAsync();
+                            Log($"[ERROR] Failed to record pattern performance: {response.StatusCode}, Response: {responseText}");
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Log($"[ERROR] RecordPatternPerformance: Request timed out");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERROR] RecordPatternPerformance: {ex.Message}");
+                return false;
+            }
         }
     }
 } 

@@ -330,8 +330,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							            simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
 							            Print($"{Time[0]}  SELL {simStop.OrderRecordMasterLite.ExitOrderUUID} to Close {simStop.OrderRecordMasterLite.EntryOrderUUID} at {thisSignalExitAction} PROFIT ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit} ");
 										
-										SubmitOrderUnmanaged(1, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.OrderRecordMasterLite.EntryOrderUUID, simStop.OrderRecordMasterLite.ExitOrderUUID);
-										openOrderTest += simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+										SubmitOrderUnmanaged(1, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  null, simStop.ExitOrderUUID);
 										
 										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 							      		simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
@@ -349,8 +348,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							            simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
 										Print($"{Time[0]} BUYTOCOVER {simStop.OrderRecordMasterLite.ExitOrderUUID} to Close {simStop.OrderRecordMasterLite.EntryOrderUUID} at {thisSignalExitAction} PROFIT ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit}  ");								
 							       
-										SubmitOrderUnmanaged(1, OrderAction.BuyToCover, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.OrderRecordMasterLite.EntryOrderUUID, simStop.OrderRecordMasterLite.ExitOrderUUID);
-										openOrderTest += simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+										SubmitOrderUnmanaged(1, OrderAction.BuyToCover, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  null, simStop.ExitOrderUUID);
 										
 										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 										simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;

@@ -662,30 +662,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		public class signalPackage
 		{
-			public signalReturnAction SignalReturnAction{ get; set; } 
-			/*public double PackageStopPrice { get; set; } 
-			public ISeries<double>  preferredEntryTrack { get; set;}
-			public ISeries<double>  preferredExitTrack { get; set;}
-			public OrderType preferredOrderType { get; set;}
-			public bool RSIOversold { get; set;}
-			public bool RSIUndersold { get; set;}
-			public double hardMaxLoss { get; set;}
-			public double hardTakeProfit { get; set;}
-			public double softTakeProfit { get; set;}
-			public double softTakeProfitIncr { get; set;}
-			public bool useEntryTrack { get; set;}
-			public bool useExitTrack { get; set;}
-			public bool permitLongAndShort { get; set;}
-			public double magnitudeMod { get; set;}
-			public orderClass thisOrderClass { get; set;}*/
+			public signalReturnAction SignalReturnAction{ get; set; } 		
 			public marketCondition thisMarketCondition { get; set;}
 			public signalReturnActionType Sentiment { get; set;}
-			//public HashSet<string> selectedPatternIds { get; set;}
-			//public PatternObject thisOrderFlowPattern { get; set;}
 			public DateTime creationDate  { get; set;}
 			public int instrumentSeriesIndex { get; set;}
 			public double instrumentSeriesTickValue { get; set;}
 			public double price { get; set;}
+			public string SignalContextId { get; set; } // Added for pattern performance timeline
 		}
 
 		
@@ -809,6 +793,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public OrderSupplementals OrderSupplementals { get; set; }
 			public ExitFunctions ExitFunctions { get; set; }
 			public int EntryBar { get; set; }
+			public string SignalContextId { get; set; } // Added for pattern performance timeline
 		}
 		
 		
@@ -831,6 +816,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public class simulatedEntry
 		{
  			 public string EntryOrderUUID { get; set; }
+			 public string ExitOrderUUID { get; set; }
 			 public OrderAction EntryOrderAction { get; set; }
 			 public int quantity { get; set; }
 			 public bool isEnterReady { get; set; }

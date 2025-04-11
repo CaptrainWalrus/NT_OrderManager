@@ -71,7 +71,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									{
 								
 										tryCatchSelection = "simulatedEntryConditions 2aa";
-										if(simEntry.EntryOrderAction == OrderAction.Buy)
+										if(simEntry.EntryOrderAction == OrderAction.Buy && GetMarketPositionByIndex(0) != MarketPosition.Short && GetMarketPositionByIndex(1) != MarketPosition.Short)
 										{
 											tryCatchSelection = "simulatedEntryConditions 2a ";
 												
@@ -80,18 +80,19 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									  			int Q = getAllcustomPositionsCombined();
 
 												simEntry.isEnterReady = false;
-												//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID} ,Quantity {Q} EnterLong {GetMarketPositionByIndex(BarsInProgress)}");
-												SubmitOrderUnmanaged(1, OrderAction.Buy, OrderType.Market, simEntry.quantity, 0, 0,simEntry.EntryOrderUUID, simEntry.EntryOrderUUID);
+												Print($"ENTRY {simEntry.EntryOrderUUID} LONG, >>> exit will be {simEntry.ExitOrderUUID}");
+												SubmitOrderUnmanaged(1, OrderAction.Buy, OrderType.Market, simEntry.quantity, 0, 0,null, simEntry.EntryOrderUUID);
 												continue;
 												
 										}
-										else if(simEntry.EntryOrderAction == OrderAction.SellShort)
+										else if(simEntry.EntryOrderAction == OrderAction.SellShort && GetMarketPositionByIndex(0) != MarketPosition.Long && GetMarketPositionByIndex(1) != MarketPosition.Long)
 										{
 												tryCatchSelection = "simulatedEntryConditions b";
-												
+												Print($"ENTRY {simEntry.EntryOrderUUID} SHORT, >>> exit will be {simEntry.ExitOrderUUID}");
 												simEntry.isEnterReady = false;
+												//Print($"SubmitOrderUnmanaged : openOrderTest {openOrderTest}");
 												//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID}, Quantity {Q} EnterShort {GetMarketPositionByIndex(BarsInProgress)}");
-												SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, simEntry.quantity, 0, 0, simEntry.EntryOrderUUID, simEntry.EntryOrderUUID);
+												SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, simEntry.quantity, 0, 0, null,simEntry.EntryOrderUUID);
 												continue;
 												
 											

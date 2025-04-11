@@ -51,6 +51,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	[Gui.CategoryOrder("Entry Types", 15)]
 	public partial class MainStrategy : Strategy
 	{
+		[XmlIgnore]
+		public CurvesV2Service curvesService;
+		
 		public int openOrderTest = 0;
 		[XmlIgnore]
 		public double CurrentBullStrength { get; set; } 
@@ -465,7 +468,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 				ema3_val = 10;
 		
-				commonPeriod = 20;
+				vwap1 = 20;
 				commonPeriod_smooth = 5;
 				VWAPScalingFactor = 1;
 			
@@ -519,7 +522,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				microContractTakeProfit  = 150;
 				
 				OrderBookVolumeThreshold = 10000;
-				
+				useAsyncProcessing = false; // Default to synchronous for reliability
 
 			}
 			else if (State == State.Configure)
@@ -580,11 +583,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				Random rand = new Random();
 			
 
-				VWAP1 = custom_VWAP(50);
+				VWAP1 = custom_VWAP(vwap1);
 				SMA200 = SMA(BarsArray[0],200);
 				
 				EMA3 = EMA(BarsArray[0],ema3_val);
-				//AddChartIndicator(EMA3);
+				
+				AddChartIndicator(EMA3);
+				AddChartIndicator(VWAP1);
+				
+				
 				BB0 = Bollinger(4,25);
 				//AddChartIndicator(BB0);
 	
@@ -628,8 +635,111 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	 			//stores the sessions once bars are ready, but before OnBarUpdate is called
 	    		sessionIterator = new SessionIterator(Bars);
 				/// threading
+				if(useAsyncProcessing)
+				{
 					StartOrderObjectStatsThread();
-			
+				}
+				
+				
+				Print("Initializing CurvesV2 connection (async)...");
+				try 
+				{ 
+					Print($"Initializing CurvesAPI = {InitCurvesAPI}");
+	
+					if(InitCurvesAPI)
+					{
+					var config = ConfigManager.Instance.CurvesV2Config; 
+					
+					// Set synchronous mode in config
+					config.EnableSyncMode = UseDirectSync;
+					Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
+					
+					curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
+					
+					// Use a simple GUID instead of the previous GenerateSignalId method
+					
+					
+					Print("CurvesV2Service Initialized (async connection pending).");
+					}
+					// Establish connection after initialization
+					if (UseDirectSync)
+					{
+						Print("Attempting to establish connection immediately...");
+						
+						// Create a task to connect with a timeout
+						var connectTask = Task.Run(async () => {
+							try 
+							{
+								// Connect to the WebSocket first
+								bool wsConnected = await curvesService.ConnectWebSocketAsync();
+								
+								if (wsConnected)
+								{
+									Print("WebSocket connection established successfully");
+									return true;
+								}
+	
+								// If WebSocket fails, try the health check
+								bool healthy = await curvesService.CheckHealth();
+								return healthy;
+							}
+							catch (Exception ex)
+							{
+								Print($"Connection check failed: {ex.Message}");
+								return false;
+							}
+						});
+						
+						// Set a reasonable timeout for connection
+						bool connected = false;
+						try
+						{
+							// Wait up to 15 seconds for connection (increased from 10)
+							if (connectTask.Wait(15000))
+							{
+								connected = connectTask.Result;
+								if (connected)
+								{
+									Print("Connection established successfully");
+								}
+								else
+								{
+									Print("Connection check failed - server may be unavailable");
+								}
+							}
+							else
+							{
+								Print("Connection timeout after 15 seconds");
+							}
+						}
+						catch (Exception ex)
+						{
+							Print($"Error during connection: {ex.Message}");
+						}
+						
+						// In backtest mode, continue even without connection
+						if (!connected && IsInStrategyAnalyzer)
+						{
+							// Check if WebSocket is actually connected despite health check failure
+							bool wsConnected = curvesService?.IsWebSocketConnected() ?? false;
+							
+							if (wsConnected)
+							{
+								Print("WebSocket is connected - proceeding with backtest");
+								connected = true;
+							}
+							else
+							{
+								Print("WARNING: Starting backtest with no server connection - using local data only");
+							}
+						}
+					}
+				}
+				catch (Exception ex)
+				{   
+					Print($"ERROR initializing CurvesV2Service: {ex.Message}");
+					curvesService = null; 
+				}
 				
 				}
 				else if (State == State.Realtime)
@@ -661,8 +771,36 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 					/// threads
 					Print("State == State.Terminated");
-					StopOrderObjectStatsThread();
-	       	
+					if(useAsyncProcessing)
+					{
+						StopOrderObjectStatsThread();
+					}
+					
+					// 1. Reset static data in CurvesV2Service
+					Print("1. Resetting all static data in CurvesV2Service");
+					CurvesV2Service.ResetStaticData();
+					
+					// 2. Properly dispose of the CurvesV2Service instance
+					if (curvesService != null)
+					{
+						try 
+						{
+							Print("2. Disposing CurvesV2Service instance");
+							curvesService.Dispose();
+						}
+						catch (Exception ex)
+						{
+							Print($"Error disposing CurvesV2Service: {ex.Message}");
+						}
+						finally
+						{
+							curvesService = null;
+						}
+					}
+					else
+					{
+						Print("2. No active CurvesV2Service instance to dispose");
+					}
 				}
 			}
 			catch (Exception ex)
@@ -877,6 +1015,27 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			simulatedEntryConditions();
 			}
 		}
+		if(MasterSimulatedStops.Count() > 0)
+		{
+			lock (eventLock)
+			{
+				 foreach (var simStop in MasterSimulatedStops)
+                {
+				   
+                    try
+                    {
+					    msg = "MasterSimulatedStops 1";
+                  
+                        UpdateOrderStats(simStop);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
+                    }
+                }
+		
+			}
+		}
 		
 		  msg = "OnBarUpdate start 1";
 		/// clear anything that might be stuck
@@ -889,6 +1048,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 	
 			
+			NinjaTrader.Code.Output.Process($"{Time[0]} Checking # Open Orders : {openOrderTest} vs {getAllcustomPositionsCombined()}", PrintTo.OutputTab2);
+
+
 			if (Bars.IsFirstBarOfSession)
 		    {
 		        // Process or log the previous day's profit here
@@ -928,14 +1090,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			if(unrealizedDailyProfit < -dailyProfitMaxLoss)
 			{
 				dailyLossATL = Math.Min(unrealizedDailyProfit,dailyProfitMaxLoss);
-				if(GetMarketPositionByIndex(1) != MarketPosition.Flat)
+				if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 				{
 			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
 				}
-				else if(GetMarketPositionByIndex(5) != MarketPosition.Flat)
-				{
-			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
-				}
+				
 				return;
 			}
 			if(dailyProfit < -dailyProfitMaxLoss)
@@ -957,14 +1116,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			if(unrealizedDailyProfit < (dailyProfitGoal-50) && dailyProfitATH > dailyProfitGoalParameter && dailyProfitATH > dailyProfitGoal) /// we've met the goal and fallen into it
 			{
 				
-				if(GetMarketPositionByIndex(1) != MarketPosition.Flat)
+				if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 				{
 			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
 				}
-				else if(GetMarketPositionByIndex(5) != MarketPosition.Flat)
-				{
-			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
-				}
+				
 				return;
 			}
 		
@@ -1406,7 +1562,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			            Sentiment = directionPrediction,
 						instrumentSeriesIndex = seriesIndex,
 						instrumentSeriesTickValue = seriesIndexValue,
-						price = GetCurrentBid(BarsInProgress)
+						price = GetCurrentBid(BarsInProgress),
+						SignalContextId = CurvesV2Service.CurrentContextId ?? null
 			        };
 					
 				    // Check if we found a matching pattern
@@ -1645,6 +1802,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 ///Properties	
 	
 		#region Properties
+		
+		[NinjaScriptProperty]    
+		[Display(Name="Use Direct Synchronous Processing", Order=1, GroupName="Class Parameters")]
+		public bool UseDirectSync { get; set; }
+	
+		[NinjaScriptProperty]    
+		[Display(Name="Iniitialize Curves API", Order=2, GroupName="Class Parameters")]
+		public bool InitCurvesAPI { get; set; }
+		
 		[NinjaScriptProperty]	
 		[Display(Name="accumulation Requirement", Order=32, GroupName="Order Flow Pattern")]
 		public int accumulationRequirement
@@ -1662,8 +1828,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{ get; set; }
 		
 		[NinjaScriptProperty]    
-		[Display(Name="Use L3 Data", Order=1, GroupName="Class Parameters")]
-		public bool useL3
+		[Display(Name="Use Async Processing", Order=1, GroupName="Class Parameters")]
+		public bool useAsyncProcessing
 		{ get; set; }
 		
 		[NinjaScriptProperty]    
@@ -1816,7 +1982,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]
 		[Display(Name="VWAP1", Order=13, GroupName="EMA")]
-		public int commonPeriod
+		public int vwap1
 		{ get; set; } 
 
 		[NinjaScriptProperty]

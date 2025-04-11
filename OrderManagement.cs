@@ -45,6 +45,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	private Order SellShortOrder;
 	private Order BuyToCoverOrder;
  	private Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)> pairedEvents = new Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)>();
+	private HashSet<string> processedExitOrders = new HashSet<string>();
 
 
 	public class ExecutionUpdateInfo
@@ -273,6 +274,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				if ((order.OrderAction == OrderAction.Buy || order.OrderAction == OrderAction.SellShort) && order.OrderState == OrderState.Filled)
 				{
 					openOrderTest++;
+					NinjaTrader.Code.Output.Process($"openOrderTest incrment {openOrderTest},{order.Name}", PrintTo.OutputTab2);
 					if(debugOrderPrints) Print($" RECIEVED customOnOrderUpdate for {order.Name} , {order.OrderAction}-{order.OrderState}");
 					
 					tryCatchSection = "customOnOrderUpdate 1";
@@ -293,8 +295,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									if(debugOrderPrints) Print($"{order.OrderAction} ORDER IS ASSIGNED TO ENTRY ORDER");
 									orderRecordMasterLite.EntryOrder = order;
 									MasterSimulatedEntries.Remove(orderRecordMasterLite.OrderSupplementals.SimulatedEntry);
-									
 									customPosition.OnOrderFilled(orderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex, order.OrderAction, quantity, averageFillPrice);
+									
+									string direction = order.OrderAction == OrderAction.Buy ? "long" : "short";
 									
 									
 								}
@@ -318,11 +321,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				}
 				else if ((order.OrderAction == OrderAction.Sell || order.OrderAction == OrderAction.BuyToCover) && order.OrderState == OrderState.Filled)
 				{
-				   
-						
-					
+				   		// In your exit order processing:
+						if (!processedExitOrders.Contains(order.Name))
+						{
+						    openOrderTest--;
+						    processedExitOrders.Add(order.Name);
+						}
+						NinjaTrader.Code.Output.Process($"openOrderTest decrment {openOrderTest},{order.Name}", PrintTo.OutputTab2);
 					 // Extra safety check - recreate counter if needed
-					    
 					
 		              	if(debugOrderPrints) Print($" RECIEVED customOnOrderUpdate for {order.Name} , {order.OrderAction}-{order.OrderState}");
 
@@ -355,7 +361,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										orderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 										MasterSimulatedStops.Remove(orderRecordMasterLite.OrderSupplementals.SimulatedStop);
 										customPosition.OnOrderFilled(orderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex, order.OrderAction, quantity, averageFillPrice);
-				
+									    
+
 										
 									}
 								
@@ -561,7 +568,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						     
 				
 					tryCatchSection = "ENTRY IS PAIRED 3";
-				
+					long epochMs = (long)(Time[0].ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds;
+
 					
 					/// update daily profit
 					if(profit != null)
@@ -576,7 +584,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						}
 						tryCatchSection = "ENTRY IS PAIRED 3A";	
 					}
-					
+				
+				
+				
 							
 					if(profit > 0) 
 					{
@@ -761,9 +771,46 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										dailyProfit += profit;
 										dailyProfitATH = Math.Max(dailyProfit,dailyProfitATH);
 										
-										string instrumentBase =  Instrument.FullName.Split(' ')[0];
-										int EntryOffset = CurrentBars[0] - orderRecordMaster.EntryBar;
 										
+
+										// Record pattern performance data for the timeline
+										if (!string.IsNullOrEmpty(orderRecordMaster.SignalContextId))
+										{
+											// Determine outcome score based on profit (-1 for loss, 0 for breakeven, 1 for profit)
+											float outcomeScore = profit > 0 ? 1f : (profit < 0 ? -1f : 0f); // Use float
+
+											// Calculate both timestamps
+											long realWorldEpochMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // Real-world time
+											long barEpochMs = (long)(Time[0].ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds; // Bar time
+
+											// Create a performance record
+											PatternPerformanceRecord record = new PatternPerformanceRecord
+											{
+												signalContextId = orderRecordMaster.SignalContextId,
+												timestamp_ms = realWorldEpochMs, // Use real-world time as PRIMARY timestamp
+												bar_timestamp_ms = barEpochMs,    // Store bar time as a FIELD
+												outcome_score = outcomeScore,     // Assign calculated float score
+												pnl = profit
+											};
+											
+											// Asynchronously record the pattern performance
+											Task.Run(async () => 
+											{
+												try 
+												{
+													bool success = await curvesService.RecordPatternPerformanceAsync(record);
+													if (!success)
+													{
+														Print($"Failed to record pattern performance for {orderRecordMaster.SignalContextId}");
+													}
+												}
+												catch (Exception ex)
+												{
+													Print($"Error recording pattern performance: {ex.Message}");
+												}
+											});
+										}
+
 										if( IsInStrategyAnalyzer)
 										{
 											virtualCashAccount += profit;
@@ -800,13 +847,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											string instrument = BarsArray[orderRecordMaster.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex].Instrument.FullName;
 											if(executionOrder.OrderAction == OrderAction.BuyToCover)
 											{
-												//forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
+												forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
 												
 											}
 											else if (executionOrder.OrderAction == OrderAction.Sell)
 											{
 												
-												//forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
+												forceDrawDebug("["+instrument+"] | ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Green,true);	
 
 											}
 										}
@@ -885,14 +932,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											{
 												
 												//forceDrawDebug("("+orderRecordMaster.EntrySignalReturnAction+") $"+Math.Round(profit,2)+" ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+" ) MaxLoss: "+Math.Round(orderRecordMaster.PriceStats.OrderMaxLoss,0)+" ATH: "+Math.Round((double)orderRecordMaster.PriceStats.OrderStatsAllTimeHighProfit)+" PB: "+Math.Round(orderRecordMaster.PriceStats.OrderStatspullBackThreshold,0)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
-												//forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
+												forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
 												
 											}
 											else if (executionOrder.OrderAction == OrderAction.Sell )
 											{
 												
 												//forceDrawDebug("("+orderRecordMaster.EntrySignalReturnAction+") $"+Math.Round(profit,2)+" ("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+" ) MaxLoss: "+Math.Round(orderRecordMaster.PriceStats.OrderMaxLoss,0)+" ATH: "+Math.Round((double)orderRecordMaster.PriceStats.OrderStatsAllTimeHighProfit)+" PB: "+Math.Round(orderRecordMaster.PriceStats.OrderStatspullBackThreshold,0)+"",1,0,High[0]-(TickSize*100),Brushes.Red,true);	
-												//forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
+												forceDrawDebug("["+instrument+"] | (("+orderRecordMaster.OrderSupplementals.thisSignalExitAction+") $"+Math.Round(profit,2)+"",1,0,High[0]-(TickSize*10),Brushes.Red,true);	
 
 											}
 											

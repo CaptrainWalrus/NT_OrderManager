@@ -56,12 +56,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 					
 			
+				lock (eventLock)
+				{
+					
 					/// map out all components all at once, then later fill in a few parts like the order objects, and toggle entry/exit stops as needed
 					tryCatchSection = "Section 3a Order Management Lite "+OA+" "+signalPackageParam.SignalReturnAction;
 					DebugPrint(debugSection.EntryLimitFunction," L 9");
 					string uuid = GenerateSignalId();
-					string entryUUID =  uuid+"_Entry"+"_series_"+signalPackageParam.instrumentSeriesIndex;
-					string exitUUID = uuid+"_Exit"+"_series_"+signalPackageParam.instrumentSeriesIndex;
+					string entryUUID =  uuid+"_Entry";
+					string exitUUID = uuid+"_Exit";
 					
 
 					//Print($"BarsInProgress {BarsInProgress} BAR: {CurrentBars[BarsInProgress]}  TIME{Time[0]}, EntryLimitFunctionLite entryUUID created {entryUUID}");
@@ -104,12 +107,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						ExitOrderUUID = exitUUID,
 						PriceStats = orderPriceStats,
 						OrderSupplementals = orderSupplementals,
-						ExitFunctions = exitFunctions
+						ExitFunctions = exitFunctions,
+						SignalContextId = signalPackageParam.SignalContextId
 					};
 					tryCatchSection = "Section 3e Order Management Lite ";
 					simulatedEntry simulatedEntryAction = new simulatedEntry
 					{
 						 EntryOrderUUID = entryUUID,
+						 ExitOrderUUID = exitUUID,
 						 EntryOrderAction = signalPackageParam.SignalReturnAction.Sentiment == signalReturnActionType.Bullish ? OrderAction.Buy : OrderAction.SellShort,
 						 quantity = accountEntryQuantity,
 						 isEnterReady = true,
@@ -186,18 +191,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					//Print("Storing "+exitUUID);
 					
 					OrderRecordMasterLiteExitSignals[exitUUID] = orderRecordMasterLite;
-					tryCatchSection = "Section 3l Order Management Lite ";
-					
-					if(OrderRecordMasterLiteExitSignals.ContainsKey(exitUUID))
-					{
-						//Print("exitUUID stored: "+exitUUID);
-						
-					}
 					tryCatchSection = "Section 5 Order Management Lite ";
 					
 					//simulatedEntryConditions();
 				
 					signalQueue.Clear();
+				}
 					
 			}
 			
