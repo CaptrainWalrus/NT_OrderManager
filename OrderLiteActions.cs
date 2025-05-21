@@ -29,7 +29,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
     {
 		private List<OrderRecordMasterLite> openOrders = new List<OrderRecordMasterLite>();
 
-      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string appendSignal,bool isOverleveraged,bool canScaleIn,bool isForcedEntryVal,OrderType orderType)
+      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string appendSignal,int thisBar,OrderType orderType,string subTypeParam, string patternIdString)
 		{	 
 		
 		
@@ -78,6 +78,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						forceExit = false,
 						thisSignalExitAction = signalExitAction.NA,
 						sourceSignalPackage = signalPackageParam,
+						patternSubtype = subTypeParam,
+						patternId = patternIdString
 			
 					};
 					tryCatchSection = "Section 3c Order Management Lite ";
@@ -118,7 +120,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						 EntryOrderAction = signalPackageParam.SignalReturnAction.Sentiment == signalReturnActionType.Bullish ? OrderAction.Buy : OrderAction.SellShort,
 						 quantity = accountEntryQuantity,
 						 isEnterReady = true,
-						 EntryBar = CurrentBars[0],
+						 EntryBar = thisBar,
 						 EntrySignalReturnAction =  new signalReturnAction(signalPackageParam.SignalReturnAction.SignalName,signalReturnActionType.Bullish), // Use the SignalId directly,
 						 EntryOrderType = mainEntryOrderType,
 						// stopPrice = signalPackageParam.SignalReturnAction.Sentiment == signalReturnActionType.Bullish ? orderFlowVWAP.StdDev3Upper[0] + (TickSize*3) : orderFlowVWAP.StdDev3Lower[0] - (TickSize*3),
@@ -153,7 +155,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					orderSupplementals.SimulatedStop = simulatedExitAction;
 					tryCatchSection = "Section 3h Order Management Lite ";
 					
-					MasterSimulatedEntries.Add(orderSupplementals.SimulatedEntry);
+					//MasterSimulatedEntries.Add(orderSupplementals.SimulatedEntry);
 					MasterSimulatedStops.Add(orderSupplementals.SimulatedStop);
 					
 					
@@ -161,10 +163,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						Print("Added Stop was not added!");
 					}
-					if(!MasterSimulatedEntries.Contains(orderSupplementals.SimulatedEntry))
-					{
-						Print("Added Entry was not added!");
-					}
+				//	if(!MasterSimulatedEntries.Contains(orderSupplementals.SimulatedEntry))
+				//	{
+				//		Print("Added Entry was not added!");
+				//	}
 					
 					tryCatchSection = "Section 3i Order Management Lite ";
 					LiteMasterRecords.Add(orderRecordMasterLite);
@@ -172,21 +174,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 				
 					OrderRecordMasterLiteEntrySignals[entryUUID] = orderRecordMasterLite;
-
-					//Print("Storing "+entryUUID);
-					if(OrderRecordMasterLiteEntrySignals.ContainsKey(entryUUID))
-					{
-						//Print("OrderRecordMasterLiteEntrySignals EntryUUID stored: "+entryUUID);
-						
-					}
 					
-					if(MasterSimulatedEntries.Contains(orderSupplementals.SimulatedEntry))
-					{
-						//Print("MasterSimulatedEntries EntryUUID stored: "+orderSupplementals.SimulatedEntry.EntryOrderUUID);
-						
-					}
+					vwapStop thisVwapStop = new vwapStop();
+					thisVwapStop.EMAValue = EMA3;
+					thisVwapStop.VWAPValue = VWAP1;
+					thisVwapStop.BBValue = BB0;
+					thisVwapStop.exitOrderUUID = orderRecordMasterLite.ExitOrderUUID;
+					thisVwapStop.entryOrderUUID = orderRecordMasterLite.EntryOrderUUID;
+					thisVwapStop.isLong = OA == OrderAction.Buy ? true  :false;
 					
-					
+					vwapStopMapping[thisVwapStop] = orderRecordMasterLite;
 					
 					//Print("Storing "+exitUUID);
 					
@@ -195,7 +192,27 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					//simulatedEntryConditions();
 				
-					signalQueue.Clear();
+					
+					
+					if(OA == OrderAction.Buy && GetMarketPositionByIndex(0) != MarketPosition.Short && GetMarketPositionByIndex(1) != MarketPosition.Short)
+					{
+						
+							EnterLong(1,1,entryUUID);
+							//SubmitOrderUnmanaged(1, OrderAction.Buy, OrderType.Market,accountEntryQuantity, 0, 0,null, orderRecordMasterLite.EntryOrderUUID);
+							return;
+							
+					}
+					else if(OA == OrderAction.SellShort && GetMarketPositionByIndex(0) != MarketPosition.Long && GetMarketPositionByIndex(1) != MarketPosition.Long)
+					{
+						
+							//Print($"SubmitOrderUnmanaged : openOrderTest {openOrderTest}");
+							//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID}, Quantity {Q} EnterShort {GetMarketPositionByIndex(BarsInProgress)}");
+							//SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, accountEntryQuantity, 0, 0, null,orderRecordMasterLite.EntryOrderUUID);
+							EnterShort(1,1,entryUUID);
+							return;
+							
+						
+					}
 				}
 					
 			}

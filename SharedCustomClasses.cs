@@ -30,12 +30,7 @@ using System.IO;
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
 	
-		public class functionResponseSignals
-		{
 		
-			public List<Signal> patternIDs { get; set; }
-		    public FunctionResponses response { get; set; }
-		}
 		
 		public enum entryMechanic
 		{
@@ -50,7 +45,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		    public double Beta { get; set; } = 1.0; // Add Alpha and Beta for Thompson Sampling
 		}
 	
-
+		public class vwapStop
+		{
+			
+			public custom_VWAP VWAPValue { get; set; }
+			public EMA EMAValue { get; set; }
+			public Bollinger BBValue { get; set; }
+			public string exitOrderUUID  { get; set; }
+			public string entryOrderUUID  { get; set; }
+			public bool isLong  { get; set; }
+				
+		}
 		public class OrderFlowPattern
 		{
 		
@@ -454,6 +459,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			None
 		}
 		
+		public enum patternSubtypes
+		{
+			All,
+			Trending,
+			Reversion,
+			Breakout,
+			Consolidation,
+			
+		}
 		
 		public enum signalExitAction
 		{
@@ -481,6 +495,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			FE_CAP2, // daily cap
 			FE_CAP_ML, // daily cap
 			FE_CAP_TP, // daily cap
+			FE_CAP_TP_SAFE,
 			FE_EOD, // margin check
 			FE_EXIT,// exit signal
 			FE_EOSC,
@@ -505,7 +520,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			FUNCS,
 			IMBL,
 			IMBS,
-			NULL
+			NULL,
+			STOPVWAP,
+			subTypeMisMatch_L,
+			subTypeMisMatch_S,
+			DTW_L,
+			DTW_S
 		
 		}
 		
@@ -752,6 +772,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public signalExitAction thisSignalExitAction { get; set;}
 			public signalPackage sourceSignalPackage {get; set; }
 			public string ExitReason { get; set; }
+			public string patternSubtype { get; set; }
+			public string patternId { get; set; }
+			public double divergence { get; set; }
+			public bool isEntryRegisteredDTW { get; set; }
+			public DateTime? forceExitTimestamp { get; set; } // Added to track when exit was flagged
 
 		}
 		public class OrderPriceStats
@@ -782,6 +807,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			ExitAll,
 			NoAction
 		}
+		
+		public class patternFunctionResponse
+		{
+			public FunctionResponses newSignal { get; set; }
+			public string patternSubType { get; set; }
+			public string patternId { get; set; }
+			
+		}
+		
 		public class OrderRecordMasterLite
 		{
 			public signalReturnAction EntrySignalReturnAction { get; set; }

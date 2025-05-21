@@ -38,7 +38,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	[Gui.CategoryOrder("Class Parameters", 1)]
 	[Gui.CategoryOrder("Entry Parameters", 2)]
 	[Gui.CategoryOrder("Order Flow Pattern", 3)]
-	
+	[Gui.CategoryOrder("SignalPool", 4)]
 	[Gui.CategoryOrder("Entry Behaviors", 7)]
 	[Gui.CategoryOrder("EMA", 8)]
 	[Gui.CategoryOrder("Signal Parameters", 9)]
@@ -180,6 +180,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		private bool DebugMode;
 		
+		private bool isTerminationLogicRun = false; // Flag to ensure termination logic runs only once per instance
 	//	private double prevdata = double.MinValue;
 	//	private double drawDownBasedRisk = 0;
 	//	private double preOptimizeProfitAvg;
@@ -248,37 +249,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		protected AttractingMA attractingMA;
 		public EMA EMA3; 
-		public SMA SMA200;
-		/*public EMA EMASeries1;
-		public EMA EMALow; 
-		public EMA EMATight; 
-		 
-		
-		public SMA SMA1; 
-		private Swing swingIndicator;
-		private SMA volumeSMA;
 	
+		//const EMA_PERIODS = [8, 13, 21, 34, 55, 89]; // Standard periods
 
-
-		/// <summary>
-		/// ////////////////////////LOOPS
-		/// </summary>
-		private double sharpeGoal = 1; // Example Sharpe ratio goal
-	    private double winrateGoal = 0.7; // Example win rate goal
-	    private int tuningPass = 0; // Maximum number of attempts
-		private int maxAttempts = 10; // Maximum number of attempts
-	    private int tuningPeriod = 5000; // Number of bars to use for tuning
-	    private int currentAttempt = 1;
-	    private bool goalAchieved = false;
-	   
-	    protected int wins = 0;
-	    protected int losses = 0;
-		private int dynamicWindowSize = 0;
-		
-		// Declare the array and a counter for initial population
-		
-		*/		
-		///  print outs
+		public EMA EMA8;
+		public EMA EMA13;
+		public EMA EMA21;
+		public EMA EMA34;
+		public EMA EMA55;
+		public EMA EMA89;
+		public SMA SMA200;
+		public RSI RSI14;
+	
 
 		private double[] cumProfitArray = new double[3];
 		private int valueCounter = 0;
@@ -320,32 +302,21 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		//protected double bt_cashValueStart;
 		protected double lowest_PNL = 0;
 
-		//private Series<double> bbWidthSeries;
-		//private Series<double> EMA3_roc_Series;
-		//private Series<double> SMA200_roc_Series;
-		//private Series<double> VWAP_EMA_Delta_Series;
+	
 
 
 		
 		public double virtualCashAccount;/// used for tracking backtest outcomes
 	
-		
-		//protected Series<int> lowBullSignalBars;
-		//protected Series<int> highBullSignalBars;
-		//protected Series<int> lowBearSignalBars;
-		//protected Series<int> highBearSignalBars;
-		
-		//public double trendROC_narrow;
-		//public double trendROC_wide;
-		
-		//public double ATHPrice = 0;
-		//public double ATLPrice = 0;
+	
 	
 		protected List<OrderRecordMasterLite> LiteMasterRecords;
 		
 		private Dictionary<string, OrderRecordMasterLite> OrderRecordMasterLiteEntrySignals = new Dictionary<string, OrderRecordMasterLite>();
 		private Dictionary<string, OrderRecordMasterLite> OrderRecordMasterLiteExitSignals = new Dictionary<string, OrderRecordMasterLite>();
-		
+		private Dictionary<vwapStop,OrderRecordMasterLite > vwapStopMapping = new Dictionary<vwapStop,OrderRecordMasterLite>();
+		private Dictionary<string, double> patternIdProfits = new Dictionary<string, double>();
+
 
 		
 		protected List<simulatedEntry> MasterSimulatedEntries;
@@ -422,7 +393,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				Description									= @"Management of order handling and responses to entry signals, logic for exits";
 				Name										= "OrganizedStrategy_MainStrategy";
-				Calculate									= Calculate.OnBarClose;
+				Calculate									= Calculate.OnPriceChange;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
 				IsExitOnSessionCloseStrategy				= true;
@@ -440,11 +411,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				IsAdoptAccountPositionAware 				= true;
 				IsOverlay 									= true;
 	            RealtimeErrorHandling = RealtimeErrorHandling.IgnoreAllErrors; // Ignore all errors to prevent strategy from terminating
-				IsUnmanaged = true; // Switch to unmanaged mode
+				IsUnmanaged = false; // Switch to unmanaged mode
 				
 		
 				
-				
+				DivergenceThreshold = 0.4;
 				
 				// Disable this property for performance gains in Strategy Analyzer optimizations
 				// See the Help Guide for additional information
@@ -557,7 +528,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            
 	            if (IsInStrategyAnalyzer)
 	            {
-	                AddDataSeries(Instrument.FullName, BarsPeriodType.Second, 30);
+	                AddDataSeries(Instrument.FullName, BarsPeriodType.Second, 5);
 	            }
 	         
 			}
@@ -588,11 +559,26 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				EMA3 = EMA(BarsArray[0],ema3_val);
 				
-				AddChartIndicator(EMA3);
-				AddChartIndicator(VWAP1);
+				EMA8 = EMA(BarsArray[0],8);
+				EMA13 = EMA(BarsArray[0],13);
+				EMA21 = EMA(BarsArray[0],21);
+				EMA34 = EMA(BarsArray[0],34);
+				EMA55 = EMA(BarsArray[0],55);
+				EMA89 = EMA(BarsArray[0],89);
 				
 				
-				BB0 = Bollinger(4,25);
+				
+				
+				
+				
+				
+				
+				RSI14 = RSI(14,1);
+				//AddChartIndicator(EMA3);
+				//AddChartIndicator(VWAP1);
+				
+				
+				BB0 = Bollinger(1.4,25);
 				//AddChartIndicator(BB0);
 	
 				EMA3.Plots[0].Brush = Brushes.Fuchsia;
@@ -644,10 +630,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				Print("Initializing CurvesV2 connection (async)...");
 				try 
 				{ 
-					Print($"Initializing CurvesAPI = {InitCurvesAPI}");
+					Print("Initializing CurvesAPI");
 	
-					if(InitCurvesAPI)
-					{
+					
 					var config = ConfigManager.Instance.CurvesV2Config; 
 					
 					// Set synchronous mode in config
@@ -660,7 +645,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					
 					Print("CurvesV2Service Initialized (async connection pending).");
-					}
+					
 					// Establish connection after initialization
 					if (UseDirectSync)
 					{
@@ -768,6 +753,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				else if (State == State.Terminated)
 				{
+				   // Check if termination logic has already run for this instance
+				   if (isTerminationLogicRun)
+				   {
+					   Print($"State.Terminated: Termination logic already executed for instance {this.GetHashCode()}. Skipping.");
+					   return; 
+				   }
+				   isTerminationLogicRun = true; // Set the flag
+				   Print($"State.Terminated: Executing termination logic for instance {this.GetHashCode()}.");
 				
 					/// threads
 					Print("State == State.Terminated");
@@ -776,6 +769,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						StopOrderObjectStatsThread();
 					}
 					
+						Print("----------PATTERNS BEGIN---------");
+						foreach(var kvp in patternIdProfits)
+						{
+						    string pattern = kvp.Key;
+						    double profit = kvp.Value;
+							
+							Print($"pattern {pattern} - ${profit}");
+						}
+						Print("----------PATTERNS END---------");
 					// 1. Reset static data in CurvesV2Service
 					Print("1. Resetting all static data in CurvesV2Service");
 					CurvesV2Service.ResetStaticData();
@@ -785,12 +787,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						try 
 						{
-							Print("2. Disposing CurvesV2Service instance");
+							Print("1. Disposing CurvesV2Service instance (static reset handled within Dispose)");
 							curvesService.Dispose();
 						}
 						catch (Exception ex)
 						{
-							Print($"Error disposing CurvesV2Service: {ex.Message}");
+							Print($"Error disposing CurvesV2Service instance {this.GetHashCode()}: {ex.Message}");
 						}
 						finally
 						{
@@ -799,12 +801,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					}
 					else
 					{
-						Print("2. No active CurvesV2Service instance to dispose");
+						Print("1. No active CurvesV2Service instance to dispose for instance {this.GetHashCode()}");
 					}
 				}
 			}
 			catch (Exception ex)
 			{
+			    Print($"CRITICAL ERROR in OnStateChange during {State.ToString()} for instance {this.GetHashCode()}: {ex.Message}\nStackTrace: {ex.StackTrace}");
 			    Print("Error in OnStateChange during " + State.ToString() + ": " + ex.Message + " StackTrace: " + ex.StackTrace);
 			}
 			
@@ -983,7 +986,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								int instrumentSeriesIndex = simStop.instrumentSeriesIndex;
 					            var action = simStop.OrderRecordMasterLite.EntryOrder.OrderAction == OrderAction.Buy ? OrderAction.Sell : OrderAction.BuyToCover;
 					            // Execute the force exit order
-					            SubmitOrderUnmanaged(
+					            if(action == OrderAction.Sell)
+								{
+									ExitLong(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+								}
+								if(action == OrderAction.BuyToCover)
+								{
+									ExitShort(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+								}
+								/*SubmitOrderUnmanaged(
 					                instrumentSeriesIndex,
 					                action,
 					                OrderType.Market,
@@ -994,6 +1005,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                simStop.OrderRecordMasterLite.ExitOrderUUID
 					            );
 					            // Reset the flag to prevent duplicate submissions
+								*/
 					            simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = false;
 					
 					          // Print($"Submitted force exit for {simStop.OrderRecordMasterLite.EntryOrderUUID}");
@@ -1019,6 +1031,29 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			lock (eventLock)
 			{
+				if(BarsInProgress == 0) ///every request to CheckDivergence increments by 1 so its important to do only once per bar per item
+				{
+					 foreach (var simStop in MasterSimulatedStops)
+	                {
+						if(simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true)
+						{
+							
+							
+							int age = CurrentBars[0]-simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedEntry.EntryBar;
+							
+							
+							if(age < 100)
+							{
+								bool x = curvesService.CheckDivergence(simStop.EntryOrderUUID,age); /// update divergence stats
+							
+							}
+							
+						}
+					}
+				}
+			}
+			lock (eventLock)
+			{
 				 foreach (var simStop in MasterSimulatedStops)
                 {
 				   
@@ -1026,8 +1061,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
                     {
 					    msg = "MasterSimulatedStops 1";
                   
-                        UpdateOrderStats(simStop);
-                    }
+                        
+					
+						UpdateOrderStats(simStop);
+					}
                     catch (Exception ex)
                     {
                         Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
@@ -1118,7 +1155,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 				{
-			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
+			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_TP_SAFE, false);
 				}
 				
 				return;
@@ -1216,9 +1253,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			
 			///get entry signals
    			
-			FunctionResponses newSignal = BuildNewSignal();
+			//FunctionResponses newSignal = BuildNewSignal();
+			patternFunctionResponse builtSignal = BuildNewSignal(); 
+			FunctionResponses newSignal = builtSignal.newSignal;
 		
-		
+			
 			if(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
 				
@@ -1291,135 +1330,29 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				//Print(standardPattern.SOMGrid.ToString());
 				DebugPrint(debugSection.OnBarUpdate,"Mark 5 ");	
 				msg = "thisSignalPackage";
-			
-			
-			// Check if the signal is relevant and push it to the queue
-				if (thisSignalPackage.SignalReturnAction.Sentiment != null && 
-				    thisSignalPackage.SignalReturnAction.Sentiment != signalReturnActionType.Neutral)
-					{
-						signalQueue.Push(thisSignalPackage);
-						
-						lastFunction = "signalQueue Push";
-						
-					    if (thisSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bullish)
-					    {
+				if (signalsOnly)
+						{
+							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Trending") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.Cyan); //forceDrawDebug("T",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Reversion") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.DodgerBlue);// forceDrawDebug("R",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Breakout") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.Blue); //forceDrawDebug("B",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Consolidation") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.CornflowerBlue); //forceDrawDebug("C",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*5),Brushes.Gray);
+
+							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Trending") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.HotPink);// forceDrawDebug("T",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Reversion") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Pink);//forceDrawDebug("R",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Breakout") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Salmon);//forceDrawDebug("B",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Consolidation") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Fuchsia);//forceDrawDebug("C",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
+							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Gray);
 							
-					        if (!isRealTime) 
-					        { //  
-					            //Print(Time[0] + " SIGNAL (" + thisSignalPackage.SignalReturnAction.SignalName + ") BULL SIGNAL");
-					        }
-					        
-					    }
-					    else if (thisSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bearish)
-					    {
-					        if (!isRealTime) 
-					        {
-					            //Print(Time[0] + " SIGNAL (" + thisSignalPackage.SignalReturnAction.SignalName + ") BEAR SIGNAL");
-					        }
-					       
-					    }
-						
-						 
-					}
+							
+							
+							
+						}
+			
 			//// NOW EMPTY QUEUE AND MAKE ENTRIES
-				
-				signalPackage DequeueSignalPackage = null;
-				
-				if (signalQueue.Count() > 0 && signalQueue.Count() >= accumulationRequirement)// && BarsInProgress == thisSignalPackage.instrumentSeriesIndex)
-				{
-					//Print("signalQueue go");
-				    DequeueSignalPackage = signalQueue.Pop(); // Get the first item.
-				    bool aligned = true;
-				    signalReturnActionType firstSentiment = DequeueSignalPackage.Sentiment;
-				    DateTime previousTime = DequeueSignalPackage.creationDate;
-				    double previousPrice = DequeueSignalPackage.price; // Assuming `Price` is part of signalPackage.
-				    TimeSpan maxTimeDifference = TimeSpan.FromMinutes(entriesPerDirectionSpacingTime);
-				
-				    // If we require multiple items, ensure alignment.
-				    if (accumulationRequirement > 1)
-				    {
-				        for (int i = 1; i < accumulationRequirement; i++)
-				        {
-				            signalPackage otherPackage = signalQueue.Pop(); // Get the next package.
-				            DateTime otherTime = otherPackage.creationDate;
-				            double otherPrice = otherPackage.price; // Assuming `Price` is part of signalPackage.
-				
-				            // Check sentiment alignment.
-				            if (otherPackage.Sentiment != firstSentiment)
-				            {
-				                aligned = false;
-				                break; // Exit early if not aligned.
-				            }
-				
-				            // Check if price direction is consistent for bullish or bearish sentiment.
-				            if (firstSentiment == signalReturnActionType.Bullish && otherPrice <= previousPrice)
-				            {
-				                aligned = false;
-				                break; // Exit if price direction is invalid for bullish sentiment.
-				            }
-				            else if (firstSentiment == signalReturnActionType.Bearish && otherPrice >= previousPrice)
-				            {
-				                aligned = false;
-				                break; // Exit if price direction is invalid for bearish sentiment.
-				            }
-				
-				            // Check if time difference is within the limit.
-				            if ((otherTime - previousTime) > maxTimeDifference)
-				            {
-				                aligned = false;
-				                break; // Exit if time difference exceeds the limit.
-				            }
-				
-				            // Update previous values for the next iteration.
-				            previousTime = otherTime;
-				            previousPrice = otherPrice;
-				        }
-				    }
-					
-					if (signalsOnly)
-					{
-						if(newSignal == FunctionResponses.EnterLong)
-						{
-							
-							Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*1),Brushes.Lime);
-						}
-						
-						if(newSignal == FunctionResponses.EnterShort)
-						{
-							Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*1),Brushes.Red);
-						}
-						
-						
-						
-					}
-				   
-
-				
-						    // If we only need one item, it's already considered aligned. also if its a big ticket item
-						    if ((accumulationRequirement == 0 && thisSignalPackage.instrumentSeriesIndex == 1) || thisSignalPackage.instrumentSeriesIndex == 3)
-						    {
-								if(isRealTime) Print($"accumulationReq {signalPackageSignal} Bar {CurrentBars[BarsInProgress]} BarsInProgress: {BarsInProgress}, Time: {Times[BarsInProgress][0]}");
-		
-								if(thisSignalPackage.instrumentSeriesIndex == 3)
-								{
-									DequeueSignalPackage = thisSignalPackage;
-								}
-						        aligned = true;
-						    }
-
-
-							
-					 	 
-							if ((!signalsOnly && aligned == true) || (!signalsOnly && dequeueLast == true))
-							{
-							
-									
-					                
-					            if ((DequeueSignalPackage.SignalReturnAction.SignalName != signalReturnActionEnum.noAction.ToString() && 
-					                DequeueSignalPackage.SignalReturnAction.SignalName != signalReturnActionEnum.exitAction.ToString() && 
-					                DequeueSignalPackage.SignalReturnAction.Sentiment != signalReturnActionType.Neutral) || (DequeueSignalPackage.SignalReturnAction.SignalName.Contains("RENT")))
-					            {
-									
+			{
+					if (!signalsOnly)
+					{		
 									lastFunction = "DO accrualGO NAME OK";
 								
 					                   if (!isRealTime)///historical
@@ -1449,7 +1382,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											int indexQuantity = thisSignalPackage.instrumentSeriesIndex == 3 ? 1 : strategyDefaultQuantity;
 											if(isRealTime) Print($"{signalPackageSignal} continue BarsInProgress: {BarsInProgress}, Time: {Times[BarsInProgress][0]}");
 
-					                        if (DequeueSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bullish && marketPosAllowed != marketPositionsAllowed.Short)
+					                        if (thisSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bullish && marketPosAllowed != marketPositionsAllowed.Short)
 					                        {   
 																							
 												if(isRealTime) Print($"BAR: {CurrentBars[BarsInProgress]} TIME{Time[0]}, Bullish");
@@ -1460,14 +1393,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
 					                            	{ 
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM LONG");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, DequeueSignalPackage, "", false, true, true, mainEntryOrderType); 
+														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
 						                                return;
 															
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM FLAT");
-						                                EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, DequeueSignalPackage, "", false, true, true, mainEntryOrderType); 
+						                                EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
 						                                return;
 													}
 													else
@@ -1477,7 +1410,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													
 					                            }
 					                        }
-					                        else if (DequeueSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bearish && marketPosAllowed != marketPositionsAllowed.Long)
+					                        else if (thisSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bearish && marketPosAllowed != marketPositionsAllowed.Long)
 					                        {
 												if(isRealTime) Print($"BAR: {CurrentBars[BarsInProgress]} TIME{Time[0]}, Bearish");
 					                            lastFunction = "DO Bearish";
@@ -1488,13 +1421,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                                if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
 					                           		{  
 														if (isRealTime) Print(Time[0] + " ENTER SHORT FROM SHORT");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, DequeueSignalPackage, "", false, true, true, mainEntryOrderType); 
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
 						                                return;
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER SHORTFROM FLAT");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, DequeueSignalPackage, "", false, true, true, mainEntryOrderType); 
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
 						                                return;
 						                               
 													}
@@ -1510,18 +1443,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										{
 		
 										}
+								}
+					}
 								
-					            
-							}
-							
-								
-						}
-						
-					
 					thisSignalPackage.SignalReturnAction = new signalReturnAction(signalReturnActionEnum.noAction.ToString(), signalReturnActionType.Neutral);
 					lastBar = CurrentBars[0];
 			
-				}
+				
 		 	}
 
 		}
@@ -1609,28 +1537,32 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		    {
 		        Print("Closing and stopping strategy: " + reason);
 		        Log("Closing and stopping strategy: " + reason, LogLevel.Error);
-		        
-		        // Flatten all positions
-		        if (GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
-		        {
-		            // Place market order to close position
-		            if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
-				    {
-						
-				        // Close Long position by selling the quantity
-				        SubmitOrderUnmanaged(BarsInProgress, OrderAction.Sell, OrderType.Market, GetPositionCountByIndex(BarsInProgress), 0, 0, null, "CloseAndStopStrategy_Long");
-				        Print($"Closing Long position of {Position.Quantity} contracts.");
-				    }
-				    else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
-				    {
-				        // Close Short position by buying to cover the quantity
-				        SubmitOrderUnmanaged(BarsInProgress, OrderAction.BuyToCover, OrderType.Market, GetPositionCountByIndex(BarsInProgress), 0, 0, null, "CloseAndStopStrategy_Short");
-				        Print($"Closing Short position of {Position.Quantity} contracts.");
-				    }
-
-		        }
-		        
-		       
+		        foreach (simulatedStop simStop in MasterSimulatedStops)
+				{
+			        // Flatten all positions
+			        if (GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
+			        {
+			            // Place market order to close position
+			            if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
+					    {
+							
+					        // Close Long position by selling the quantity
+					        ExitLong(BarsInProgress,GetPositionCountByIndex(BarsInProgress),simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+							
+							//SubmitOrderUnmanaged(BarsInProgress, OrderAction.Sell, OrderType.Market, GetPositionCountByIndex(BarsInProgress), 0, 0, null, "CloseAndStopStrategy_Long");
+					        Print($"Closing Long position of {Position.Quantity} contracts.");
+					    }
+					    else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
+					    {
+					        // Close Short position by buying to cover the quantity
+							ExitShort(BarsInProgress,GetPositionCountByIndex(BarsInProgress),simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+					        //SubmitOrderUnmanaged(BarsInProgress, OrderAction.BuyToCover, OrderType.Market, GetPositionCountByIndex(BarsInProgress), 0, 0, null, "CloseAndStopStrategy_Short");
+					        Print($"Closing Short position of {Position.Quantity} contracts.");
+					    }
+	
+			        }
+				}
+		
 		        ExitActiveOrders(ExitOrderType.ASAP_ExitSignal,signalExitAction.CLOSE_STOP,false);
 		        
 		
@@ -1659,10 +1591,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		}
 		
-		protected virtual FunctionResponses BuildNewSignal()
+	
+		protected virtual patternFunctionResponse BuildNewSignal()
 		{
 		
-			return FunctionResponses.NoAction;
+			patternFunctionResponse thisSignal = new patternFunctionResponse();
+			thisSignal.newSignal = FunctionResponses.NoAction;
+			thisSignal.patternSubType = "none";
+			
+			return thisSignal;
 		}
 		
 		protected virtual FunctionResponses exitFunctionResponse()
@@ -1791,50 +1728,47 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 		}
 		
-		protected virtual void sendPositionsForReview(string instrument, double entryPrice, double exitPrice, 
-		    DateTime entryTime, DateTime exitTime, List<Signal> patternId, string marketPosition, double profit) 
-		{
-			
-		}
+		
 		
 			
 
 ///Properties	
 	
 		#region Properties
+		[NinjaScriptProperty]    
+		[Display(Name="Use VWAP STOP", Order=0, GroupName="Class Parameters")]
+		public bool UseVwapStop { get; set; }
 		
 		[NinjaScriptProperty]    
-		[Display(Name="Use Direct Synchronous Processing", Order=1, GroupName="Class Parameters")]
+		[Display(Name="Use CurvesService Synchronous Processing", Order=1, GroupName="Class Parameters")]
 		public bool UseDirectSync { get; set; }
 	
 		[NinjaScriptProperty]    
-		[Display(Name="Iniitialize Curves API", Order=2, GroupName="Class Parameters")]
-		public bool InitCurvesAPI { get; set; }
+		[Display(Name="patternSubtypesPicker", Order=1, GroupName="Class Parameters")]
+		public patternSubtypes patternSubtypesPicker { get; set; }
+		
+
 		
 		[NinjaScriptProperty]	
 		[Display(Name="accumulation Requirement", Order=32, GroupName="Order Flow Pattern")]
 		public int accumulationRequirement
 		{ get; set; }
 		
-		[NinjaScriptProperty]
+
+	[NinjaScriptProperty]
 		[Display(Name="enable FUNC Exit", Description="", Order=33, GroupName="Order Flow Pattern")]
 		public bool enableFUNCL { get; set;} 
 		
-	
+		
 		
 		[NinjaScriptProperty]    
-		[Display(Name="Micro Contracts", Order=0, GroupName="Class Parameters")]
-		public bool microContracts
-		{ get; set; }
-		
-		[NinjaScriptProperty]    
-		[Display(Name="Use Async Processing", Order=1, GroupName="Class Parameters")]
+		[Display(Name="Use Async ObjectStatsThread", Order=1, GroupName="Class Parameters")]
 		public bool useAsyncProcessing
 		{ get; set; }
 		
 		[NinjaScriptProperty]    
-		[Display(Name="Stream Historical Data", Order=2, GroupName="Class Parameters")]
-		public bool HistoricalData
+		[Display(Name="DivergenceSignal Thresholds", Order=2, GroupName="Class Parameters")]
+		public bool DivergenceSignalThresholds
 		{ get; set; }
 		
 		
@@ -1850,8 +1784,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{ get; set; }
 		
 		[NinjaScriptProperty]
-		[Display(Name="useStaticDataSeries", Order=5, GroupName="Class Parameters")]
-		public bool useStaticDataSeriesBool
+		[Display(Name="RawScore Requirement", Order=5, GroupName="Class Parameters")]
+		public double OutlierScoreRequirement
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="effectiveScore Requirement", Order=5, GroupName="Class Parameters")]
+		public double effectiveScoreRequirement
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Divergence Threshold", Order=5, GroupName="Class Parameters")]
+		public double DivergenceThreshold
 		{ get; set; }
 		
 		[NinjaScriptProperty]

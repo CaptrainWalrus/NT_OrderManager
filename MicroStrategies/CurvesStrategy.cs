@@ -10,6 +10,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	using NinjaTrader.Cbi;
 	using NinjaTrader.Gui;
 	using NinjaTrader.Gui.Tools;
+	using NinjaTrader.NinjaScript.DrawingTools;
+	using NinjaTrader.Gui.Chart;
 	using NinjaTrader.Data;
 	using NinjaTrader.NinjaScript;
 	using NinjaTrader.Core.FloatingPoint;
@@ -61,11 +63,9 @@ public partial class CurvesStrategy : MainStrategy
 	[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
 	public bool UseRemoteService { get; set; }
 	
-	[NinjaScriptProperty]    
-	[Display(Name="Stream Historical Data", Order=2, GroupName="Class Parameters")]
-	public bool HistoricalData { get; set; }
+	
 
-
+	
 	private int stopTest = 0;
 
 	// Make the Signal class serializable
@@ -94,7 +94,7 @@ public partial class CurvesStrategy : MainStrategy
 			// Defaults are set as per previous step
 			Description = "Curves strategy"; 
 			Name = "Curves"; 
-			Calculate = Calculate.OnBarClose;
+			Calculate = Calculate.OnPriceChange;
 			EntriesPerDirection = 1;
 			EntryHandling = EntryHandling.UniqueEntries;
 			IsExitOnSessionCloseStrategy = false;
@@ -108,7 +108,7 @@ public partial class CurvesStrategy : MainStrategy
 			RealtimeErrorHandling = RealtimeErrorHandling.StopCancelClose;
 			StopTargetHandling = StopTargetHandling.PerEntryExecution;
 			BarsRequiredToTrade = 20;
-			IsUnmanaged = true;
+			IsUnmanaged = false;
 			
 			// Restore original strategy-specific defaults 
 			// (Assuming these were the correct ones from MicroStrategy)
@@ -147,7 +147,8 @@ public partial class CurvesStrategy : MainStrategy
 		{
 			if(terminatedStatePrinted==false)
 			{
-				
+				Print($"CurvesStrategy.OnStateChange: State.Terminated entered for instance {this.GetHashCode()}. Running cleanup if needed.");
+				terminatedStatePrinted = true;
 				
 				// 3. (Removed WebSocket handling since it's in the service dispose method)
 				
@@ -164,7 +165,7 @@ public partial class CurvesStrategy : MainStrategy
 				GC.WaitForPendingFinalizers();
 				
 				Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
-				terminatedStatePrinted = true;
+				
 			}
 		}
 	}
@@ -174,7 +175,6 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
-		
 		try
 		{
 			// Skip processing if service isn't available
@@ -184,6 +184,14 @@ public partial class CurvesStrategy : MainStrategy
 				NinjaTrader.Code.Output.Process("OnBarUpdate: CurvesV2Service not available", PrintTo.OutputTab1);
 				return;
 			}
+			if(curvesService != null)
+			{
+				if(curvesService.ErrorCounter > 10)
+				{
+					Print($"[ERROR COUNTER VIOLATION] {curvesService.ErrorCounter}");
+					return;
+				}
+			}
 			
 			
 			bool isConnected = curvesService.IsConnected;
@@ -191,18 +199,33 @@ public partial class CurvesStrategy : MainStrategy
 			
 			
 			
-			if (BarsInProgress != 0) return;
+			if (BarsInProgress != 0)
+			{
+				//Print($"{Time[0]} BarsInProgress {BarsInProgress} BAR # {CurrentBars[0]}");
+				return;
+			}
+			///small status update of progress
+			if(BarsInProgress == 0 && CurrentBars[0] % 10 == 0)
+			{
+				Print($"{Time[0]} BarsInProgress {BarsInProgress} BAR # {CurrentBars[0]}");
+			}
+			
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
+			
+			
 			// Log connection status periodically
 			CurvesV2Service.CurrentContextId = null;
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
 			if (isConnected && BarsInProgress == 0)
 			{
+				//Print($"{Time[0]} isConnected");
+
 				// Extract instrument code
 				string instrumentCode = GetInstrumentCode();
 			
 				// 1. Simple, direct send of bar data - fire and forget
 				bool barSent = curvesService.SendBarFireAndForget(
+					UseRemoteService,
 					instrumentCode,
 					Time[0],
 					Open[0],
@@ -215,13 +238,14 @@ public partial class CurvesStrategy : MainStrategy
 				//Print($"{Time[0]} : barSent {barSent}");
 				// 2. Simple, direct signal check - fire and forget  
 				if (barSent)
-				{
-					//Print($"{Time[0]} : Check Signal");
-					curvesService.CheckSignalsFireAndForget(Time[0].ToString(),instrumentCode);
+				{	
+					
+
+					Task.Delay(5).Wait(); 
+					//Print($"{Time[0]} : CheckSignalsFireAndForget!");
+					curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
+					
 				}
-				
-				// 3. Read current signals from static properties
-				UpdateLocalSignalData();
 			
 			}
 			
@@ -231,67 +255,118 @@ public partial class CurvesStrategy : MainStrategy
 			NinjaTrader.Code.Output.Process($"Error in OnBarUpdate: {ex.Message}", PrintTo.OutputTab1); 
 		}
 	}
+	
 	// Fix BuildNewSignal to actually return entry signals
-	protected override FunctionResponses BuildNewSignal()
+	protected override patternFunctionResponse BuildNewSignal()
 	{
-		//Print($"FunctionResponses Begin: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-	    FunctionResponses FRS = FunctionResponses.NoAction;
-	    
+		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
+	    patternFunctionResponse thisSignal = new patternFunctionResponse();
+		thisSignal.newSignal = FunctionResponses.NoAction;
+	    thisSignal.patternSubType = "none";
+		thisSignal.patternId = "";
 	    if(CurrentBars[0] < BarsRequiredToTrade)
 	    {
-	        return FRS;
+	        return thisSignal;
 	    }
 	    if(BarsInProgress != 0)
 	    {
-	        return FRS;
+	        return thisSignal;
 	    }
 	    
 	    // Calculate total positions and working orders
 	    int totalPositions = getAllcustomPositionsCombined();
-	    
-	    // Debug output for diagnostic purposes
-	    if (CurrentBars[0] % 20 == 0)
-	    {
-	        Print($"Position check: totalPositions={totalPositions}, accountMaxQuantity={accountMaxQuantity}");
-	    }
-	    
 	    // Check if we have room for more positions
 	    TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
+	
+	    
 	    
 	    // Critical safety limit - don't allow more than the max quantity
 	    if (totalPositions >= accountMaxQuantity )
 	    {
 	        Print($"*** SAFETY HALT - Position limit reached: positions={totalPositions},  max={accountMaxQuantity}");
-	        return FunctionResponses.NoAction;
+	        return thisSignal;
 	    }
-	    
+	   
 	    // Regular position check with throttle timing
-	    if (totalPositions < accountMaxQuantity && 
-	        timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
-	    {
-			
-		        if( VWAP1[0] < EMA3[0] && CurrentBullStrength > CurrentBearStrength * 2 && CurrentBullStrength > .8 && GetMarketPositionByIndex(1) != MarketPosition.Short)
-		        {
-		            Print($"LONG SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-		            //forceDrawDebug($"+{CurrentBullStrength}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
-		            //forceDrawDebug($"{totalPositions}",1,0,High[0]+(TickSize*20),Brushes.Lime,true);
+	    //if (totalPositions < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
+		if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
+
+	    {      // Get current signal values
+	            double currentBullStrength = CurvesV2Service.CurrentBullStrength;
+	            double currentBearStrength = CurvesV2Service.CurrentBearStrength;
+             
+				
+			        if (CurvesV2Service.SignalsAreFresh && (CurvesV2Service.CurrentSubtype == patternSubtypesPicker.ToString() || patternSubtypesPicker == patternSubtypes.All))
+			        {
+			      
+		
+			            // Enhanced logging to debug signal values
+			           // Print($"[DEBUG] Signal details: Bull={currentBullStrength:F2}%, Bear={currentBearStrength:F2}%, PatternType={CurvesV2Service.CurrentPatternType}, PatternId={CurvesV2Service.CurrentPatternId}");
+				            if(currentBullStrength > currentBearStrength)
+							{
+								Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Bull={currentBullStrength}  [subtype] {CurvesV2Service.CurrentSubtype} ");
 	
-		            ThrottleAll = Times[BarsInProgress][0];
-		            return FunctionResponses.EnterLong; // Actually return signal instead of NoAction
-		        }
+								
+				            		// Check for Long signal (strength and ratio conditions)
+						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement)// && CurvesV2Service.CurrentEffectiveScore > effectiveScoreRequirement)
+						            {
+										/*if(
+											(IsRising(EMA3) && EMA3[0] > VWAP1[0] && CurvesV2Service.CurrentSubtype == patternSubtypes.Trending.ToString()) || 
+											(CrossAbove(EMA3,VWAP1,5) && CurvesV2Service.CurrentSubtype == patternSubtypes.Reversion.ToString()) || 
+											(ATR(5)[0] < 1 && CurvesV2Service.CurrentSubtype == patternSubtypes.Breakout.ToString()) ||
+											(CurvesV2Service.CurrentSubtype == patternSubtypes.Consolidation.ToString())
+											)
+										{*/
+							                ThrottleAll = Times[BarsInProgress][0];
+							                thisSignal.newSignal = FunctionResponses.EnterLong;
+											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
+											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+											Print($"[DEBUG] Returning LONG signal with patternId={thisSignal.patternId}, subtype={thisSignal.patternSubType}");
+											return thisSignal;
+											
+						            	//}
+									}
+								
+				            }
+							if(currentBearStrength > currentBullStrength)
+							{
+								Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Bear={currentBearStrength} [subtype] {CurvesV2Service.CurrentSubtype}");
+	
+							
+						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement)//&& CurvesV2Service.CurrentEffectiveScore > effectiveScoreRequirement)
+						            {
+										/*if(
+											(IsFalling(EMA3) && VWAP1[0] > EMA3[0]  && CurvesV2Service.CurrentSubtype == patternSubtypes.Trending.ToString()) || 
+											(CrossAbove(VWAP1,EMA3,5) && CurvesV2Service.CurrentSubtype == patternSubtypes.Reversion.ToString()) || 
+											(ATR(5)[0] < 1 && CurvesV2Service.CurrentSubtype == patternSubtypes.Breakout.ToString()) ||
+											(CurvesV2Service.CurrentSubtype == patternSubtypes.Consolidation.ToString())
+											)
+										{*/	
+										
+											ThrottleAll = Times[BarsInProgress][0];
+							               	thisSignal.newSignal = FunctionResponses.EnterShort;
+											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
+											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+											Print($"[DEBUG] Returning SHORT signal with patternId={thisSignal.patternId}, subtype={thisSignal.patternSubType}");
+											return thisSignal;
+						            	//}
+									}
+							
+							}
+							else
+							{
+								Print($"[DEBUG] SKIP: Bull={currentBullStrength:F2}% , Bear={currentBearStrength:F2}% |||| [confluenceScore] {CurvesV2Service.CurrentConfluenceScore} , [oppositionStrength] {CurvesV2Service.CurrentOppositionStrength} [effectiveScore] {CurvesV2Service.CurrentEffectiveScore:F2}, [rawScore] {CurvesV2Service.CurrentRawScore:F2}");
+		
+							}
+			        	
+					}
+				
 		        
-		        if( VWAP1[0] > EMA3[0] &&CurrentBearStrength > CurrentBullStrength * 2 && CurrentBearStrength > .8 && GetMarketPositionByIndex(1) != MarketPosition.Long)
-		        {
-		            Print($"SHORT SIGNAL: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}");
-		            //forceDrawDebug($"-{CurrentBearStrength}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
-		            //forceDrawDebug($"{totalPositions}",1,0,Low[0]-(TickSize*20),Brushes.Red,true);
-		            ThrottleAll = Times[BarsInProgress][0];
-		            return FunctionResponses.EnterShort; // Actually return signal instead of NoAction
-		        }
-			
+		        
 	    }
+		//Print("[DEBUG] BuildNewSignal: No signals generated");
+	    return thisSignal;
 	    
-	    return FunctionResponses.NoAction;
 	}
 	// Keep ProcessSignal commented out
 	// private void ProcessSignal(dynamic signal) { ... }
@@ -321,86 +396,8 @@ public partial class CurvesStrategy : MainStrategy
 		return instrumentCode;
 	}
 
-	// Restore SendBarData method definition
-	protected bool SendBarData(bool isHistorical = false)
-	{
-		// Don't send if we're terminated
-		if (State == State.Terminated)
-		{
-			Print("SendBarData: State == State.Terminated - skipping data send");
-			return false;
-		}
 
-		// Skip sending bar if we're below the minimum bars required
-		if (CurrentBars[0] < BarsRequiredToTrade)
-		{
-			return false;
-		}
-		
-		// Skip sending bar to server if we don't have CurvesService initialized
-		if (curvesService == null)
-		{
-			 Print("SendBarData: curvesService is null, skipping send."); // Added log
-			return false;
-		}
-		
-		// Extract instrument code safely
-		string instrumentCode = GetInstrumentCode();
-		
-		// Use QueueBar instead of SendBar
-		// Print($"SendBarData: Queueing bar {CurrentBar} for {instrumentCode}"); // Optional detailed log
-		bool sent = curvesService.QueueBar(
-			instrumentCode,
-			Time[0],
-			Open[0],
-			High[0],
-			Low[0],
-			Close[0],
-			Volume[0],
-			isHistorical ? "backtest" : "1m" // Note: Original code used "1m" fixed, changed to match isHistorical
-		);
-		
-		return sent;
-	}
 
-	
-	// Restore UpdateLocalSignalData method definition
-	private void UpdateLocalSignalData()
-	{
-		try
-		{
-			// Access the static properties updated by the service
-			CurrentBullStrength = CurvesV2Service.CurrentBullStrength;
-			CurrentBearStrength = CurvesV2Service.CurrentBearStrength;
-			
-			// Check if signals are fresh
-			bool signalsFresh = CurvesV2Service.SignalsAreFresh;
-			
-			// Update patterns - safely
-			if (CurvesV2Service.CurrentMatches != null)
-			{
-				
-				
-		
-				
-				// Only log if we have actual signal strength and not in backtest mode
-				if (!IsInStrategyAnalyzer && (CurrentBullStrength > 0 || CurrentBearStrength > 0) && CurrentBars[0] % 20 == 0)
-				{
-					Print($"Signal state: Bull={CurrentBullStrength}, Bear={CurrentBearStrength}, Fresh={signalsFresh}");
-				}
-			}
-			else if (!IsInStrategyAnalyzer && CurrentBars[0] % 100 == 0) 
-			{
-				Print("No patterns in signal response");
-				
-			}
-		}
-		catch (Exception ex)
-		{
-			Print($"Error in UpdateLocalSignalData: {ex.Message}");
-			
-		}
-	}
 
 	// Restore ConvertPatternsToSignals method definition
 	private List<Signal> ConvertPatternsToSignals(List<PatternMatch> patterns)

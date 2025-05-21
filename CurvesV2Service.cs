@@ -109,6 +109,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             public string Timeframe { get; set; }
         }
         
+    // Add a new class for divergence response
+    public class DivergenceResponse
+    {
+        public double divergenceScore { get; set; }
+        public int barsSinceEntry { get; set; }
+    }
+
     public class CurvesV2Service : IDisposable
     {
         public static string CurrentContextId { get; set; }
@@ -130,11 +137,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime lastSignalCheck = DateTime.MinValue;
         private CancellationTokenSource signalPollCts;
         private int signalPollIntervalMs = 5000; // 5 seconds between polling
-        
+    
         // WebSocket related fields
         private ClientWebSocket webSocket;
         private bool webSocketConnected = false;
-        
+        public int ErrorCounter = 0;
         // Static properties for signal data
         		
 		// Add this new class to represent Signal Pool responses
@@ -148,21 +155,42 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 		    public string signalId { get; set; }
 		    public string patternId { get; set; }
+		    public string subtype { get; set; }
 		    public string instrument { get; set; }
 		    public string type { get; set; }
-		    public double rawScore { get; set; }
+            public string direction { get; set; } // Added direction property to support signals with "long" or "short" directions
 		    public long receivedTimestamp { get; set; }
 		    public long expiryTimestamp { get; set; }
 		    public long barTimestamp { get; set; }  // Add this field to match the Signal Pool JSON
 		    public int barCount { get; set; }  // Add this field to match the Signal Pool JSON
-		    public bool isPurchased { get; set; }
+		    public string patternType { get; set; }
+			public bool isPurchased { get; set; }
+			public double oppositionStrength { get; set; }
+			public double confluenceScore { get; set; }
+			public double effectiveScore { get; set;}
+			public double rawScore { get; set;}
+			public DtwMatchData dtwMatch { get; set; } // Add DTW match data
+		}
+		
+		// Add class for DTW match data
+		public class DtwMatchData
+		{
+		    public double score { get; set; }
+		    public double avgDistance { get; set; }
+		    public int validPeriods { get; set; }
 		}
 		
 		// Add a new property to get Signal Pool URL
 		private readonly string signalPoolUrl = "http://localhost:3004";
+		public static string CurrentSubtype { get; private set; }
 		public static long CurrentRequestTimestampEpoch { get; private set; }
 		public static double CurrentBullStrength { get; private set; }
         public static double CurrentBearStrength { get; private set; }
+		public static double CurrentOppositionStrength { get; private set; }
+		public static double CurrentConfluenceScore { get; private set; }
+		public static double CurrentEffectiveScore { get; private set; }
+		public static double CurrentRawScore { get; private set; }
+		public static string CurrentPatternType { get; private set; }
         public static string PatternName { get; private set; }
         public static DateTime LastSignalTimestamp { get; private set; }
         public static double CurrentAvgSlope { get; private set; }
@@ -170,13 +198,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         public static List<PatternMatch> CurrentMatches { get; private set; } = new List<PatternMatch>();
         public static bool SignalsAreFresh => (DateTime.Now - LastSignalTimestamp).TotalSeconds < 30;
         
-        // Size-based strength categories
-        public static double CurrentBullStrength_small { get; private set; } // 10-30 bars
-        public static double CurrentBearStrength_small { get; private set; } // 10-30 bars
-        public static double CurrentBullStrength_med { get; private set; }   // 30-60 bars
-        public static double CurrentBearStrength_med { get; private set; }   // 30-60 bars
-        public static double CurrentBullStrength_large { get; private set; } // 60-100 bars
-        public static double CurrentBearStrength_large { get; private set; } // 60-100 bars
+        // Add DTW Service URL for divergence tracking
+        private readonly string meServiceUrl = "http://localhost:5000"; // Adjust port as needed
+        
+        // Divergence tracking properties
+        public static double CurrentDivergenceScore { get; private set; } = 0;
+        public static int CurrentBarsSinceEntry { get; private set; } = 0;
         
         // Connection status property
         public bool IsConnected => !disposed && client != null;
@@ -184,6 +211,31 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Backtest visualization service URL
         private readonly string visualizationUrl = "http://localhost:3007";
         private readonly HttpClient visualizationClient;
+
+        // Add static property for the active pattern ID
+        public static string CurrentPatternId { get; private set; }
+
+        // Add divergence registry to track positions
+        private readonly Dictionary<string, RegisteredPosition> activePositions = new Dictionary<string, RegisteredPosition>();
+		
+		public Dictionary<string,double> divergenceScores = new Dictionary<string,double>();
+		
+		// Add error tracking
+		private readonly Dictionary<string, int> positionErrorCounts = new Dictionary<string, int>();
+		private readonly Dictionary<string, DateTime> positionErrorCooldowns = new Dictionary<string, DateTime>();
+		private const int MAX_ERRORS_BEFORE_DEREGISTER = 5;
+		private const int ERROR_COOLDOWN_SECONDS = 10;
+		private const int MAX_BARS_TO_CHECK = 50; // Limit the number of bars to check for divergence
+
+        // Class to represent a position in the divergence tracking system
+        private class RegisteredPosition
+        {
+            public string PatternUuid { get; set; }
+            public string Instrument { get; set; }
+            public DateTime EntryTimestamp { get; set; }
+            public int BarsSinceEntry { get; set; }
+            public DateTime RegistrationTimestamp { get; set; }
+        }
 
         // Constructor
         public CurvesV2Service(CurvesV2Config config, Action<string> logger = null)
@@ -213,7 +265,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Logging Helper
         private void Log(string message)
         {
+            // Only log [DIVERGENCE] logs that are related to registration, and all non-DTW logs
+            if (message.Contains("[DIVERGENCE]") && 
+                (message.Contains("Registering position") || 
+                 message.Contains("registered position") || 
+                 message.Contains("ERROR: Invalid parameters for registration")))
+        {
             logger?.Invoke($"CurvesV2 [HTTP]: {message}");
+            }
+            else if (!message.Contains("[DTW_SVC_") && 
+                     !message.Contains("applyRollingZScore_ema_features") && 
+                     !message.Contains("calculateEmaSpreads") && 
+                     !message.Contains("calculateEmaRibbonWidth") && 
+                     !message.Contains("calculateEmaRibbonCurvature"))
+            {
+                logger?.Invoke($"CurvesV2 [HTTP]: {message}");
+            }
         }
 
         // IDisposable Implementation
@@ -225,6 +292,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 try
                 {
                     Log("[INFO] Disposing CurvesV2Service...");
+                    
+                    // Reset static data *before* disposing instance resources
+                    Log("[INFO] Resetting static data during disposal...");
+                    ResetStaticData(); 
+                    
                     client?.Dispose();
                     visualizationClient?.Dispose();
                     disposed = true;
@@ -256,7 +328,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             try
             {
                 Log("[INFO] Checking server health...");
-                string healthEndpoint = $"{baseUrl}/";
+                string healthEndpoint = $"{baseUrl}/api/health";
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
                 {
                     var response = await client.GetAsync(healthEndpoint, timeoutCts.Token);
@@ -511,15 +583,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 		
         // Update the SendBar method to use WebSocket for backtest if available
-        public bool SendBar(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, bool isHistorical = false, string timeframe = "1m")
+        public bool SendBar(bool UseRemoteService, string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, bool isHistorical = false, string timeframe = "1m")
         {
             // For compatibility, simply delegate to our new methods
-            return SendBarFireAndForget(instrument, timestamp, open, high, low, close, volume, timeframe);
+            return SendBarFireAndForget(UseRemoteService, instrument, timestamp, open, high, low, close, volume, timeframe);
         }
 
 		/// send currentbars for Qdrant
         // Ultra-simple bar sender that TRULY never blocks - MODIFIED FOR DEBUG: ALWAYS USE HTTP
-        public bool SendBarFireAndForget(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
+        public bool SendBarFireAndForget(bool useRemoteService,string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
 		    return false;
@@ -549,7 +621,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Fallback to HTTP
                 // Build the URL for the endpoint
-                string endpoint = $"{baseUrl}/api/realtime_bars/{instrument}/backtest?matchPatterns=true&sessionId={sessionID}"; // Use /api/realtime_bars endpoint for NinjaTrader
+				
+				
+				string microServiceUrl = useRemoteService == true ? "https://curves-monolith.onrender.com" : baseUrl;
+				string endpoint = $"{microServiceUrl}/api/ingest/bars/{instrument}";
+                //string endpoint = $"{microServiceUrl}/api/realtime_bars/{instrument}/backtest?matchPatterns=true&sessionId={sessionID}"; // Use /api/realtime_bars endpoint for NinjaTrader
                 // Create payload
                 string jsonPayload = JsonConvert.SerializeObject(new {
                      timestamp = epochMs,
@@ -569,7 +645,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 request.ContentType = "application/json";
                 request.ContentLength = data.Length;
                 request.Timeout = 3000; // 3 second timeout
-                
+                //Log($" SendFireAndForget: {endpoint} with payload {jsonPayload}");
                 // Begin the request without blocking
                 try
                 {
@@ -629,275 +705,181 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 
 
-		// Modify CheckSignalsFireAndForget method to query Signal Pool with additional parameters
-		public bool CheckSignalsFireAndForget(DateTime dt, string instrument, int? pattern_size = null, double? minRawScore = null, double? minMaxScore = null, string patternId = null)
+		// Simplified CheckSignalsFireAndForget method - just gets and stores bull/bear values
+		public bool CheckSignalsFireAndForget(bool useRemoteService, DateTime dt, string instrument, int? pattern_size = null, double? minRawScore = null, double? effectiveScoreRequirement = null, string patternId = null, string subtype = null)
 		{
-		    if (IsDisposed() || string.IsNullOrEmpty(instrument))
+		    if (IsDisposed() || string.IsNullOrEmpty(instrument) || client == null)
 		        return false;
 			
 			string timestamp = dt.ToString();
+
+			CurrentOppositionStrength = 0;
+			CurrentConfluenceScore = 0;
+			CurrentRawScore = 0;
+			CurrentEffectiveScore = 0;
+			CurrentPatternId = null; // Reset the pattern ID
 			
-		    if (client == null)
-		        return false;
-		        
-		    HttpResponseMessage response = null;
+			HttpResponseMessage response = null;
 		    try
 		    {
-		        // Reset size categories before processing current signals
-		        CurrentBullStrength_small = 0;
-		        CurrentBearStrength_small = 0;
-		        CurrentBullStrength_med = 0;
-		        CurrentBearStrength_med = 0;
-		        CurrentBullStrength_large = 0;
-		        CurrentBearStrength_large = 0;
-		        
-		        // Build endpoint with query parameters
-				long signalEpochMs = (long)(dt.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+				// Inside CheckSignalsFireAndForget method
+				string timestampIso = dt.ToUniversalTime().ToString("o");
+				string encodedTimestamp = Uri.EscapeDataString(timestampIso);
+		        // Build simple endpoint URL
+				
+				string microServiceUrl = useRemoteService == true ? "https://curves-signal-pool-service.onrender.com" : signalPoolUrl;
 
-                // Add timestamp debugging
-                DateTime convertedBack = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(signalEpochMs);
-                Log($"[SIGNAL_POOL] DEBUG: Converting DateTime {dt} to epoch: {signalEpochMs}, which converts back to {convertedBack:yyyy-MM-dd HH:mm:ss.fff}");
+				
+		        StringBuilder endpointBuilder = new StringBuilder($"{microServiceUrl}/api/signals/available?instrument={instrument}");
+		        
+		        // Add optional filters if specified
+		       // if (pattern_size.HasValue)
+		         //   endpointBuilder.Append($"&pattern_size={pattern_size.Value}");
 
-		        StringBuilder endpointBuilder = new StringBuilder($"{signalPoolUrl}/api/signals/available?simulationTime={signalEpochMs}");
+				 // <<< ADDED: Append subtype filter if provided >>>
+		       // if (!string.IsNullOrEmpty(subtype))
+		       //     endpointBuilder.Append($"&signalSubtype={Uri.EscapeDataString(subtype)}"); 
+		        // <<< END ADDED >>>
+				
+				//&barTimestamp={encodedTimestamp}
+				
+		        //if (minRawScore.HasValue)
+		        //    endpointBuilder.Append($"&minRawScore={minRawScore.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
 		        
-		        Log($"[{dt}] Requesting SignalPool at {endpointBuilder}");
-		        // Always include instrument as required parameter
-		        List<string> queryParams = new List<string>();
-		        queryParams.Add($"instrument={instrument}");
+		        //if (effectiveScoreRequirement.HasValue)
+		        //    endpointBuilder.Append($"&minEffectiveScore={effectiveScoreRequirement.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
 		        
-		        // Add filtering query parameters if specified
-		        if (pattern_size.HasValue)
-		        {
-		            queryParams.Add($"pattern_size={pattern_size.Value}");
-		        }
-		        if (minRawScore.HasValue)
-		        {
-		            queryParams.Add($"minRawScore={minRawScore.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-		        }
-		        if (minMaxScore.HasValue)
-		        {
-		            queryParams.Add($"minMaxScore={minMaxScore.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-		        }
-		        if (!string.IsNullOrEmpty(patternId))
-		        {
-		            queryParams.Add($"patternId={Uri.EscapeDataString(patternId)}");
-		        }
-		        
-		        // Append query params
-		        endpointBuilder.Append("&");
-		        endpointBuilder.Append(string.Join("&", queryParams));
 		        
 		        string endpoint = endpointBuilder.ToString();
-		
+		        
+		        // Log request (but less verbose)
+		        //Log($"[SIGNAL] Requesting signals for {instrument} from {endpoint}");
+		        
 		        if (IsDisposed() || IsShuttingDown())
 		            return false; 
 		            
+		        // Get response with timeout
 		        using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) 
 		        {
 		            response = client.GetAsync(endpoint, timeoutCts.Token).GetAwaiter().GetResult(); 
 		        }
-		
+
 		        if (response.IsSuccessStatusCode)
 		        {
 		            string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-		            
-		            // Parse different response format from Signal Pool
+		            //Log($"responseText [{dt}] {responseText}");
+		            // Parse the response
 		            var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
 		            
-		            // Log response to help diagnose issues
-		            if (signalPoolResponse != null) {
-		                if (signalPoolResponse.signals != null && signalPoolResponse.signals.Count > 0) {
-		                    Log($"[SIGNAL_POOL] DEBUG: Received response with {signalPoolResponse.signals.Count} signals from server");
-                            
-                            // Log first few signals to help diagnose timestamp issues
-                            int countToLog = Math.Min(3, signalPoolResponse.signals.Count);
-                            for (int i = 0; i < countToLog; i++) {
-                                var signal = signalPoolResponse.signals[i];
-                                Log($"[SIGNAL_POOL] DEBUG: Signal {i+1}: patternId={signal.patternId.Substring(0, 8)}..., instrument={signal.instrument}, type={signal.type}, barTimestamp={new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(signal.barTimestamp):yyyy-MM-dd HH:mm:ss.fff}");
-                            }
-		                } else {
-		                    Log($"[SIGNAL_POOL] DEBUG: Server returned success=true but no signals for {instrument}");
-		                }
-		            } else {
-		                Log($"[SIGNAL_POOL] DEBUG: Failed to parse response or got null response");
-		            }
-		            
-		            if (signalPoolResponse != null && signalPoolResponse.success) 
+		            if (signalPoolResponse != null && signalPoolResponse.success && 
+		                signalPoolResponse.signals != null && signalPoolResponse.signals.Count > 0) 
 		            {
-		                // Only process signals for the specified instrument (double-checking)
-		                var instrumentSignals = signalPoolResponse.signals
-		                    .Where(s => s.instrument == instrument)
-		                    .ToList();
+		                // MODIFIED: Classify signals as bull or bear based on type or direction 
+		                var bullSignals = signalPoolResponse.signals.Where(s => 
+                            s.type == "bull" || 
+                            (s.direction != null && s.direction.ToLower() == "long") || 
+                            (s.type != null && s.type.ToLower().Contains("bull"))
+                        ).ToList();
+                        
+		                var bearSignals = signalPoolResponse.signals.Where(s => 
+                            s.type == "bear" || 
+                            (s.direction != null && s.direction.ToLower() == "short") || 
+                            (s.type != null && s.type.ToLower().Contains("bear"))
+                        ).ToList();
+                        
+                        // If we still don't have bull/bear signals, try to infer from the pattern type
+                        if (bullSignals.Count == 0 && bearSignals.Count == 0)
+                        {
+                            // Default categorization based on first signal if we can't determine otherwise
+                            if (signalPoolResponse.signals.Count > 0)
+                            {
+                                var signal = signalPoolResponse.signals[0];
+                                Log($"Inferring direction from signal type: {signal.type}");
+                                
+                                // Handle specific pattern types we know about
+                                if (signal.type == "EMARibbonHarmonics")
+                                {
+                                    // For EMARibbonHarmonics, let's consider it bullish by default
+                                    // We can add more sophisticated logic based on other properties if available
+                                    Log($"EMARibbonHarmonics pattern detected - treating as BULL signal with rawScore={signal.rawScore}");
+                                    bullSignals.Add(signal);
+                                }
+                                // Add other known pattern types here
+                                else if (signal.type != null)
+                                {
+                                    // By default, add to bull signals if we can't determine
+                                    Log($"Unknown pattern type '{signal.type}' - defaulting to BULL signal");
+                                    bullSignals.Add(signal);
+                                }
+                            }
+                        }
+		               
+		                // Calculate highest bull/bear scores (convert to percentage)
+		                double bullScore_raw = bullSignals.Any() ? bullSignals.Max(s => s.rawScore) * 100 : 0;
+		                double bearScore_raw = bearSignals.Any() ? bearSignals.Max(s => s.rawScore) * 100 : 0; 
 		                
-		                // Apply additional filters on the client side
-		                if (pattern_size.HasValue)
+						// Calculate highest bull/bear scores (convert to percentage)
+		                double bullScore_eff = bullSignals.Any() ? bullSignals.Max(s => s.effectiveScore) * 100 : 0; // changed from rawScore effectiveScore
+		                double bearScore_eff = bearSignals.Any() ? bearSignals.Max(s => s.effectiveScore) * 100 : 0; // changed from rawScore effectiveScore
+					    
+						double bullScore = Math.Max(bullScore_eff,bullScore_raw);
+						double bearScore = Math.Max(bearScore_eff,bearScore_raw);						
+						
+						// Extract the highest opposition strength and confluence score
+						//oppositionStrength = 0;
+						//confluenceScore = 0;
+						//effectiveScore = 0;
+						
+						// Check if we have any signals and extract the values
+						if (signalPoolResponse.signals.Any())
+						{
+							var firstSignal = signalPoolResponse.signals[0]; // Get the first/prioritized signal
+						    CurrentPatternType = firstSignal.patternType;
+							CurrentSubtype = firstSignal.subtype; // <<< STORE SUBTYPE
+						    CurrentPatternId = firstSignal.patternId; // <<< STORE PATTERN ID
+						    // Get the highest opposition strength and confluence score from any signal
+						    CurrentOppositionStrength = signalPoolResponse.signals.Max(s => s.oppositionStrength);
+						    CurrentConfluenceScore = signalPoolResponse.signals.Max(s => s.confluenceScore);
+							CurrentEffectiveScore = signalPoolResponse.signals.Max(s => s.effectiveScore);
+							CurrentRawScore = signalPoolResponse.signals.Max(s => s.rawScore);
+							// Extract DTW match data if available
+						
+						}
+					
+		                // Update static properties with the new values
+		                CurrentBullStrength = bullScore;
+		                CurrentBearStrength = bearScore;
+		                LastSignalTimestamp = DateTime.UtcNow;
+		                CurrentContextId = "signal-" + DateTime.Now.Ticks; // Simple unique context
+		                
+		                // Log signal values with patternId for debugging
+		                if (bullScore > 0 || bearScore > 0)
 		                {
-		                    instrumentSignals = instrumentSignals
-		                        .Where(s => s.barCount == pattern_size.Value)
-		                        .ToList();
+		                    //Log($"[{dt}] [SIGNAL] Values - [PatternId] {CurrentPatternId}, [Bull] {bullScore:F2}%, [Bear]: {bearScore:F2}%, [EffectiveScore] {CurrentEffectiveScore:F2}");
 		                }
 		                
-		                if (minRawScore.HasValue)
-		                {
-		                    instrumentSignals = instrumentSignals
-		                        .Where(s => s.rawScore >= minRawScore.Value)
-		                        .ToList();
-		                }
-		                
-		                if (instrumentSignals.Count > 0)
-		                {
-		                    // First filter for freshness - only consider signals less than 5 minutes old
-		                    var currentTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-		                    var freshSignals = instrumentSignals.Where(s => {
-		                        // Calculate age in milliseconds
-		                        long ageMs = currentTime - s.receivedTimestamp;
-		                        // Convert to minutes
-		                        double ageMinutes = ageMs / (1000.0 * 60);
-		                        // Only include signals less than 5 minutes old
-		                        return ageMinutes < 5.0;
-		                    }).ToList();
-		                    
-		                    if (freshSignals.Count == 0)
-		                        return false;
-		                    
-		                    // Group signals by type to find the highest score for each type
-		                    var bullSignals = freshSignals.Where(s => s.type == "bull").ToList();
-		                    var bearSignals = freshSignals.Where(s => s.type == "bear").ToList();
-		                    
-		                    double bullScore = 0;
-		                    double bearScore = 0;
-		                    string bullPatternId = "nullscore";
-		                    string bearPatternId = "nullscore";
-		                    int bullPatternSize = 0;
-		                    int bearPatternSize = 0;
-		                    
-		                    // Find the best bull signal - prioritize smaller patterns when no pattern_size filter
-		                    if (bullSignals.Any())
-		                    {
-		                        if (!pattern_size.HasValue)
-		                        {
-		                            // When no size filter is specified, prioritize smaller patterns
-		                            // Group by similar scores (within 5% of each other)
-		                            double maxScore = bullSignals.Max(s => s.rawScore);
-		                            double scoreThreshold = maxScore * 0.95; // Consider signals within 5% of max score
-		                            
-		                            // Get signals with similar high scores
-		                            var highScoreBullSignals = bullSignals.Where(s => s.rawScore >= scoreThreshold).ToList();
-		                            
-		                            // From the high score group, select the one with the smallest barCount
-		                            var topBullSignal = highScoreBullSignals.OrderBy(s => s.barCount).First();
-		                            bullScore = topBullSignal.rawScore * 100; // Convert to percentage
-		                            bullPatternId = topBullSignal.patternId;
-		                            bullPatternSize = topBullSignal.barCount;
-		                        }
-		                        else
-		                        {
-		                            // With size filter, just use highest score
-		                            var topBullSignal = bullSignals.OrderByDescending(s => s.rawScore).First();
-		                            bullScore = topBullSignal.rawScore * 100; // Convert to percentage
-		                            bullPatternId = topBullSignal.patternId;
-		                            bullPatternSize = topBullSignal.barCount;
-		                        }
-		                    }
-		                    
-		                    // Find the best bear signal - prioritize smaller patterns when no pattern_size filter
-		                    if (bearSignals.Any())
-		                    {
-		                        if (!pattern_size.HasValue)
-		                        {
-		                            // When no size filter is specified, prioritize smaller patterns
-		                            // Group by similar scores (within 5% of each other)
-		                            double maxScore = bearSignals.Max(s => s.rawScore);
-		                            double scoreThreshold = maxScore * 0.95; // Consider signals within 5% of max score
-		                            
-		                            // Get signals with similar high scores
-		                            var highScoreBearSignals = bearSignals.Where(s => s.rawScore >= scoreThreshold).ToList();
-		                            
-		                            // From the high score group, select the one with the smallest barCount
-		                            var topBearSignal = highScoreBearSignals.OrderBy(s => s.barCount).First();
-		                            bearScore = topBearSignal.rawScore * 100; // Convert to percentage
-		                            bearPatternId = topBearSignal.patternId;
-		                            bearPatternSize = topBearSignal.barCount;
-		                        }
-		                        else
-		                        {
-		                            // With size filter, just use highest score
-		                            var topBearSignal = bearSignals.OrderByDescending(s => s.rawScore).First();
-		                            bearScore = topBearSignal.rawScore * 100; // Convert to percentage
-		                            bearPatternId = topBearSignal.patternId;
-		                            bearPatternSize = topBearSignal.barCount;
-		                        }
-		                    }
-		                    
-		                    // Apply minMaxScore filter if specified
-		                    if (minMaxScore.HasValue)
-		                    {
-		                        double maxScore = Math.Max(bullScore, bearScore);
-		                        if (maxScore < minMaxScore.Value * 100) // Convert to percentage
-		                            return false;
-		                    }
-		                    
-		                    // Use the pattern ID from the highest score as the context
-		                    string contextId = "nullscore";
-		                    if (bullScore >= bearScore && bullScore > 0)
-		                    {
-		                        contextId = bullPatternId;
-		                    }
-		                    else if (bearScore > 0)
-		                    {
-		                        contextId = bearPatternId;
-		                    }
-		                    
-		                    // Update static properties
-		                    CurrentContextId = contextId;
-		                    CurrentBullStrength = bullScore;
-		                    CurrentBearStrength = bearScore;
-		                    LastSignalTimestamp = DateTime.UtcNow;
-		                    
-		                    // Add clear log showing signals were received
-		                    Log($"[SIGNAL_POOL] RECEIVED FROM SERVER: {freshSignals.Count} signals for {instrument}");
-		                    
-		                    // Log bull/bear signals with scores if present
-		                    if (bullScore > 0) {
-		                        Log($"[SIGNAL_POOL] RECEIVED FROM SERVER: Bull signal {bullPatternId.Substring(0, 8)}... for {instrument} with score {bullScore:F2}%");
-		                    }
-		                    
-		                    if (bearScore > 0) {
-		                        Log($"[SIGNAL_POOL] RECEIVED FROM SERVER: Bear signal {bearPatternId.Substring(0, 8)}... for {instrument} with score {bearScore:F2}%");
-		                    }
-		                    
-		                    // Update size-based categories
-		                    if (bullPatternSize > 0)
-		                    {
-		                        if (bullPatternSize >= 10 && bullPatternSize < 30)
-		                            CurrentBullStrength_small = bullScore;
-		                        else if (bullPatternSize >= 30 && bullPatternSize < 60)
-		                            CurrentBullStrength_med = bullScore;
-		                        else if (bullPatternSize >= 60 && bullPatternSize <= 100)
-		                            CurrentBullStrength_large = bullScore;
-		                    }
-		                    
-		                    if (bearPatternSize > 0)
-		                    {
-		                        if (bearPatternSize >= 10 && bearPatternSize < 30)
-		                            CurrentBearStrength_small = bearScore;
-		                        else if (bearPatternSize >= 30 && bearPatternSize < 60)
-		                            CurrentBearStrength_med = bearScore;
-		                        else if (bearPatternSize >= 60 && bearPatternSize <= 100)
-		                            CurrentBearStrength_large = bearScore;
-		                    }
-		                    
-		                    return true;
-		                }
+		                return true;
 		            }
-		            
-		            return false;
+		            else
+		            {
+		                // No signals found - reset values
+		                CurrentPatternType = null; // <<< RESET
+		                CurrentSubtype = null; // <<< RESET
+		                CurrentPatternId = null; // <<< RESET
+		                CurrentBullStrength = 0;
+		                CurrentBearStrength = 0;
+		                return false;
+		            }
 		        }
 		    }
 		    catch (Exception ex)
 		    {
-		        if (IsDisposed() || IsShuttingDown()) return false; 
-		        Log($"[ERROR] CheckSignalsFireAndForget: Error checking signals for {instrument}: {ex.GetType().Name} - {ex.Message}");
+		        if (!IsDisposed() && !IsShuttingDown())
+		            Log($"[ERROR] Checking signals for {instrument}: {ex.Message}");
+					if(ErrorCounter < 11)
+					{
+						ErrorCounter++;
+					}
 		    }
 		    finally
 		    {
@@ -909,170 +891,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		
 		
-/*
-		PRE SIGNAL POOL 
-        // Restore the SYNCHRONOUS debug version of CheckSignalsFireAndForget
-        public bool CheckSignalsFireAndForget(string timestamp,string instrument)
-        {
-            // Log("[DEBUG] CheckSignalsFireAndForget called - Synchronous Debug Mode"); 
-            if (IsDisposed() || string.IsNullOrEmpty(instrument))
-                return false;
-
-            if (client == null) 
-            {
-                 Log("[DEBUG SYNC] CheckSignalsFireAndForget: HttpClient is null, cannot proceed.");
-                 return false;
-            }
-                
-            HttpResponseMessage response = null;
-            try
-            {
-                //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Preparing check for {instrument}");
-                string endpoint = $"{baseUrl}/api/signals/{instrument}";
-
-                if (IsDisposed() || IsShuttingDown())
-                {
-                    Log("[DEBUG SYNC] CheckSignalsFireAndForget: Aborted due to service shutdown before GET");
-                    return false; 
-                }
-
-                //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: {timestamp} Sending GET to {endpoint} (Blocking)");
-                
-                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) 
-                {
-                    response = client.GetAsync(endpoint, timeoutCts.Token).GetAwaiter().GetResult(); 
-                }
-
-                //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Received status {response.StatusCode} for {instrument}");
-
-                if (response.IsSuccessStatusCode)
-                {
-                    string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult(); 
-                    //Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Response content for {instrument}: {responseText.Substring(0, Math.Min(responseText.Length, 100))}...");
-
-					var signalResponse = JsonConvert.DeserializeObject<CurvesV2Response>(responseText);
-					if (signalResponse != null && signalResponse.success) // Check success directly
-					{
-					    string responseJsonForLog = JsonConvert.SerializeObject(signalResponse, Formatting.None); // Formatting.None for compact log
-						CurrentContextId = "";
-					    // Log the serialized JSON
-					    // Check contextId directly
-						
-						
-					    if (signalResponse.contextId != "nullscore")
-					    {
-							
-					    
-							// Define your tolerance in milliseconds (e.g., 5 seconds)
-							long freshnessToleranceMs = 5000;
-							
-							DateTime signalDateTime;
-							// Try parsing the ISO 8601 UTC timestamp string from the response
-							// Use AdjustToUniversal to ensure it's treated as UTC if no offset is present
-							if (DateTime.TryParse(signalResponse.timestamp, null, System.Globalization.DateTimeStyles.AdjustToUniversal, out signalDateTime))
-							{
-							    // Convert the parsed signal DateTime to UTC Epoch Milliseconds
-							    long signalEpochMs = (long)(signalDateTime.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
-							
-							    // Calculate the difference: Signal Time - Bar Time
-							    long timeDifferenceMs = signalEpochMs - CurrentRequestTimestampEpoch;
-							
-							    // Check if the signal is fresh enough (not older than the tolerance)
-							    if (timeDifferenceMs >= -freshnessToleranceMs)
-							    {
-							        // Signal is considered fresh enough for the bar we requested
-							        CurrentContextId = signalResponse.contextId; // Store the actual contextId
-							
-							        // Update static properties directly
-							        CurrentBullStrength = signalResponse.bullScore;
-							        CurrentBearStrength = signalResponse.bearScore;
-									
-									if(CurrentBullStrength > 75) Log($"Signal Fresh! (Diff: {timeDifferenceMs}ms). Context: {CurrentContextId}. Scores: Bull={signalResponse.bullScore}, Bear={signalResponse.bearScore}");
-
-							    }
-							    else
-							    {
-							        // Signal is stale relative to the bar we sent, ignore it
-							        Log($"Signal Stale (Diff: {timeDifferenceMs}ms < {-freshnessToleranceMs}ms). Ignoring signal with ContextId: {signalResponse.contextId}. Current Bar Epoch: {CurrentRequestTimestampEpoch}, Signal Epoch: {signalEpochMs}");
-							        // Do not update CurrentBullStrength or CurrentBearStrength
-							    }
-							}
-							else
-							{
-							    Log($"Error: Could not parse timestamp from signal response: {signalResponse.timestamp}");
-							}
-					      
-
-	                        // Now, attempt the parse (still recommend TryParse)
-	                        try // Add specific try-catch for safety, or use TryParse
-	                        {
-	                            if (!string.IsNullOrEmpty(signalResponse.timestamp) || signalResponse.timestamp == "null")
-	                            {
-	                                // Use TryParse for safety
-	                                if (DateTime.TryParse(signalResponse.timestamp, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime parsedTimestamp))
-	                                {
-	                                    LastSignalTimestamp = parsedTimestamp;
-	                                }
-	                                else
-	                                {
-	                                    Log($"[WARN] GetSignalsSync: Failed to parse non-null timestamp '{signalResponse.timestamp}' for instrument {instrument}.");
-	                                    LastSignalTimestamp = DateTime.MinValue; // Default on parse failure
-	                                }
-	                            }
-	                            else
-	                            {
-									if(CurrentBullStrength > 0 || CurrentBearStrength > 0)
-									{
-										Log("*****************************************************************************");
-										Log($"[WARN] GetSignalsSync: Timestamp was null or empty in the valid signal response for instrument {instrument}. Response: {responseJsonForLog}");
-										Log("*****************************************************************************");
-									}
-	                                // This case confirms the timestamp was null or empty BEFORE parsing
-	                                LastSignalTimestamp = DateTime.MinValue; // Default on missing timestamp
-	                            }
-	                        }
-	                        catch (Exception parseEx)
-	                        {
-	                           Log($"[ERROR] GetSignalsSync: CRITICAL error parsing timestamp for {instrument}. Value was '{(signalResponse.timestamp == null ? "NULL" : signalResponse.timestamp)}'. Error: {parseEx.Message}");
-	                           // Handle the fact that the timestamp couldn't be set
-	                           LastSignalTimestamp = DateTime.MinValue; // Ensure a default
-	                        }
-							
-					      
-					    }
-					   
-					    return true; // Or adjust as needed
-					}
-					else
-					{
-						
-					    Log($"[WARN] GetSignalsSync: Invalid response or success=false for {instrument}. Success: {signalResponse?.success}");
-					    return false; // Or appropriate default/error value
-					}
-                }
-                else
-                {
-                     Log($"[DEBUG SYNC] CheckSignalsFireAndForget: HTTP error {response.StatusCode} checking signals for {instrument}");
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Request timed out for {instrument} (5s)");
-            }
-            catch (Exception ex)
-            {
-                if (IsDisposed() || IsShuttingDown()) return false; 
-                Log($"[DEBUG SYNC] CheckSignalsFireAndForget: Error checking signals for {instrument}: {ex.GetType().Name} - {ex.Message}");
-                 if(ex.InnerException != null) Log($"  Inner: {ex.InnerException.Message}");
-            }
-            finally
-            {
-                response?.Dispose(); 
-            }
-            
-            return false; 
-        }
-*/
         // Add synchronous methods for direct NinjaTrader integration
         
         // Synchronously send a bar and wait for confirmation
@@ -1234,14 +1052,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             LastSignalTimestamp = DateTime.MinValue;
             CurrentAvgSlope = 0;
             CurrentSlopeImpact = 0;
-            
-            // Reset size-based categories
-            CurrentBullStrength_small = 0;
-            CurrentBearStrength_small = 0;
-            CurrentBullStrength_med = 0;
-            CurrentBearStrength_med = 0;
-            CurrentBullStrength_large = 0;
-            CurrentBearStrength_large = 0;
+            CurrentOppositionStrength = 0;
+            CurrentConfluenceScore = 0;
+            CurrentEffectiveScore = 0;
+			CurrentRawScore = 0;
+            CurrentDivergenceScore = 0;
+            CurrentBarsSinceEntry = 0;
+            CurrentPatternId = null; // Reset the pattern ID
+
+            CurrentPatternType = null;
+            CurrentSubtype = null;
             
             if (CurrentMatches != null)
                 CurrentMatches.Clear();
@@ -1378,10 +1198,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
         
         // Queue bar method
-        public bool QueueBar(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
+        public bool QueueBar(bool UseRemoteService, string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
             // For now, simply pass through to SendBarFireAndForget
-            return SendBarFireAndForget(instrument, timestamp, open, high, low, close, volume, timeframe);
+            return SendBarFireAndForget(UseRemoteService, instrument, timestamp, open, high, low, close, volume, timeframe);
         }
         
         // Check health method
@@ -1575,5 +1395,384 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
         }
-    }
+
+        // Register a position for divergence tracking
+        public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
+        {
+            if (IsDisposed()) return false;
+
+            // Log(`Begin RegisterPositionAsync of ${instrument}`);
+            
+            // Validate input parameters first
+            if (string.IsNullOrEmpty(entrySignalId) || string.IsNullOrEmpty(patternUuid) || string.IsNullOrEmpty(instrument))
+            {
+                Log($"[DIVERGENCE] ERROR: Invalid parameters for registration - EntrySignalId: {entrySignalId ?? "null"}, PatternUuid: {patternUuid ?? "null"}, Instrument: {instrument ?? "null"}");
+                return false;
+            }
+
+            // Try up to 3 times with retry logic
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    // Convert timestamp to ISO format
+                    string isoTimestamp = entryTimestamp.ToUniversalTime().ToString("o");
+                    
+                    // Create the request payload
+                    var requestPayload = new
+                    {
+                        entrySignalId = entrySignalId,
+                        patternUuid = patternUuid,
+                        instrument = instrument,
+                        positionEntryTimestamp = isoTimestamp
+                    };
+                    
+                    // Log details on first attempt
+                    if (attempt == 1)
+                    {
+                        //Log($"[DIVERGENCE] Registering position {entrySignalId} for pattern {patternUuid}");
+                    }
+                    else
+                    {
+                        Log($"[DIVERGENCE] Retry {attempt}/3: Registering position {entrySignalId}");
+                    }
+                    
+                    // Convert to JSON
+                    string jsonPayload = JsonConvert.SerializeObject(requestPayload);
+                    StringContent content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                    
+                    // Define the endpoint - use the new ME service endpoint
+                    string endpoint = $"{meServiceUrl}/api/positions/register";
+                    
+                    // Send request with timeout
+                    using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) // Reduced timeout
+                    {
+                        var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                        
+                        if (response.IsSuccessStatusCode)
+                        {
+                            Log($"[DIVERGENCE] Successfully registered position {entrySignalId}");
+                            
+                            // Add a small delay after registration to let the server process 
+                            // This is especially helpful in backtest mode where things happen very quickly
+                            await Task.Delay(100);
+                            
+                            // Add to local registry
+                            activePositions[entrySignalId] = new RegisteredPosition
+                            {
+                                PatternUuid = patternUuid,
+                                Instrument = instrument,
+                                EntryTimestamp = entryTimestamp,
+                                BarsSinceEntry = 0,
+                                RegistrationTimestamp = DateTime.Now
+                            };
+                            
+                            return true;
+                        }
+                        else
+                        {
+                            string errorContent = await response.Content.ReadAsStringAsync();
+                            Log($"[DIVERGENCE] Failed to register position (HTTP {response.StatusCode}): {errorContent}");
+                            
+                            // Only retry server errors (5xx), not client errors (4xx)
+                            if ((int)response.StatusCode < 500) 
+                            {
+                                return false; // Don't retry client errors
+                            }
+                        }
+                    }
+                }
+                catch (HttpRequestException ex)
+                {
+                    bool isConnectionError = ex.InnerException is System.Net.Sockets.SocketException ||
+                              ex.Message.IndexOf("connection", StringComparison.OrdinalIgnoreCase) >= 0;
+                              
+                    if (isConnectionError)
+                    {
+                        Log($"[DIVERGENCE] Connection error registering position: {ex.Message}");
+                        // Connection errors are retryable - continue to next attempt
+                    }
+                    else
+                    {
+                        Log($"[DIVERGENCE] HTTP request error registering position: {ex.Message}");
+                        return false; // Only retry connection errors
+                    }
+                }
+                catch (TaskCanceledException)
+                {
+                    Log($"[DIVERGENCE] Request timed out registering position");
+                    // Timeouts are retryable - continue to next attempt
+                }
+                catch (Exception ex)
+                {
+                    Log($"[DIVERGENCE] Error registering position: {ex.Message}");
+                    return false; // Don't retry unknown errors
+                }
+                
+                // Wait before retrying (only if not the last attempt)
+                if (attempt < 3)
+                {
+                    await Task.Delay(500 * attempt); // Progressive backoff: 500ms, 1000ms
+                }
+            }
+            
+            // If we got here, all attempts failed
+            Log($"[DIVERGENCE] All {3} attempts to register position {entrySignalId} failed");
+            return false;
+        }
+
+        // Check divergence score for a registered position with threshold parameter
+		public bool CheckDivergence(string entrySignalId, int age)
+		{
+		    if (IsDisposed() || age > 50) return false;
+		    
+		    // Simple retry logic
+		    int retries = 1;
+		    int delayMs = 300;
+		    
+		    for (int attempt = 0; attempt <= retries; attempt++)
+		    {
+		        try
+		        {
+		            string endpoint = $"{meServiceUrl}/api/positions/{entrySignalId}/divergence";
+		            var response = client.GetAsync(endpoint).Result;
+		            
+		            if (response.IsSuccessStatusCode)
+		            {
+		                var divergenceResponse = JsonConvert.DeserializeObject<DivergenceResponse>(
+		                    response.Content.ReadAsStringAsync().Result);
+		                
+		                if (divergenceResponse != null)
+		                {
+		                    // Update values on success
+		                    CurrentDivergenceScore = divergenceResponse.divergenceScore;
+		                    CurrentBarsSinceEntry = divergenceResponse.barsSinceEntry;
+		                    divergenceScores[entrySignalId] = CurrentDivergenceScore;
+		                    return true;
+		                }
+		            }
+		            else
+		            {
+		                Log($"[DIVERGENCE] Failed to check divergence for {entrySignalId}: {response.StatusCode}");
+		                
+		                // Only retry on service unavailable
+		                if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable && attempt < retries)
+		                {
+		                    Thread.Sleep(delayMs);
+		                    continue;
+		                }
+		            }
+		        }
+		        catch (Exception ex)
+		        {
+		            Log($"[DIVERGENCE] Error checking divergence: {ex.Message}");
+		            
+		            // Retry on connection errors
+		            if ((ex is HttpRequestException || ex is TaskCanceledException) && attempt < retries)
+		            {
+		                Thread.Sleep(delayMs);
+		                continue;
+		            }
+		        }
+		    }
+		    
+		    return false;
+		}
+        // Synchronous wrapper for RegisterPositionAsync
+        public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // Call the async method and wait for it to complete
+                return RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log($"[DIVERGENCE] Error in RegisterPosition synchronous method: {ex.Message}");
+                return false;
+            }
+        }
+
+      
+        // Deregister a position when it's closed
+        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool wasGoodExit = false, double finalDivergence = 0.0)
+        {
+            if (IsDisposed()) return false;
+            
+            if (string.IsNullOrEmpty(entrySignalId))
+            {
+                Log($"[DIVERGENCE] ERROR: Invalid entrySignalId (null or empty) for deregistration");
+                return false;
+            }
+
+            //Log($"[DIVERGENCE] Deregistering position {entrySignalId}");
+            
+            // Try up to 2 times (fewer retries for deregistration since it's less critical)
+            for (int attempt = 1; attempt <= 2; attempt++)
+            {
+                try
+                {
+                    // Define the endpoint
+                    string endpoint = $"{meServiceUrl}/api/positions/{entrySignalId}/deregister";
+                    
+                    if (attempt > 1)
+                    {
+                        Log($"[DIVERGENCE] Retry {attempt}/2: Deregistering position {entrySignalId}");
+                    }
+                    
+                    // Create the payload with exit outcome data
+                    var exitOutcomeData = new 
+                    {
+                        wasGoodExit = wasGoodExit,
+                        finalDivergence = finalDivergence
+                    };
+                    
+                    // Convert to JSON
+                    string jsonPayload = JsonConvert.SerializeObject(exitOutcomeData);
+                    
+                    // Create request message explicitly to include body with DELETE
+                    var request = new HttpRequestMessage
+                    {
+                        Method = HttpMethod.Delete,
+                        RequestUri = new Uri(endpoint),
+                        Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
+                    };
+                    
+                    // Send request with timeout
+                    using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) // Reduced timeout
+                    {
+                        var response = await client.SendAsync(request, timeoutCts.Token);
+                        
+                        if (response.IsSuccessStatusCode)
+                        {
+                            Log($"[DIVERGENCE] Successfully deregistered position {entrySignalId} with wasGoodExit={wasGoodExit}, finalDivergence={finalDivergence}");
+                            
+                            // Reset the static properties
+                            CurrentDivergenceScore = 0;
+                            CurrentBarsSinceEntry = 0;
+							if(divergenceScores.ContainsKey(entrySignalId))
+							{
+                            	divergenceScores.Remove(entrySignalId);
+							}
+                            // Remove from local registry
+                            if (activePositions.ContainsKey(entrySignalId))
+                            {
+                                activePositions.Remove(entrySignalId);
+                                //Log($"[DIVERGENCE] Position {entrySignalId} removed from local registry");
+                            }
+                            
+                            return true;
+                        }
+                        else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            // Not found is OK - means already deregistered or never registered
+                            Log($"[DIVERGENCE] Position {entrySignalId} not found (already deregistered or never registered)");
+                            return true;
+                        }
+                        else
+                        {
+                            string errorContent = await response.Content.ReadAsStringAsync();
+                            Log($"[DIVERGENCE] Failed to deregister position (HTTP {response.StatusCode}): {errorContent}");
+                            
+                            // Only retry server errors
+                            if ((int)response.StatusCode < 500) 
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                catch (HttpRequestException ex)
+                {
+                    bool isConnectionError = ex.InnerException is System.Net.Sockets.SocketException ||
+                               ex.Message.IndexOf("connection", StringComparison.OrdinalIgnoreCase) >= 0;
+                               
+                    if (isConnectionError)
+                    {
+                        Log($"[DIVERGENCE] Connection error deregistering position: {ex.Message}");
+                        // Connection errors are retryable - continue to next attempt
+                    }
+                    else
+                    {
+                        Log($"[DIVERGENCE] HTTP request error deregistering position: {ex.Message}");
+                        return false; // Only retry connection errors
+                    }
+                }
+                catch (TaskCanceledException)
+                {
+                    Log($"[DIVERGENCE] Request timed out deregistering position");
+                    // Timeouts are retryable - continue to next attempt
+                }
+                catch (Exception ex)
+                {
+                    Log($"[DIVERGENCE] Error deregistering position: {ex.Message}");
+                    return false; // Don't retry unknown errors
+                }
+                
+                // Wait before retrying (only if not the last attempt)
+                if (attempt < 2)
+                {
+                    await Task.Delay(300 * attempt); // Small backoff
+                }
+            }
+            
+            // Since deregistration is less critical, log the failure but return success
+            // This prevents issues with positions that can't be deregistered
+            Log($"[DIVERGENCE] All attempts to deregister position {entrySignalId} failed, but continuing");
+            return true;
+        }
+
+        // Synchronous wrapper for DeregisterPositionAsync
+        public bool DeregisterPosition(string entrySignalId, bool wasGoodExit = false, double finalDivergence = 0.0)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // Call the async method and wait for it to complete
+                return DeregisterPositionAsync(entrySignalId, wasGoodExit, finalDivergence).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log($"[DIVERGENCE] Error in DeregisterPosition synchronous method: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Get position by entrySignalId
+        private RegisteredPosition GetPosition(string entrySignalId)
+        {
+            if (string.IsNullOrEmpty(entrySignalId))
+            {
+                Log($"[DIVERGENCE] GetPosition called with null or empty entrySignalId");
+                return null;
+            }
+            
+            if (activePositions.TryGetValue(entrySignalId, out RegisteredPosition position))
+            {
+                return position;
+            }
+            
+            Log($"[DIVERGENCE] Position not found for entrySignalId: {entrySignalId}");
+            return null;
+        }
+
+        // Add a method to check if we should exit based on divergence
+        public double GetExitSignal(string entrySignalId)
+        {
+            if (IsDisposed() || string.IsNullOrEmpty(entrySignalId)) return 0;
+            
+            // If we have a positive exit signal stored in divergenceScores, return it
+            if (divergenceScores.ContainsKey(entrySignalId))
+            {
+                return divergenceScores[entrySignalId];
+            }
+            
+            return 0; // No signal to exit
+        }
+	}
+
+   
 } 

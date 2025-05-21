@@ -24,7 +24,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double signalThresholdBull = 75;
         private double signalThresholdBear = 75;
         private double ratioThreshold = 2.0;
-        
+        [NinjaScriptProperty]    
+		[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
+		public bool UseRemoteService { get; set; }
+	
         [NinjaScriptProperty]
         [Display(Name="Stop Loss Dollars", Order=1, GroupName="Trade Parameters")]
         public int StopLossCurrency { get; set; }
@@ -234,7 +237,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 // Send bar data
                 bool barSent = curvesService.SendBarFireAndForget(
-                    instrumentCode,
+                    UseRemoteService,
+					instrumentCode,
                     Time[0],
                     Open[0], 
                     High[0],
@@ -247,7 +251,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Check for signals
                 if (barSent)
                 {
-                    curvesService.CheckSignalsFireAndForget(Time[0].ToString(), instrumentCode);
+                    curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0], instrumentCode,null,0.9,null,null);
                     
                     // Process signals based on static properties updated by the service
                     ProcessSignals();

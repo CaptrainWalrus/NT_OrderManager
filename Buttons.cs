@@ -81,7 +81,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
                         	{ 
 								Print($"OnMyButtonClickEntry 5");
 								Print(Time[0] + " MANUAL LONG FROM LONG");
-								EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", false, true, true, mainEntryOrderType); 
+								EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", CurrentBars[0], mainEntryOrderType,"noneManual",""); 
                                 return;
 									
 							}
@@ -90,7 +90,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								Print(Time[0] + " MANUAL LONG FROM FLAT");
 								
 								
-                                EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", false, true, true, mainEntryOrderType); 
+                                EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", CurrentBars[0], mainEntryOrderType,"noneManual",""); 
                                 return;
 							}
 							else
