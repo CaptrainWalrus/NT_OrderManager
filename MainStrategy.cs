@@ -35,10 +35,12 @@ using System.Collections.Concurrent;
 //This namespace holds Strategies in this folder and is required. Do not change it. 
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
-	[Gui.CategoryOrder("Class Parameters", 1)]
-	[Gui.CategoryOrder("Entry Parameters", 2)]
-	[Gui.CategoryOrder("Order Flow Pattern", 3)]
-	[Gui.CategoryOrder("SignalPool", 4)]
+	
+	[Gui.CategoryOrder("Matching Engine Config", 1)]
+	[Gui.CategoryOrder("Class Parameters", 2)]
+	[Gui.CategoryOrder("Entry Parameters", 3)]
+	[Gui.CategoryOrder("Order Flow Pattern", 4)]
+	[Gui.CategoryOrder("SignalPool", 5)]
 	[Gui.CategoryOrder("Entry Behaviors", 7)]
 	[Gui.CategoryOrder("EMA", 8)]
 	[Gui.CategoryOrder("Signal Parameters", 9)]
@@ -494,6 +496,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				OrderBookVolumeThreshold = 10000;
 				useAsyncProcessing = false; // Default to synchronous for reliability
+				
+				ZScoreThreshold = 0.5;                                    // Allow patterns 0.5 std dev better than average
+				ReliabilityPenaltyEnabled = true;                         // Enable reliability penalties
+				MaxThresholdPenalty = 0.1;                               // Moderate penalty for unreliable patterns
+				AtmosphericThreshold = 0.8;                              // Pre-filtering threshold
+				DefaultCosineSimilarityThreshold = 0.70;                 // Relaxed default threshold
+				EmaRibbonCosineSimilarityThreshold = 0.75;               // Slightly higher for EMA patterns
+				SensitiveEmaRibbonCosineSimilarityThreshold = 0.78;       // Highest for sensitive patterns
 
 			}
 			else if (State == State.Configure)
@@ -555,7 +565,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			
 
 				VWAP1 = custom_VWAP(vwap1);
-				SMA200 = SMA(BarsArray[0],200);
+				SMA200 = SMA(BarsArray[0],100);
 				
 				EMA3 = EMA(BarsArray[0],ema3_val);
 				
@@ -640,7 +650,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
 					
 					curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
-					
+					// In your NinjaTrader strategy initialization:
+					CurvesV2Service.SetFallbackDivergenceThreshold(6.0); // Custom threshold for legacy mode
 					// Use a simple GUID instead of the previous GenerateSignalId method
 					
 					
@@ -661,6 +672,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								if (wsConnected)
 								{
 									Print("WebSocket connection established successfully");
+									LoadMEConfig();
 									return true;
 								}
 	
@@ -686,6 +698,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								if (connected)
 								{
 									Print("Connection established successfully");
+									LoadMEConfig();								
 								}
 								else
 								{
@@ -1031,23 +1044,28 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			lock (eventLock)
 			{
-				if(BarsInProgress == 0) ///every request to CheckDivergence increments by 1 so its important to do only once per bar per item
+				if(BarsInProgress == 1) ///every request to CheckDivergence increments by 1 so its important to do only once per bar per item
 				{
+					// Update divergence scores for all active positions (async, non-blocking)
+					_ = Task.Run(async () => 
+					{
+						try 
+						{
+							await curvesService.UpdateAllDivergenceScoresAsync();
+						}
+						catch (Exception ex)
+						{
+							Print($"[ERROR] Failed to update divergence scores: {ex.Message}");
+						}
+					});
+					
 					 foreach (var simStop in MasterSimulatedStops)
 	                {
 						if(simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true)
 						{
 							
-							
-							int age = CurrentBars[0]-simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedEntry.EntryBar;
-							
-							
-							if(age < 100)
-							{
-								bool x = curvesService.CheckDivergence(simStop.EntryOrderUUID,age); /// update divergence stats
-							
-							}
-							
+						
+
 						}
 					}
 				}
@@ -1379,7 +1397,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					                       
 											
-											int indexQuantity = thisSignalPackage.instrumentSeriesIndex == 3 ? 1 : strategyDefaultQuantity;
+											int indexQuantity = strategyDefaultQuantity;
 											if(isRealTime) Print($"{signalPackageSignal} continue BarsInProgress: {BarsInProgress}, Time: {Times[BarsInProgress][0]}");
 
 					                        if (thisSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bullish && marketPosAllowed != marketPositionsAllowed.Short)
@@ -1728,12 +1746,98 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 		}
 		
+		// Load and send default matching configuration to MatchingEngine
+		protected virtual void LoadMEConfig()
+		{
+			try
+			{
+				if (curvesService == null)
+				{
+					Print("[CONFIG] CurvesV2Service not available - skipping config load");
+					return;
+				}
+				
+				// Create default configuration
+				var defaultConfig = new MatchingConfig
+				{
+					ZScoreThreshold = 0.5,              // Allow patterns 0.5 std dev better than average
+					ReliabilityPenaltyEnabled = true,   // Enable reliability penalties
+					MaxThresholdPenalty = 0.1,          // Moderate penalty for unreliable patterns
+					AtmosphericThreshold = 0.8,         // Pre-filtering threshold
+					CosineSimilarityThresholds = new CosineSimilarityThresholds
+					{
+						DefaultThreshold = 0.70,        // Relaxed default threshold
+						EmaRibbon = 0.75,               // Slightly higher for EMA patterns
+						SensitiveEmaRibbon = 0.78       // Highest for sensitive patterns
+					}
+				};
+				
+				// Get instrument code
+				string instrumentCode = GetInstrumentCode();
+				
+				// Send configuration synchronously
+				bool configSent = curvesService.SendMatchingConfig(instrumentCode, defaultConfig);
+				
+				if (configSent)
+				{
+					Print($"[CONFIG] Default matching configuration sent successfully for {instrumentCode}");
+				}
+				else
+				{
+					Print($"[CONFIG] Failed to send matching configuration for {instrumentCode}");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"[CONFIG] Error in LoadMEConfig: {ex.Message}");
+			}
+		}
+		
+		// Helper method to get instrument code (can be overridden in derived classes)
+		protected virtual string GetInstrumentCode()
+		{
+			string instrumentCode = Instrument?.FullName?.Split(' ')?.FirstOrDefault() ?? "";
+			if (string.IsNullOrEmpty(instrumentCode))
+			{
+				Print("[CONFIG] Warning: Unable to determine instrument code - using fallback");
+				instrumentCode = "UNKNOWN";
+			}
+			return instrumentCode;
+		}
 		
 		
 			
 
 ///Properties	
 	
+		[NinjaScriptProperty]
+		[Display(Name="Z-Score Threshold", Description="Allow patterns X std dev better than average", Order=0, GroupName="Matching Engine Config")]
+		public double ZScoreThreshold { get; set; } = 0.5;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Enable Reliability Penalty", Description="Enable reliability penalties for unreliable patterns", Order=1, GroupName="Matching Engine Config")]
+		public bool ReliabilityPenaltyEnabled { get; set; } = true;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Max Threshold Penalty", Description="Maximum penalty for unreliable patterns", Order=2, GroupName="Matching Engine Config")]
+		public double MaxThresholdPenalty { get; set; } = 0.1;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Atmospheric Threshold", Description="Pre-filtering threshold for atmospheric matching", Order=3, GroupName="Matching Engine Config")]
+		public double AtmosphericThreshold { get; set; } = 0.8;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Default Cosine Threshold", Description="Default cosine similarity threshold", Order=4, GroupName="Matching Engine Config")]
+		public double DefaultCosineSimilarityThreshold { get; set; } = 0.70;
+		
+		[NinjaScriptProperty]
+		[Display(Name="EMA Ribbon Threshold", Description="Cosine similarity threshold for EMA Ribbon patterns", Order=5, GroupName="Matching Engine Config")]
+		public double EmaRibbonCosineSimilarityThreshold { get; set; } = 0.75;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Sensitive EMA Ribbon Threshold", Description="Cosine similarity threshold for Sensitive EMA Ribbon patterns", Order=6, GroupName="Matching Engine Config")]
+		public double SensitiveEmaRibbonCosineSimilarityThreshold { get; set; } = 0.78;
+		
 		#region Properties
 		[NinjaScriptProperty]    
 		[Display(Name="Use VWAP STOP", Order=0, GroupName="Class Parameters")]
@@ -1755,7 +1859,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{ get; set; }
 		
 
-	[NinjaScriptProperty]
+		[NinjaScriptProperty]
 		[Display(Name="enable FUNC Exit", Description="", Order=33, GroupName="Order Flow Pattern")]
 		public bool enableFUNCL { get; set;} 
 		
@@ -2021,6 +2125,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 	
 }
+
 
 
 

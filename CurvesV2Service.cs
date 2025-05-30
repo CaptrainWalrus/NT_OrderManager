@@ -114,6 +114,36 @@ namespace NinjaTrader.NinjaScript.Strategies
     {
         public double divergenceScore { get; set; }
         public int barsSinceEntry { get; set; }
+        public bool shouldExit { get; set; }
+        public int consecutiveBars { get; set; }
+        public int confirmationBarsRequired { get; set; }
+        public double thompsonScore { get; set; } = 0.5; // Default neutral Thompson score
+        public object components { get; set; }
+    }
+
+    // Add class for DTW match data
+    public class DtwMatchData
+    {
+        public double score { get; set; }
+        public double avgDistance { get; set; }
+        public int validPeriods { get; set; }
+    }
+
+    // Dynamic matching configuration classes
+    public class MatchingConfig
+    {
+        public double? ZScoreThreshold { get; set; }
+        public bool? ReliabilityPenaltyEnabled { get; set; }
+        public double? MaxThresholdPenalty { get; set; }
+        public double? AtmosphericThreshold { get; set; }
+        public CosineSimilarityThresholds CosineSimilarityThresholds { get; set; }
+    }
+
+    public class CosineSimilarityThresholds
+    {
+        public double? DefaultThreshold { get; set; }
+        public double? EmaRibbon { get; set; }
+        public double? SensitiveEmaRibbon { get; set; }
     }
 
     public class CurvesV2Service : IDisposable
@@ -137,6 +167,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime lastSignalCheck = DateTime.MinValue;
         private CancellationTokenSource signalPollCts;
         private int signalPollIntervalMs = 5000; // 5 seconds between polling
+    
+        // Add concurrent request tracking
+        private int concurrentRequests = 0;
+        private const int MAX_CONCURRENT_REQUESTS = 10;
     
         // WebSocket related fields
         private ClientWebSocket webSocket;
@@ -172,16 +206,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			public DtwMatchData dtwMatch { get; set; } // Add DTW match data
 		}
 		
-		// Add class for DTW match data
-		public class DtwMatchData
-		{
-		    public double score { get; set; }
-		    public double avgDistance { get; set; }
-		    public int validPeriods { get; set; }
-		}
-		
 		// Add a new property to get Signal Pool URL
-		private readonly string signalPoolUrl = "http://localhost:3004";
+		private readonly string signalPoolUrl;
 		public static string CurrentSubtype { get; private set; }
 		public static long CurrentRequestTimestampEpoch { get; private set; }
 		public static double CurrentBullStrength { get; private set; }
@@ -204,6 +230,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Divergence tracking properties
         public static double CurrentDivergenceScore { get; private set; } = 0;
         public static int CurrentBarsSinceEntry { get; private set; } = 0;
+        public static bool CurrentShouldExit { get; private set; } = false;
+        public static int CurrentConsecutiveBars { get; private set; } = 0;
+        public static int CurrentConfirmationBarsRequired { get; private set; } = 3;
         
         // Connection status property
         public bool IsConnected => !disposed && client != null;
@@ -219,6 +248,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly Dictionary<string, RegisteredPosition> activePositions = new Dictionary<string, RegisteredPosition>();
 		
 		public Dictionary<string,double> divergenceScores = new Dictionary<string,double>();
+		
+		// Add Thompson score caching
+		public Dictionary<string,double> thompsonScores = new Dictionary<string,double>();
+		
+		// Add cache for async divergence requests to prevent duplicate HTTP calls
+		private readonly Dictionary<string, Task<double>> pendingDivergenceRequests = new Dictionary<string, Task<double>>();
+		private readonly object divergenceLock = new object();
 		
 		// Add error tracking
 		private readonly Dictionary<string, int> positionErrorCounts = new Dictionary<string, int>();
@@ -237,6 +273,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             public DateTime RegistrationTimestamp { get; set; }
         }
 
+        // Add configuration for adaptive divergence
+        private static double FallbackDivergenceThreshold = 15.0; // Match user's current threshold
+        
+        // Method to check if adaptive divergence mode is likely enabled
+        public static bool IsAdaptiveModeActive()
+        {
+            // If we have confirmation bars data, adaptive mode is likely active
+            return CurrentConfirmationBarsRequired > 0 && CurrentConfirmationBarsRequired != 3;
+        }
+        
+        // Method to set fallback threshold (can be called from NinjaTrader strategy)
+        public static void SetFallbackDivergenceThreshold(double threshold)
+        {
+            FallbackDivergenceThreshold = threshold;
+        }
+
         // Constructor
         public CurvesV2Service(CurvesV2Config config, Action<string> logger = null)
         {
@@ -245,11 +297,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             this.logger = logger ?? ((msg) => { NinjaTrader.Code.Output.Process(msg, PrintTo.OutputTab1); });
             this.disposed = false;
             
-            // Initialize HttpClient
-            client = new HttpClient();
+            // Initialize HttpClient with proper connection management
+            var handler = new HttpClientHandler()
+            {
+                MaxConnectionsPerServer = 20, // Increase connection pool size
+                UseProxy = false // Disable proxy for better performance
+            };
+            
+            client = new HttpClient(handler);
             client.DefaultRequestHeaders.Accept.Clear();
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             client.Timeout = TimeSpan.FromSeconds(10); // Default timeout
+            client.DefaultRequestHeaders.ConnectionClose = false; // Keep connections alive
             
             // Initialize visualization client
             visualizationClient = new HttpClient();
@@ -259,6 +318,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			sessionID = Guid.NewGuid().ToString();
 			CurrentContextId = null;
+            
+            // Initialize signalPoolUrl from config
+            this.signalPoolUrl = config.GetSignalPoolApiEndpoint();
+            
             Log("[INFO] CurvesV2Service (HTTP Refactor) Initialized.");
         }
 
@@ -328,7 +391,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             try
             {
                 Log("[INFO] Checking server health...");
-                string healthEndpoint = $"{baseUrl}/api/health";
+                string healthEndpoint = $"{baseUrl}/health";
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
                 {
                     var response = await client.GetAsync(healthEndpoint, timeoutCts.Token);
@@ -596,38 +659,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
 		    return false;
             
+            // Check if we're at the concurrent request limit
+            if (concurrentRequests >= MAX_CONCURRENT_REQUESTS)
+            {
+                // Drop the request to prevent overwhelming the system
+                return false;
+            }
+                
             try
             {
-                // Log the attempt
-                //Log($"[DEBUG HTTP] SendBarFireAndForget: Called for {instrument} @ {timestamp}");
-                
                 long epochMs = (long)(timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds;
 				CurrentRequestTimestampEpoch = epochMs;
-                // --- START TEMPORARY DEBUG: Force HTTP Fallback ---
-                // Always skip WebSocket path for debugging
-                /* 
-            if (webSocket != null && webSocket.State == WebSocketState.Open)
-            {
-                    // ... (original WebSocket send logic) ...
-                    return true;
-                }
-                else
-                { 
-                     Log($"SendBarFireAndForget: WebSocket not connected or null. State: {webSocket?.State}. Using HTTP fallback.");
-                } 
-                */
-                //Log($"[DEBUG HTTP] SendBarFireAndForget: Skipping WebSocket, forcing HTTP.");
-                // --- END TEMPORARY DEBUG ---
 
-                // Fallback to HTTP
                 // Build the URL for the endpoint
-				
-				
 				string microServiceUrl = useRemoteService == true ? "https://curves-monolith.onrender.com" : baseUrl;
 				string endpoint = $"{microServiceUrl}/api/ingest/bars/{instrument}";
-                //string endpoint = $"{microServiceUrl}/api/realtime_bars/{instrument}/backtest?matchPatterns=true&sessionId={sessionID}"; // Use /api/realtime_bars endpoint for NinjaTrader
+                
                 // Create payload
-                string jsonPayload = JsonConvert.SerializeObject(new {
+                var payloadObject = new {
                      timestamp = epochMs,
                      open = open,
                      high = high,
@@ -635,66 +684,47 @@ namespace NinjaTrader.NinjaScript.Strategies
                      close = close,
                      volume = volume,
                      timeframe = timeframe,
-                     symbol = instrument // Add symbol for server processing
-                });
-                byte[] data = Encoding.UTF8.GetBytes(jsonPayload);
+                    symbol = instrument
+                };
                 
-                // Create a non-blocking request
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(endpoint);
-                request.Method = "POST";
-                request.ContentType = "application/json";
-                request.ContentLength = data.Length;
-                request.Timeout = 3000; // 3 second timeout
-                //Log($" SendFireAndForget: {endpoint} with payload {jsonPayload}");
-                // Begin the request without blocking
-                try
-                {
-                    // Get request stream asynchronously but don't wait
-                    IAsyncResult asyncResult = request.BeginGetRequestStream(
-                        ar => {
+                string jsonPayload = JsonConvert.SerializeObject(payloadObject);
+                
+                // Increment concurrent request counter
+                Interlocked.Increment(ref concurrentRequests);
+                
+                // Use HttpClient for better connection management
+                Task.Run(async () => {
                             try
                             {
                                 if (IsDisposed() || IsShuttingDown()) return;
-                                using (Stream requestStream = request.EndGetRequestStream(ar))
-                                {
-                                    requestStream.Write(data, 0, data.Length);
-                                }
-                                request.BeginGetResponse(
-                                    responseResult => {
-                                        try
-                                        {
-                                            if (IsDisposed() || IsShuttingDown()) return;
-                                            using (WebResponse response = request.EndGetResponse(responseResult))
+                        
+                        using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
+                        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) // 3 second timeout per request
+                        {
+                            // Fire and forget with timeout
+                            var response = await client.PostAsync(endpoint, content, cts.Token);
+                            response.Dispose(); // Important: dispose the response to free the connection
+                        }
+                    }
+                    catch (TaskCanceledException)
                                             {
-                                                //Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP bar data sent successfully for {instrument}");
-                                            }
+                        // This is expected when requests timeout - don't log
                                         }
                                         catch (Exception ex)
                                         {
-                                            if (IsDisposed() || IsShuttingDown()) return;
-                                            Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP response error for {instrument} at {endpoint}: {ex.Message}");
+                        if (!IsDisposed() && !IsShuttingDown())
+                        {
+                            Log($"[DEBUG HTTP] SendBarFireAndForget: Error for {instrument}: {ex.Message}");
                                         }
-                                    },
-                                    null 
-                                );
                             }
-                            catch (Exception ex)
+                    finally
                             {
-                                if (IsDisposed() || IsShuttingDown()) return;
-                                Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP request stream error for {instrument}: {ex.Message}");
+                        // Always decrement the counter
+                        Interlocked.Decrement(ref concurrentRequests);
                             }
-                        },
-                        null 
-                    );
+                });
                     
-                    //Log($"[DEBUG HTTP] SendBarFireAndForget: HTTP request initiated for {instrument}");
                     return true;
-                }
-                catch (Exception ex)
-                {
-                    Log($"[DEBUG HTTP] SendBarFireAndForget: Error creating HTTP request for {instrument}: {ex.Message}");
-                    return false;
-                }
             }
             catch (Exception ex)
             {
@@ -711,182 +741,115 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    if (IsDisposed() || string.IsNullOrEmpty(instrument) || client == null)
 		        return false;
 			
-			string timestamp = dt.ToString();
+			// Check concurrent request limit
+			if (concurrentRequests >= MAX_CONCURRENT_REQUESTS)
+				return false;
 
+			// Reset values immediately (optimistic)
 			CurrentOppositionStrength = 0;
 			CurrentConfluenceScore = 0;
 			CurrentRawScore = 0;
 			CurrentEffectiveScore = 0;
-			CurrentPatternId = null; // Reset the pattern ID
+			CurrentPatternId = null;
 			
-			HttpResponseMessage response = null;
-		    try
-		    {
-				// Inside CheckSignalsFireAndForget method
-				string timestampIso = dt.ToUniversalTime().ToString("o");
-				string encodedTimestamp = Uri.EscapeDataString(timestampIso);
-		        // Build simple endpoint URL
+			try
+			{
+				// Pre-build endpoint once (avoid StringBuilder overhead)
+				string microServiceUrl = useRemoteService ? "https://curves-signal-pool-service.onrender.com" : signalPoolUrl;
+				string endpoint = $"{microServiceUrl}/api/signals/available?instrument={instrument}";
 				
-				string microServiceUrl = useRemoteService == true ? "https://curves-signal-pool-service.onrender.com" : signalPoolUrl;
-
+				// Increment counter and fire-and-forget
+				Interlocked.Increment(ref concurrentRequests);
 				
-		        StringBuilder endpointBuilder = new StringBuilder($"{microServiceUrl}/api/signals/available?instrument={instrument}");
-		        
-		        // Add optional filters if specified
-		       // if (pattern_size.HasValue)
-		         //   endpointBuilder.Append($"&pattern_size={pattern_size.Value}");
-
-				 // <<< ADDED: Append subtype filter if provided >>>
-		       // if (!string.IsNullOrEmpty(subtype))
-		       //     endpointBuilder.Append($"&signalSubtype={Uri.EscapeDataString(subtype)}"); 
-		        // <<< END ADDED >>>
-				
-				//&barTimestamp={encodedTimestamp}
-				
-		        //if (minRawScore.HasValue)
-		        //    endpointBuilder.Append($"&minRawScore={minRawScore.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-		        
-		        //if (effectiveScoreRequirement.HasValue)
-		        //    endpointBuilder.Append($"&minEffectiveScore={effectiveScoreRequirement.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-		        
-		        
-		        string endpoint = endpointBuilder.ToString();
-		        
-		        // Log request (but less verbose)
-		        //Log($"[SIGNAL] Requesting signals for {instrument} from {endpoint}");
-		        
-		        if (IsDisposed() || IsShuttingDown())
-		            return false; 
-		            
-		        // Get response with timeout
-		        using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) 
-		        {
-		            response = client.GetAsync(endpoint, timeoutCts.Token).GetAwaiter().GetResult(); 
-		        }
-
-		        if (response.IsSuccessStatusCode)
-		        {
-		            string responseText = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-		            //Log($"responseText [{dt}] {responseText}");
-		            // Parse the response
-		            var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
-		            
-		            if (signalPoolResponse != null && signalPoolResponse.success && 
-		                signalPoolResponse.signals != null && signalPoolResponse.signals.Count > 0) 
-		            {
-		                // MODIFIED: Classify signals as bull or bear based on type or direction 
-		                var bullSignals = signalPoolResponse.signals.Where(s => 
-                            s.type == "bull" || 
-                            (s.direction != null && s.direction.ToLower() == "long") || 
-                            (s.type != null && s.type.ToLower().Contains("bull"))
-                        ).ToList();
-                        
-		                var bearSignals = signalPoolResponse.signals.Where(s => 
-                            s.type == "bear" || 
-                            (s.direction != null && s.direction.ToLower() == "short") || 
-                            (s.type != null && s.type.ToLower().Contains("bear"))
-                        ).ToList();
-                        
-                        // If we still don't have bull/bear signals, try to infer from the pattern type
-                        if (bullSignals.Count == 0 && bearSignals.Count == 0)
-                        {
-                            // Default categorization based on first signal if we can't determine otherwise
-                            if (signalPoolResponse.signals.Count > 0)
-                            {
-                                var signal = signalPoolResponse.signals[0];
-                                Log($"Inferring direction from signal type: {signal.type}");
-                                
-                                // Handle specific pattern types we know about
-                                if (signal.type == "EMARibbonHarmonics")
-                                {
-                                    // For EMARibbonHarmonics, let's consider it bullish by default
-                                    // We can add more sophisticated logic based on other properties if available
-                                    Log($"EMARibbonHarmonics pattern detected - treating as BULL signal with rawScore={signal.rawScore}");
-                                    bullSignals.Add(signal);
-                                }
-                                // Add other known pattern types here
-                                else if (signal.type != null)
-                                {
-                                    // By default, add to bull signals if we can't determine
-                                    Log($"Unknown pattern type '{signal.type}' - defaulting to BULL signal");
-                                    bullSignals.Add(signal);
-                                }
-                            }
-                        }
-		               
-		                // Calculate highest bull/bear scores (convert to percentage)
-		                double bullScore_raw = bullSignals.Any() ? bullSignals.Max(s => s.rawScore) * 100 : 0;
-		                double bearScore_raw = bearSignals.Any() ? bearSignals.Max(s => s.rawScore) * 100 : 0; 
-		                
-						// Calculate highest bull/bear scores (convert to percentage)
-		                double bullScore_eff = bullSignals.Any() ? bullSignals.Max(s => s.effectiveScore) * 100 : 0; // changed from rawScore effectiveScore
-		                double bearScore_eff = bearSignals.Any() ? bearSignals.Max(s => s.effectiveScore) * 100 : 0; // changed from rawScore effectiveScore
-					    
-						double bullScore = Math.Max(bullScore_eff,bullScore_raw);
-						double bearScore = Math.Max(bearScore_eff,bearScore_raw);						
-						
-						// Extract the highest opposition strength and confluence score
-						//oppositionStrength = 0;
-						//confluenceScore = 0;
-						//effectiveScore = 0;
-						
-						// Check if we have any signals and extract the values
-						if (signalPoolResponse.signals.Any())
-						{
-							var firstSignal = signalPoolResponse.signals[0]; // Get the first/prioritized signal
-						    CurrentPatternType = firstSignal.patternType;
-							CurrentSubtype = firstSignal.subtype; // <<< STORE SUBTYPE
-						    CurrentPatternId = firstSignal.patternId; // <<< STORE PATTERN ID
-						    // Get the highest opposition strength and confluence score from any signal
-						    CurrentOppositionStrength = signalPoolResponse.signals.Max(s => s.oppositionStrength);
-						    CurrentConfluenceScore = signalPoolResponse.signals.Max(s => s.confluenceScore);
-							CurrentEffectiveScore = signalPoolResponse.signals.Max(s => s.effectiveScore);
-							CurrentRawScore = signalPoolResponse.signals.Max(s => s.rawScore);
-							// Extract DTW match data if available
-						
-						}
-					
-		                // Update static properties with the new values
-		                CurrentBullStrength = bullScore;
-		                CurrentBearStrength = bearScore;
-		                LastSignalTimestamp = DateTime.UtcNow;
-		                CurrentContextId = "signal-" + DateTime.Now.Ticks; // Simple unique context
-		                
-		                // Log signal values with patternId for debugging
-		                if (bullScore > 0 || bearScore > 0)
-		                {
-		                    //Log($"[{dt}] [SIGNAL] Values - [PatternId] {CurrentPatternId}, [Bull] {bullScore:F2}%, [Bear]: {bearScore:F2}%, [EffectiveScore] {CurrentEffectiveScore:F2}");
-		                }
-		                
-		                return true;
-		            }
-		            else
-		            {
-		                // No signals found - reset values
-		                CurrentPatternType = null; // <<< RESET
-		                CurrentSubtype = null; // <<< RESET
-		                CurrentPatternId = null; // <<< RESET
-		                CurrentBullStrength = 0;
-		                CurrentBearStrength = 0;
-		                return false;
-		            }
-		        }
-		    }
-		    catch (Exception ex)
-		    {
-		        if (!IsDisposed() && !IsShuttingDown())
-		            Log($"[ERROR] Checking signals for {instrument}: {ex.Message}");
-					if(ErrorCounter < 11)
+				// TRUE fire-and-forget - no blocking
+				Task.Run(async () => {
+					HttpResponseMessage response = null;
+					try
 					{
-						ErrorCounter++;
+						if (IsDisposed() || IsShuttingDown()) return;
+						
+						using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) // Reduced timeout
+						{
+							response = await client.GetAsync(endpoint, timeoutCts.Token);
+						}
+
+						if (response.IsSuccessStatusCode)
+						{
+							string responseText = await response.Content.ReadAsStringAsync();
+							var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
+							
+							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
+							{
+								// Quick categorization without complex LINQ
+								double bullScore = 0, bearScore = 0;
+								var firstSignal = signalPoolResponse.signals[0];
+								
+								foreach (var signal in signalPoolResponse.signals)
+								{
+									bool isBull = signal.type == "bull" || 
+												 (signal.direction?.ToLower() == "long") || 
+												 (signal.type?.ToLower().Contains("bull") == true);
+									
+									double effectiveScore = Math.Max(signal.effectiveScore, signal.rawScore) * 100;
+									
+									if (isBull && effectiveScore > bullScore)
+										bullScore = effectiveScore;
+									else if (!isBull && effectiveScore > bearScore)
+										bearScore = effectiveScore;
+								}
+								
+								// Update static properties atomically
+								CurrentBullStrength = bullScore;
+								CurrentBearStrength = bearScore;
+								CurrentPatternType = firstSignal.patternType;
+								CurrentSubtype = firstSignal.subtype;
+								CurrentPatternId = firstSignal.patternId;
+								CurrentOppositionStrength = signalPoolResponse.signals.Max(s => s.oppositionStrength);
+								CurrentConfluenceScore = signalPoolResponse.signals.Max(s => s.confluenceScore);
+								CurrentEffectiveScore = signalPoolResponse.signals.Max(s => s.effectiveScore);
+								CurrentRawScore = signalPoolResponse.signals.Max(s => s.rawScore);
+								LastSignalTimestamp = DateTime.UtcNow;
+								CurrentContextId = "signal-" + DateTime.Now.Ticks;
+							}
+							else
+							{
+								// Reset on no signals
+								CurrentPatternType = null;
+								CurrentSubtype = null;
+								CurrentPatternId = null;
+								CurrentBullStrength = 0;
+								CurrentBearStrength = 0;
+							}
+						}
 					}
-		    }
-		    finally
-		    {
-		        response?.Dispose(); 
-		    }
-		    
-		    return false; 
+					catch (TaskCanceledException) 
+					{
+						// Expected for timeouts - don't log
+					}
+					catch (Exception ex)
+					{
+						if (!IsDisposed() && !IsShuttingDown())
+						{
+							Log($"[ERROR] Checking signals for {instrument}: {ex.Message}");
+							if (ErrorCounter < 11)
+								ErrorCounter++;
+						}
+					}
+					finally
+					{
+						response?.Dispose();
+						Interlocked.Decrement(ref concurrentRequests);
+					}
+				});
+				
+				return true;
+			}
+			catch (Exception ex)
+			{
+				Interlocked.Decrement(ref concurrentRequests);
+				Log($"[ERROR] CheckSignalsFireAndForget setup error: {ex.Message}");
+				return false;
+			}
 		}
 
 		
@@ -1058,6 +1021,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			CurrentRawScore = 0;
             CurrentDivergenceScore = 0;
             CurrentBarsSinceEntry = 0;
+            CurrentShouldExit = false;
+            CurrentConsecutiveBars = 0;
+            CurrentConfirmationBarsRequired = 3;
             CurrentPatternId = null; // Reset the pattern ID
 
             CurrentPatternType = null;
@@ -1259,8 +1225,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return false;
                 }
 
-                // Use endpoint URL pointing to CurvesV2 API server on port 3002
-                string endpoint = "http://localhost:3002/api/pattern-timeline/record-with-penalties";
+                // Use endpoint URL pointing to MatchingEngine service Thompson routes
+                string endpoint = $"{meServiceUrl}/api/thompson/record-pattern-performance";
                 
                 // Serialize the record to JSON
                 string jsonPayload = JsonConvert.SerializeObject(record);
@@ -1396,6 +1362,90 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        // Send dynamic matching configuration to MatchingEngine service
+        public async Task<bool> SendMatchingConfigAsync(string instrument, MatchingConfig config)
+        {
+            if (IsDisposed()) return false;
+
+            try
+            {
+                // Validate required parameters
+                if (string.IsNullOrEmpty(instrument) || config == null)
+                {
+                    Log("[ERROR] SendMatchingConfig: Invalid instrument or config provided");
+                    return false;
+                }
+
+                // Create the request payload
+                var configRequest = new
+                {
+                    instrument = instrument,
+                    matchingConfig = new
+                    {
+                        zScoreThreshold = config.ZScoreThreshold,
+                        reliabilityPenaltyEnabled = config.ReliabilityPenaltyEnabled,
+                        maxThresholdPenalty = config.MaxThresholdPenalty,
+                        atmosphericThreshold = config.AtmosphericThreshold,
+                        cosineSimilarityThresholds = config.CosineSimilarityThresholds != null ? new
+                        {
+                            defaultThreshold = config.CosineSimilarityThresholds.DefaultThreshold,
+                            emaRibbon = config.CosineSimilarityThresholds.EmaRibbon,
+                            sensitiveEmaRibbon = config.CosineSimilarityThresholds.SensitiveEmaRibbon
+                        } : null,
+                        sessionId = sessionID,
+                        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    }
+                };
+
+                // Convert to JSON
+                string jsonPayload = JsonConvert.SerializeObject(configRequest);
+                StringContent content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                // Send to MatchingEngine service
+                string endpoint = $"{meServiceUrl}/api/ingest/config/matching";
+                
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                {
+                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string responseText = await response.Content.ReadAsStringAsync();
+                        Log($"[CONFIG] Successfully sent matching config for {instrument}");
+                        Log($"[CONFIG] Config: ZScore={config.ZScoreThreshold}, Atmospheric={config.AtmosphericThreshold}, ReliabilityPenalty={config.ReliabilityPenaltyEnabled}");
+                        return true;
+                    }
+                    else
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync();
+                        Log($"[ERROR] Failed to send matching config (HTTP {response.StatusCode}): {errorContent}");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERROR] Error sending matching config: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Synchronous wrapper for SendMatchingConfigAsync
+        public bool SendMatchingConfig(string instrument, MatchingConfig config)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                return SendMatchingConfigAsync(instrument, config).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERROR] Error in SendMatchingConfig synchronous method: {ex.Message}");
+                return false;
+            }
+        }
+
         // Register a position for divergence tracking
         public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
         {
@@ -1521,63 +1571,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             return false;
         }
 
-        // Check divergence score for a registered position with threshold parameter
-		public bool CheckDivergence(string entrySignalId, int age)
-		{
-		    if (IsDisposed() || age > 50) return false;
-		    
-		    // Simple retry logic
-		    int retries = 1;
-		    int delayMs = 300;
-		    
-		    for (int attempt = 0; attempt <= retries; attempt++)
-		    {
-		        try
-		        {
-		            string endpoint = $"{meServiceUrl}/api/positions/{entrySignalId}/divergence";
-		            var response = client.GetAsync(endpoint).Result;
-		            
-		            if (response.IsSuccessStatusCode)
-		            {
-		                var divergenceResponse = JsonConvert.DeserializeObject<DivergenceResponse>(
-		                    response.Content.ReadAsStringAsync().Result);
-		                
-		                if (divergenceResponse != null)
-		                {
-		                    // Update values on success
-		                    CurrentDivergenceScore = divergenceResponse.divergenceScore;
-		                    CurrentBarsSinceEntry = divergenceResponse.barsSinceEntry;
-		                    divergenceScores[entrySignalId] = CurrentDivergenceScore;
-		                    return true;
-		                }
-		            }
-		            else
-		            {
-		                Log($"[DIVERGENCE] Failed to check divergence for {entrySignalId}: {response.StatusCode}");
-		                
-		                // Only retry on service unavailable
-		                if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable && attempt < retries)
-		                {
-		                    Thread.Sleep(delayMs);
-		                    continue;
-		                }
-		            }
-		        }
-		        catch (Exception ex)
-		        {
-		            Log($"[DIVERGENCE] Error checking divergence: {ex.Message}");
-		            
-		            // Retry on connection errors
-		            if ((ex is HttpRequestException || ex is TaskCanceledException) && attempt < retries)
-		            {
-		                Thread.Sleep(delayMs);
-		                continue;
-		            }
-		        }
-		    }
-		    
-		    return false;
-		}
         // Synchronous wrapper for RegisterPositionAsync
         public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
         {
@@ -1595,9 +1588,184 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-      
+        // Check divergence score for a registered position with threshold parameter
+		public double CheckDivergence(string entrySignalId)
+		{
+		    if (IsDisposed()) return -9999999;
+		    
+		    // Return cached value if available - this is now purely a cache lookup
+		    if (divergenceScores.ContainsKey(entrySignalId))
+		    {
+		        return divergenceScores[entrySignalId];
+		    }
+		    
+		    return 0; // Return default if not cached
+		}
+
+		// Async version for updating divergence scores - call this during BarsInProgress = 1
+		public async Task<double> CheckDivergenceAsync(string entrySignalId)
+		{
+		    if (IsDisposed()) return -9999999;
+		    
+		    // Return cached value if available
+		    if (divergenceScores.ContainsKey(entrySignalId))
+		    {
+		        return divergenceScores[entrySignalId];
+		    }
+		    
+		    // Check if we already have a pending request for this entry
+		    Task<double> pendingTask = null;
+		    lock (divergenceLock)
+		    {
+		        if (pendingDivergenceRequests.ContainsKey(entrySignalId))
+		        {
+		            // Get the pending task reference while inside the lock
+		            pendingTask = pendingDivergenceRequests[entrySignalId];
+		        }
+		    }
+		    
+		    // If we found a pending task, await it outside the lock
+		    if (pendingTask != null)
+		    {
+		        return await pendingTask;
+		    }
+		    
+		    // Create and cache the request task
+		    var requestTask = PerformDivergenceRequestAsync(entrySignalId);
+		    
+		    lock (divergenceLock)
+		    {
+		        pendingDivergenceRequests[entrySignalId] = requestTask;
+		    }
+		    
+		    try
+		    {
+		        var result = await requestTask;
+		        return result;
+		    }
+		    finally
+		    {
+		        // Remove from pending requests when done
+		        lock (divergenceLock)
+		        {
+		            pendingDivergenceRequests.Remove(entrySignalId);
+		        }
+		    }
+		}
+
+		// Private method to perform the actual HTTP request
+		private async Task<double> PerformDivergenceRequestAsync(string entrySignalId)
+		{
+		    try
+		    {
+		        string endpoint = $"{meServiceUrl}/api/positions/{entrySignalId}/divergence";
+		        using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+		        {
+		            var response = await client.GetAsync(endpoint, timeoutCts.Token);
+		            
+		            if (response.IsSuccessStatusCode)
+		            {
+		                var content = await response.Content.ReadAsStringAsync();
+		                var divergenceResponse = JsonConvert.DeserializeObject<DivergenceResponse>(content);
+		                
+		                if (divergenceResponse != null)
+		                {
+		                    // Update all values from the new adaptive API response
+		                    CurrentDivergenceScore = divergenceResponse.divergenceScore;
+		                    CurrentBarsSinceEntry = divergenceResponse.barsSinceEntry;
+		                    CurrentShouldExit = divergenceResponse.shouldExit;
+		                    CurrentConsecutiveBars = divergenceResponse.consecutiveBars;
+		                    CurrentConfirmationBarsRequired = divergenceResponse.confirmationBarsRequired;
+		                    
+		                    // Store the divergence score for caching
+		                    divergenceScores[entrySignalId] = CurrentDivergenceScore;
+		                    Log($"[DIVERGENCE] divergence for {entrySignalId}: {CurrentDivergenceScore}");
+		            
+		                    // ADDED: Cache Thompson score from divergence response
+		                    if (divergenceResponse.thompsonScore >= 0 && divergenceResponse.thompsonScore <= 1)
+		                    {
+		                        // Extract pattern ID from entry signal ID (assuming format: patternId_timestamp_Entry)
+		                        string patternId = ExtractPatternIdFromEntrySignal(entrySignalId);
+		                        if (!string.IsNullOrEmpty(patternId))
+		                        {
+		                            thompsonScores[patternId] = divergenceResponse.thompsonScore;
+		                            Log($"[THOMPSON] Cached score for {patternId}: {divergenceResponse.thompsonScore:F3}");
+		                        }
+		                    }
+		                }
+		            }
+		            else if (response.StatusCode != System.Net.HttpStatusCode.NotFound)
+		            {
+		                // Only log errors that aren't "not found" (which is expected for new positions)
+		                Log($"[DIVERGENCE] Failed to check divergence for {entrySignalId}: {response.StatusCode}");
+		            }
+		        }
+		    }
+		    catch (Exception ex)
+		    {
+		        // Don't log timeout/cancellation exceptions as they're expected
+		        if (!(ex is TaskCanceledException || ex is OperationCanceledException))
+		        {
+		            Log($"[DIVERGENCE] Error checking divergence for {entrySignalId}: {ex.Message}");
+		        }
+		    }
+		    
+		    return 0; // Default value if request fails
+		}
+
+        // Helper method to extract pattern ID from entry signal ID
+        public string ExtractPatternIdFromEntrySignal(string entrySignalId)
+        {
+            try
+            {
+                // Pattern: "patternId_timestamp_Entry"
+                if (string.IsNullOrEmpty(entrySignalId)) return null;
+                
+                var parts = entrySignalId.Split('_');
+                if (parts.Length >= 3 && parts[parts.Length - 1] == "Entry")
+                {
+                    // Reconstruct pattern ID (all parts except timestamp and "Entry")
+                    var patternParts = parts.Take(parts.Length - 2).ToArray();
+                    return string.Join("_", patternParts);
+                }
+                
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // Batch method to update divergence for all active positions - call this once per bar
+        public async Task UpdateAllDivergenceScoresAsync()
+        {
+            if (IsDisposed() || activePositions.Count == 0) return;
+            
+            var updateTasks = new List<Task>();
+            
+            // Create tasks for all active positions
+            foreach (var entrySignalId in activePositions.Keys.ToList())
+            {
+                updateTasks.Add(CheckDivergenceAsync(entrySignalId));
+            }
+            
+            // Wait for all updates to complete (with reasonable timeout)
+            try
+            {
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                {
+                    await Task.WhenAll(updateTasks).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[DIVERGENCE] Error updating batch divergence scores: {ex.Message}");
+            }
+        }
+
         // Deregister a position when it's closed
-        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool wasGoodExit = false, double finalDivergence = 0.0)
+        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool wasGoodExit = false, double finalDivergenceP = 0.0)
         {
             if (IsDisposed()) return false;
             
@@ -1607,8 +1775,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
-            //Log($"[DIVERGENCE] Deregistering position {entrySignalId}");
-            
             // Try up to 2 times (fewer retries for deregistration since it's less critical)
             for (int attempt = 1; attempt <= 2; attempt++)
             {
@@ -1622,11 +1788,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                         Log($"[DIVERGENCE] Retry {attempt}/2: Deregistering position {entrySignalId}");
                     }
                     
+                    if(divergenceScores.ContainsKey(entrySignalId))
+                    {
+                        finalDivergenceP = divergenceScores[entrySignalId];
+                    }
                     // Create the payload with exit outcome data
                     var exitOutcomeData = new 
                     {
                         wasGoodExit = wasGoodExit,
-                        finalDivergence = finalDivergence
+                        finalDivergence = finalDivergenceP
                     };
                     
                     // Convert to JSON
@@ -1647,20 +1817,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                         
                         if (response.IsSuccessStatusCode)
                         {
-                            Log($"[DIVERGENCE] Successfully deregistered position {entrySignalId} with wasGoodExit={wasGoodExit}, finalDivergence={finalDivergence}");
-                            
                             // Reset the static properties
                             CurrentDivergenceScore = 0;
-                            CurrentBarsSinceEntry = 0;
-							if(divergenceScores.ContainsKey(entrySignalId))
-							{
-                            	divergenceScores.Remove(entrySignalId);
-							}
+                            if(divergenceScores.ContainsKey(entrySignalId))
+                            {
+                                divergenceScores.Remove(entrySignalId);
+                            }
                             // Remove from local registry
                             if (activePositions.ContainsKey(entrySignalId))
                             {
                                 activePositions.Remove(entrySignalId);
-                                //Log($"[DIVERGENCE] Position {entrySignalId} removed from local registry");
+                                Log($"[DIVERGENCE] Successfully deregistered position {entrySignalId} with wasGoodExit={wasGoodExit}, finalDivergence={finalDivergenceP}");
                             }
                             
                             return true;
@@ -1741,38 +1908,43 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // Get position by entrySignalId
-        private RegisteredPosition GetPosition(string entrySignalId)
+        // Add Thompson score retrieval method
+        public async Task<double> GetThompsonScoreAsync(string patternId)
         {
-            if (string.IsNullOrEmpty(entrySignalId))
+            if (IsDisposed()) return 0.5;
+            
+            // First check cached Thompson scores from divergence responses
+            if (thompsonScores.ContainsKey(patternId))
             {
-                Log($"[DIVERGENCE] GetPosition called with null or empty entrySignalId");
-                return null;
+                return thompsonScores[patternId];
             }
             
-            if (activePositions.TryGetValue(entrySignalId, out RegisteredPosition position))
+            try
             {
-                return position;
+                string endpoint = $"{meServiceUrl}/api/patterns/{patternId}/thompson";
+                using (var client = new HttpClient())
+                {
+                    client.Timeout = TimeSpan.FromMilliseconds(1000);
+                    var response = await client.GetAsync(endpoint);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var jsonContent = await response.Content.ReadAsStringAsync();
+                        var thompsonResponse = JsonConvert.DeserializeObject<dynamic>(jsonContent);
+                        double score = (double)(thompsonResponse.thompsonScore ?? 0.5);
+                        
+                        // Cache the result for future use
+                        thompsonScores[patternId] = score;
+                        return score;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[THOMPSON] Error getting Thompson score for {patternId}: {ex.Message}");
             }
             
-            Log($"[DIVERGENCE] Position not found for entrySignalId: {entrySignalId}");
-            return null;
+            return 0.5; // Default neutral score
         }
-
-        // Add a method to check if we should exit based on divergence
-        public double GetExitSignal(string entrySignalId)
-        {
-            if (IsDisposed() || string.IsNullOrEmpty(entrySignalId)) return 0;
-            
-            // If we have a positive exit signal stored in divergenceScores, return it
-            if (divergenceScores.ContainsKey(entrySignalId))
-            {
-                return divergenceScores[entrySignalId];
-            }
-            
-            return 0; // No signal to exit
-        }
-	}
-
-   
+    }
 } 

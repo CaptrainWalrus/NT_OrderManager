@@ -526,7 +526,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							
 							Print($"{Time[0]}  SELL {orderRecordMaster.ExitOrderUUID} to Close {orderRecordMaster.EntryOrderUUID} at {orderRecordMaster.OrderSupplementals.thisSignalExitAction} PROFIT ${orderRecordMaster.PriceStats.OrderStatsProfit} ");
 						}
-						if(executionOrder.OrderAction == OrderAction.Sell)
+						if(executionOrder.OrderAction == OrderAction.BuyToCover)
 						{
 							
 							Print($"{Time[0]} BUY TO COVER {orderRecordMaster.ExitOrderUUID} to Close {orderRecordMaster.EntryOrderUUID} at {orderRecordMaster.OrderSupplementals.thisSignalExitAction} PROFIT ${orderRecordMaster.PriceStats.OrderStatsProfit} ");
@@ -811,7 +811,42 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									{
 										
 										tryCatchSection = "profit > 0";
-										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID,true,orderRecordMaster.OrderSupplementals.divergence);
+										
+										// Enhanced wasGoodExit logic - consider exit reason, not just profit
+										bool wasGoodExit = DetermineExitQuality(profit, orderRecordMaster.OrderSupplementals.thisSignalExitAction, orderRecordMaster.OrderSupplementals.divergence);
+										
+										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, true, orderRecordMaster.OrderSupplementals.divergence);
+
+										// ADDED: Record pattern performance for winning trades
+										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
+										{
+											try 
+											{
+												var performanceRecord = new PatternPerformanceRecord
+												{
+													contextId = orderRecordMaster.OrderSupplementals.patternId,
+													timestamp_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+													bar_timestamp_ms = (long)(Time[0].ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds,
+													maxGain = profit,
+													maxLoss = 0, // It's a win
+													isLong = orderRecordMaster.EntryOrder.IsLong,
+													instrument = orderRecordMaster.EntryOrder.Instrument.FullName
+												};
+												
+												// Fire and forget - don't block trading
+												_ = Task.Run(async () => {
+													try {
+														await curvesService.RecordPatternPerformanceAsync(performanceRecord);
+													} catch (Exception ex) {
+														Print($"[PATTERN] Error recording win for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+													}
+												});
+											}
+											catch (Exception ex) 
+											{
+												Print($"[PATTERN] Error creating performance record for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+											}
+										}
 
 										signalPackage lastTradeSignalPackage = orderRecordMaster.OrderSupplementals.sourceSignalPackage;
 										
@@ -852,7 +887,39 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									else if(profit == 0)
 									{
 										
-										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID,false);
+										bool wasGoodExit = DetermineExitQuality(profit, orderRecordMaster.OrderSupplementals.thisSignalExitAction, orderRecordMaster.OrderSupplementals.divergence);
+										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, false, orderRecordMaster.OrderSupplementals.divergence);
+
+										// ADDED: Record pattern performance for break-even trades
+										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
+										{
+											try 
+											{
+												var performanceRecord = new PatternPerformanceRecord
+												{
+													contextId = orderRecordMaster.OrderSupplementals.patternId,
+													timestamp_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+													bar_timestamp_ms = (long)(Time[0].ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds,
+													maxGain = 0, // Break-even
+													maxLoss = 0,
+													isLong = orderRecordMaster.EntryOrder.IsLong,
+													instrument = orderRecordMaster.EntryOrder.Instrument.FullName
+												};
+												
+												// Fire and forget - don't block trading
+												_ = Task.Run(async () => {
+													try {
+														await curvesService.RecordPatternPerformanceAsync(performanceRecord);
+													} catch (Exception ex) {
+														Print($"[PATTERN] Error recording break-even for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+													}
+												});
+											}
+											catch (Exception ex) 
+											{
+												Print($"[PATTERN] Error creating performance record for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+											}
+										}
 
 										tryCatchSection = "ENTRY IS PAIRED 5";
 										
@@ -862,7 +929,39 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									else if(profit < 0) 
 									{
 
-										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID,false,orderRecordMaster.OrderSupplementals.divergence);
+										bool wasGoodExit = DetermineExitQuality(profit, orderRecordMaster.OrderSupplementals.thisSignalExitAction, orderRecordMaster.OrderSupplementals.divergence);
+										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, wasGoodExit, orderRecordMaster.OrderSupplementals.divergence);
+
+										// ADDED: Record pattern performance for losing trades
+										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
+										{
+											try 
+											{
+												var performanceRecord = new PatternPerformanceRecord
+												{
+													contextId = orderRecordMaster.OrderSupplementals.patternId,
+													timestamp_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+													bar_timestamp_ms = (long)(Time[0].ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds,
+													maxGain = 0, // It's a loss
+													maxLoss = Math.Abs(profit),
+													isLong = orderRecordMaster.EntryOrder.IsLong,
+													instrument = orderRecordMaster.EntryOrder.Instrument.FullName
+												};
+												
+												// Fire and forget - don't block trading
+												_ = Task.Run(async () => {
+													try {
+														await curvesService.RecordPatternPerformanceAsync(performanceRecord);
+													} catch (Exception ex) {
+														Print($"[PATTERN] Error recording loss for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+													}
+												});
+											}
+											catch (Exception ex) 
+											{
+												Print($"[PATTERN] Error creating performance record for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+											}
+										}
 
 									    HardTakeProfit_Long = microContractTakeProfit;
 									    SoftTakeProfit_Long =  softTakeProfitMult;
@@ -1041,7 +1140,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 						///register
 						orderRecordMasterBuy.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(orderRecordMasterBuy.EntryOrderUUID,orderRecordMasterBuy.OrderSupplementals.patternId, orderRecordMasterBuy.EntryOrder.Instrument.FullName.Split(' ')[0],Time[0]);
-							
 						
 						
 					}
@@ -1490,9 +1588,40 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 	
 		
-
+	/// <summary>
+	/// Determines if an exit was "good" based on exit reason and context, not just profit
+	/// </summary>
+	/// <param name="profit">The profit/loss amount</param>
+	/// <param name="exitAction">The reason for exit (DTW_L, TBPL, PBL, etc.)</param>
+	/// <param name="divergenceScore">The final divergence score</param>
+	/// <returns>True if the exit represents good pattern execution</returns>
+	private bool DetermineExitQuality(double profit, signalExitAction exitAction, double divergenceScore)
+	{
+	    // Good exits - pattern worked as expected
+	    if (exitAction == signalExitAction.TBPL || exitAction == signalExitAction.TBPS) // Take profit
+	        return true;
+	        
+	    if (exitAction == signalExitAction.PBL || exitAction == signalExitAction.PBS) // Pullback protection
+	        return profit >= 0; // Good if protected profit
+	    
+	    // Bad exits - pattern failed
+	    if (exitAction == signalExitAction.DIV_L || exitAction == signalExitAction.DIV_S) // Divergence exit
+	    {
+	        // Even if profitable, divergence exit suggests pattern failure
+	        // Only consider "good" if profit is substantial (pattern worked despite divergence)
+	        return profit > (enableProfitColors * 2); // Require 2x the profit threshold
+	    }
+	    
+	    if (exitAction == signalExitAction.MLL || exitAction == signalExitAction.MLS) // Max loss
+	        return false; // Always bad - pattern completely failed
+	    
+	  
+	    // Default: use profit as fallback
+	    return profit > 0;
+	}
 	
 	}
     
 		
+	
 }

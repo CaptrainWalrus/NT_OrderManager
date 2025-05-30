@@ -359,46 +359,74 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								
 								int positionAge = CurrentBars[0] - simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedEntry.EntryBar;
 								
-								//if(DivergenceSignalThresholds && (currentProfit > softTakeProfitMult || currentProfit < -softTakeProfitMult))
+								string patternId = curvesService.ExtractPatternIdFromEntrySignal(simStop.EntryOrderUUID);
+								double thompsonScoreModifier = 1;
+		                        if (!string.IsNullOrEmpty(patternId))
+		                        {
+		                            thompsonScoreModifier = curvesService.thompsonScores[patternId];
+		                            
+		                        }
+								// Use cached divergence value (no HTTP call)
+								double thisRecordDivergence = curvesService.CheckDivergence(simStop.EntryOrderUUID);
+								simStop.OrderRecordMasterLite.OrderSupplementals.divergence = thisRecordDivergence;
+								simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence = Math.Max(simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence, thisRecordDivergence);
+								
+								bool divergencePullback = simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence > softTakeProfitMult && simStop.OrderRecordMasterLite.OrderSupplementals.divergence < (pullBackPct * simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence);
+								
+								double dynamicDivergenceThreshold = (thompsonScoreModifier*DivergenceThreshold);
+								
 								if(DivergenceSignalThresholds)
-								{
+								{ 
+									if(divergencePullback || CurvesV2Service.CurrentShouldExit || (simStop.OrderRecordMasterLite.OrderSupplementals.divergence < -dynamicDivergenceThreshold && currentProfit < -softTakeProfitMult))
+									{
+									
 									if(simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true)
 									{
 										try {
-									            
-									            
-											
-									            if (curvesService.GetExitSignal(simStop.EntryOrderUUID) > 0)
-									            {
-													
-													Print($"[DIVERGENCE VIOLATION!] Limit: {DivergenceThreshold} for {simStop.EntryOrderUUID}: Score={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit = ${currentProfit}");
+									            Print($"[DIVERGENCE VIOLATION!] {simStop.EntryOrderUUID}:  divergencePullback {divergencePullback} , shouldExit {CurvesV2Service.CurrentShouldExit } , Score={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit=${currentProfit:F2}");
 
-											        if(simStop.EntryOrderAction == OrderAction.Buy)
+									            // Check divergence using the new adaptive system
+											//if (curvesService.GetExitSignal(simStop.EntryOrderUUID) > 0)
+									           // {
+													// Enhanced logging with adaptive divergence information
+													string adaptiveInfo = "";
+													if (CurvesV2Service.CurrentShouldExit)
+													{
+														adaptiveInfo = $" [ADAPTIVE: {CurvesV2Service.CurrentConsecutiveBars}/{CurvesV2Service.CurrentConfirmationBarsRequired} bars confirmed]";
+													}
+													else
+													{
+														adaptiveInfo = $" [LEGACY: Score > threshold]";
+													}
+													
+
+											        if(simStop.EntryOrderAction == OrderAction.Buy)// && IsFalling(SMA200) && SMA200[0] < Close[0])
 													{
 														
 					
-														simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DTW_L;
+														simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_L;
 														simStop.OrderRecordMasterLite.OrderSupplementals.divergence = curvesService.divergenceScores[simStop.EntryOrderUUID];
 														ExitLong(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
 														simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 							      						simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
 														return;
 													}
-													if(simStop.EntryOrderAction == OrderAction.SellShort)
+													if(simStop.EntryOrderAction == OrderAction.SellShort)// && IsRising(SMA200) && SMA200[0] > Close[0])
 													{
-														simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DTW_S;
+														simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_S;
 														simStop.OrderRecordMasterLite.OrderSupplementals.divergence = curvesService.divergenceScores[simStop.EntryOrderUUID];
 														ExitShort(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
 														simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 							      						simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
 														return;
 													}
-									            }
+									            
 											
 									        }
 									        catch (Exception ex) {
-									            // Handle errors
+									          // Print($"Divergence catch : {ex}");
 									        }
+										}
 									}
 								}
 								

@@ -524,8 +524,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			STOPVWAP,
 			subTypeMisMatch_L,
 			subTypeMisMatch_S,
-			DTW_L,
-			DTW_S
+			DIV_L,
+			DIV_S
 		
 		}
 		
@@ -775,6 +775,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public string patternSubtype { get; set; }
 			public string patternId { get; set; }
 			public double divergence { get; set; }
+			public double maxDivergence { get; set; }
+
 			public bool isEntryRegisteredDTW { get; set; }
 			public DateTime? forceExitTimestamp { get; set; } // Added to track when exit was flagged
 

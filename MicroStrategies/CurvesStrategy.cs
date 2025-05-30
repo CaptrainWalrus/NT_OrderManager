@@ -188,7 +188,7 @@ public partial class CurvesStrategy : MainStrategy
 			{
 				if(curvesService.ErrorCounter > 10)
 				{
-					Print($"[ERROR COUNTER VIOLATION] {curvesService.ErrorCounter}");
+					Print($"[ERROR COUNTER VIOLATION] {curvesService.ErrorCounter}, {Time[0]}");
 					return;
 				}
 			}
@@ -236,17 +236,9 @@ public partial class CurvesStrategy : MainStrategy
 					IsInStrategyAnalyzer ? "backtest" : "1m"
 				);
 				//Print($"{Time[0]} : barSent {barSent}");
-				// 2. Simple, direct signal check - fire and forget  
-				if (barSent)
-				{	
-					
-
-					Task.Delay(5).Wait(); 
-					//Print($"{Time[0]} : CheckSignalsFireAndForget!");
-					curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
-					
-				}
-			
+				// 2. PARALLEL signal check - no delay, no dependency on barSent
+				curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
+				
 			}
 			
 		}
@@ -304,58 +296,87 @@ public partial class CurvesStrategy : MainStrategy
 			           // Print($"[DEBUG] Signal details: Bull={currentBullStrength:F2}%, Bear={currentBearStrength:F2}%, PatternType={CurvesV2Service.CurrentPatternType}, PatternId={CurvesV2Service.CurrentPatternId}");
 				            if(currentBullStrength > currentBearStrength)
 							{
-								Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Bull={currentBullStrength}  [subtype] {CurvesV2Service.CurrentSubtype} ");
+								//Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Bull={currentBullStrength}  [subtype] {CurvesV2Service.CurrentSubtype} ");
 	
+								// ADDED: Get Thompson Sampling score for this pattern
+								double thompsonScore = 0.5; // Default neutral score
+								string currentPatternId = CurvesV2Service.CurrentPatternId?.ToString();
+								if (!string.IsNullOrEmpty(currentPatternId))
+								{
+									// Request Thompson score from signal pool service (async, use cached value)
+									try {
+										var thompsonTask = curvesService.GetThompsonScoreAsync(currentPatternId);
+										thompsonScore = thompsonTask.IsCompleted ? thompsonTask.Result : 0.5;
+									} catch {
+										thompsonScore = 0.5; // Fallback to neutral
+									}
+								}
 								
-				            		// Check for Long signal (strength and ratio conditions)
-						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement)// && CurvesV2Service.CurrentEffectiveScore > effectiveScoreRequirement)
+								// ADDED: Thompson-influenced entry threshold
+								// Higher Thompson score = lower threshold required (better patterns need less confirmation)
+								double adjustedThreshold = OutlierScoreRequirement * (1.5 - thompsonScore); // 1.0x to 1.5x threshold based on Thompson score
+								
+				            		// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
+						            if (CurvesV2Service.CurrentRawScore > adjustedThreshold)
 						            {
-										/*if(
-											(IsRising(EMA3) && EMA3[0] > VWAP1[0] && CurvesV2Service.CurrentSubtype == patternSubtypes.Trending.ToString()) || 
-											(CrossAbove(EMA3,VWAP1,5) && CurvesV2Service.CurrentSubtype == patternSubtypes.Reversion.ToString()) || 
-											(ATR(5)[0] < 1 && CurvesV2Service.CurrentSubtype == patternSubtypes.Breakout.ToString()) ||
-											(CurvesV2Service.CurrentSubtype == patternSubtypes.Consolidation.ToString())
-											)
-										{*/
+										Print($"[THOMPSON] LONG Entry: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, OrigThreshold={OutlierScoreRequirement:F2}, AdjThreshold={adjustedThreshold:F2}, RawScore={CurvesV2Service.CurrentRawScore:F2}");
+										
 							                ThrottleAll = Times[BarsInProgress][0];
 							                thisSignal.newSignal = FunctionResponses.EnterLong;
 											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
 											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-											Print($"[DEBUG] Returning LONG signal with patternId={thisSignal.patternId}, subtype={thisSignal.patternSubType}");
 											return thisSignal;
-											
-						            	//}
+									}
+									else
+									{
+										// Log why entry was rejected
+										Print($"[THOMPSON] LONG Rejected: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, Required={adjustedThreshold:F2}, Actual={CurvesV2Service.CurrentRawScore:F2}");
 									}
 								
 				            }
 							if(currentBearStrength > currentBullStrength)
 							{
-								Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Bear={currentBearStrength} [subtype] {CurvesV2Service.CurrentSubtype}");
+								
+								//Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Bear={currentBearStrength} [subtype] {CurvesV2Service.CurrentSubtype}");
 	
+								// ADDED: Get Thompson Sampling score for this pattern
+								double thompsonScore = 0.5; // Default neutral score
+								string currentPatternId = CurvesV2Service.CurrentPatternId?.ToString();
+								if (!string.IsNullOrEmpty(currentPatternId))
+								{
+									// Request Thompson score from signal pool service (async, use cached value)
+									try {
+										var thompsonTask = curvesService.GetThompsonScoreAsync(currentPatternId);
+										thompsonScore = thompsonTask.IsCompleted ? thompsonTask.Result : 0.5;
+									} catch {
+										thompsonScore = 0.5; // Fallback to neutral
+									}
+								}
+								
+								// ADDED: Thompson-influenced entry threshold
+								// Higher Thompson score = lower threshold required (better patterns need less confirmation)
+								double adjustedThreshold = OutlierScoreRequirement * (1.5 - thompsonScore); // 1.0x to 1.5x threshold based on Thompson score
 							
-						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement)//&& CurvesV2Service.CurrentEffectiveScore > effectiveScoreRequirement)
+						            if (CurvesV2Service.CurrentRawScore > adjustedThreshold)
 						            {
-										/*if(
-											(IsFalling(EMA3) && VWAP1[0] > EMA3[0]  && CurvesV2Service.CurrentSubtype == patternSubtypes.Trending.ToString()) || 
-											(CrossAbove(VWAP1,EMA3,5) && CurvesV2Service.CurrentSubtype == patternSubtypes.Reversion.ToString()) || 
-											(ATR(5)[0] < 1 && CurvesV2Service.CurrentSubtype == patternSubtypes.Breakout.ToString()) ||
-											(CurvesV2Service.CurrentSubtype == patternSubtypes.Consolidation.ToString())
-											)
-										{*/	
-										
-											ThrottleAll = Times[BarsInProgress][0];
-							               	thisSignal.newSignal = FunctionResponses.EnterShort;
-											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
-											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-											Print($"[DEBUG] Returning SHORT signal with patternId={thisSignal.patternId}, subtype={thisSignal.patternSubType}");
-											return thisSignal;
-						            	//}
+										Print($"[THOMPSON] SHORT Entry: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, OrigThreshold={OutlierScoreRequirement:F2}, AdjThreshold={adjustedThreshold:F2}, RawScore={CurvesV2Service.CurrentRawScore:F2}");
+																		
+										ThrottleAll = Times[BarsInProgress][0];
+							            thisSignal.newSignal = FunctionResponses.EnterShort;
+										thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
+										thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+										return thisSignal;
+									}
+									else
+									{
+										// Log why entry was rejected
+										Print($"[THOMPSON] SHORT Rejected: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, Required={adjustedThreshold:F2}, Actual={CurvesV2Service.CurrentRawScore:F2}");
 									}
 							
 							}
 							else
 							{
-								Print($"[DEBUG] SKIP: Bull={currentBullStrength:F2}% , Bear={currentBearStrength:F2}% |||| [confluenceScore] {CurvesV2Service.CurrentConfluenceScore} , [oppositionStrength] {CurvesV2Service.CurrentOppositionStrength} [effectiveScore] {CurvesV2Service.CurrentEffectiveScore:F2}, [rawScore] {CurvesV2Service.CurrentRawScore:F2}");
+								//Print($"[DEBUG] SKIP: Bull={currentBullStrength:F2}% , Bear={currentBearStrength:F2}% |||| [confluenceScore] {CurvesV2Service.CurrentConfluenceScore} , [oppositionStrength] {CurvesV2Service.CurrentOppositionStrength} [effectiveScore] {CurvesV2Service.CurrentEffectiveScore:F2}, [rawScore] {CurvesV2Service.CurrentRawScore:F2}");
 		
 							}
 			        	
@@ -446,6 +467,55 @@ public partial class CurvesStrategy : MainStrategy
 		{
 			Print($"Error in ConvertPatternsToSignals: {ex.Message}");
 			return new List<Signal>();
+		}
+	}
+	
+	// Override LoadMEConfig for backtesting-specific configuration
+	protected override void LoadMEConfig()
+	{
+		try
+		{
+			if (curvesService == null)
+			{
+				Print("[CONFIG] CurvesV2Service not available - skipping config load");
+				return;
+			}
+			
+			// Create backtesting-optimized configuration
+			var backtestConfig = new MatchingConfig
+			{
+				ZScoreThreshold = -0.5,             // Very relaxed for backtesting - allow patterns 0.5 std dev worse than average
+				ReliabilityPenaltyEnabled = false,  // Disable penalties during backtesting for more signals
+				MaxThresholdPenalty = 0.0,          // No threshold penalties
+				AtmosphericThreshold = 0.7,         // Lower pre-filtering threshold for more matches
+				CosineSimilarityThresholds = new CosineSimilarityThresholds
+				{
+					DefaultThreshold = 0.65,        // More relaxed for backtesting
+					EmaRibbon = 0.70,               // Lower threshold for more EMA matches
+					SensitiveEmaRibbon = 0.73       // Lower threshold for sensitive patterns
+				}
+			};
+			
+			// Get instrument code
+			string instrumentCode = GetInstrumentCode();
+			
+			// Send configuration synchronously
+			bool configSent = curvesService.SendMatchingConfig(instrumentCode, backtestConfig);
+			
+			if (configSent)
+			{
+				Print($"[CONFIG] Backtesting matching configuration sent successfully for {instrumentCode}");
+				Print($"[CONFIG] Z-Score: {backtestConfig.ZScoreThreshold}, Atmospheric: {backtestConfig.AtmosphericThreshold}");
+				Print($"[CONFIG] Reliability Penalties: {backtestConfig.ReliabilityPenaltyEnabled}");
+			}
+			else
+			{
+				Print($"[CONFIG] Failed to send backtesting configuration for {instrumentCode}");
+			}
+		}
+		catch (Exception ex)
+		{
+			Print($"[CONFIG] Error in LoadMEConfig (Backtesting): {ex.Message}");
 		}
 	}
 }
