@@ -186,14 +186,14 @@ public partial class CurvesStrategy : MainStrategy
 			// In OnBarUpdate or a timer
 			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
 			{
-			    // Use the service's built-in heartbeat timing and send if needed
+			    // Use the service's built-in heartbeat timing and send if needed (now truly fire-and-forget)
 			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
 			}
 						
 			bool isConnected = curvesService.IsConnected;
 			
 			// Only send historical bars once, when we have enough data
-		    if (UseRemoteService = false && BarsInProgress == 0 && sendHistoricalBars && !historicalBarsSent && CurrentBar >= 1) // Wait for 50000 bars
+		    if (UseRemoteService == false && BarsInProgress == 0 && sendHistoricalBars && !historicalBarsSent && CurrentBar >= 1) // Wait for 50000 bars
 		    {
 		        // Prepare historical bars
 		        var historicalBars = new List<object>();
@@ -241,9 +241,8 @@ public partial class CurvesStrategy : MainStrategy
 			
 			
 			
-			if (BarsInProgress == 0 && isConnected && curvesService.lastSPJSON != "")
+			if (BarsInProgress == 0)
 			{
-				Print($"{Time[0]} {curvesService.lastSPJSON}");
 				return;
 			}
 			
@@ -282,6 +281,12 @@ public partial class CurvesStrategy : MainStrategy
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
 				curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
 				
+			}
+			
+			if (BarsInProgress == 0 && isConnected && curvesService.lastSPJSON != "")
+			{
+				Print($"{Time[0]} {curvesService.lastSPJSON}");
+				return;
 			}
 			
 		}

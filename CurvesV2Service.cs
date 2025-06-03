@@ -528,12 +528,28 @@ namespace NinjaTrader.NinjaScript.Strategies
             return timeSinceLastHeartbeat.TotalSeconds >= HEARTBEAT_INTERVAL_SECONDS;
         }
 
-        // Combined method to check and send heartbeat if needed
+        // Combined method to check and send heartbeat if needed - FIRE AND FORGET VERSION
         public bool CheckAndSendHeartbeat(bool useRemoteService = false)
         {
             if (!ShouldSendHeartbeat()) return true; // No heartbeat needed
             
-            return SendHeartbeat(useRemoteService);
+            // Fire-and-forget heartbeat - do NOT block the main thread
+            Task.Run(async () => {
+                try 
+                {
+                    await SendHeartbeatAsync(useRemoteService);
+                }
+                catch (Exception ex)
+                {
+                    // Silently handle heartbeat errors - don't let them affect trading
+                    Log($"[HEARTBEAT] Background error: {ex.Message}");
+                }
+            });
+            
+            // Update last heartbeat time immediately to prevent rapid-fire calls
+            lastHeartbeat = DateTime.Now;
+            
+            return true; // Always return true since we don't wait for completion
         }
 
         // Synchronous Bar Sending
