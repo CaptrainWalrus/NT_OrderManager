@@ -164,14 +164,14 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
-		Print($"{Time[0]} CURVES OBU");
+		Print($"{Time[0]}");
 		try
 		{
 			// Skip processing if service isn't available
 			if (curvesService == null)
 			{
 				if (CurrentBars[0] % 10 == 0) // Only log occasionally
-				NinjaTrader.Code.Output.Process("OnBarUpdate: CurvesV2Service not available", PrintTo.OutputTab1);
+				Print("OnBarUpdate: CurvesV2Service not available");
 				return;
 			}
 			if(curvesService != null)
@@ -186,12 +186,13 @@ public partial class CurvesStrategy : MainStrategy
 			// In OnBarUpdate or a timer
 			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
 			{
-			    // Use the service's built-in heartbeat timing and send if needed (now truly fire-and-forget)
+			    Print("Heartbeat, now truly fire-and-forget");
 			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
+			    Print("Heartbeat call returned - strategy continues");
 			}
 						
 			bool isConnected = curvesService.IsConnected;
-			
+			if (CurrentBars[0] < BarsRequiredToTrade) return;
 			// Only send historical bars once, when we have enough data
 		    if (UseRemoteService == false && BarsInProgress == 0 && sendHistoricalBars && !historicalBarsSent && CurrentBar >= 1) // Wait for 50000 bars
 		    {
@@ -237,14 +238,7 @@ public partial class CurvesStrategy : MainStrategy
 		        return; // Skip normal processing this bar
 		    }
 		
-				
-			
-			
-			
-			if (BarsInProgress == 0)
-			{
-				return;
-			}
+		
 			
 			///small status update of progress
 			if(BarsInProgress == 0 && CurrentBars[0] % 10 == 0)
@@ -252,7 +246,7 @@ public partial class CurvesStrategy : MainStrategy
 				Print($"{Time[0]} BarsInProgress {BarsInProgress} BAR # {CurrentBars[0]}");
 			}
 			
-			if (CurrentBars[0] < BarsRequiredToTrade) return;
+			
 			
 			
 			// Log connection status periodically
@@ -260,7 +254,7 @@ public partial class CurvesStrategy : MainStrategy
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
 			if (isConnected && BarsInProgress == 0)
 			{
-				//Print($"{Time[0]} isConnected");
+				Print($"{Time[0]} isConnected, SEND");
 
 				// Extract instrument code
 				string instrumentCode = GetInstrumentCode();
@@ -277,7 +271,7 @@ public partial class CurvesStrategy : MainStrategy
 					Volume[0],
 					IsInStrategyAnalyzer ? "backtest" : "1m"
 				);
-				//Print($"{Time[0]} : barSent {barSent}");
+				Print($"{Time[0]} : barSent {barSent}");
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
 				curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
 				
@@ -299,13 +293,15 @@ public partial class CurvesStrategy : MainStrategy
 	// Fix BuildNewSignal to actually return entry signals
 	protected override patternFunctionResponse BuildNewSignal()
 	{
+		NinjaTrader.Code.Output.Process($"[CURVES] BuildNewSignal CALLED - BarsInProgress: {BarsInProgress}, Time: {Time[0]}", PrintTo.OutputTab1);
+		Print("[BuildNewSignal] CurvesStrategy");
 		string msg = "A";
 		patternFunctionResponse thisSignal = new patternFunctionResponse();
 		thisSignal.newSignal = FunctionResponses.NoAction;
 	    thisSignal.patternSubType = "none";
 		thisSignal.patternId = "";
 		try{
-		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
+		Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
 	 
 		msg = "A2 ";
 	    if(CurrentBars[0] < BarsRequiredToTrade)

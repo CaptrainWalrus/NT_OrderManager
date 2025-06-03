@@ -1269,9 +1269,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
    			
 			//FunctionResponses newSignal = BuildNewSignal();
 			msg = "about BuildNewSignal";
+			Print($"[MAIN] About to call BuildNewSignal - BarsInProgress: {BarsInProgress}, Time: {Time[0]}");
+			
 			patternFunctionResponse builtSignal = BuildNewSignal(); 
 			FunctionResponses newSignal = builtSignal.newSignal;
 			msg = "after BuildNewSignal";
+			Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
 			
 			if(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
@@ -1609,7 +1612,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 		protected virtual patternFunctionResponse BuildNewSignal()
 		{
-		
+			Print("MainStrat [BuildNewSignal]");
 			patternFunctionResponse thisSignal = new patternFunctionResponse();
 			thisSignal.newSignal = FunctionResponses.NoAction;
 			thisSignal.patternSubType = "none";
