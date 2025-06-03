@@ -359,15 +359,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								
 								int positionAge = CurrentBars[0] - simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedEntry.EntryBar;
 								
-								string patternId = curvesService.ExtractPatternIdFromEntrySignal(simStop.EntryOrderUUID);
+								string patternId = null;
+								// Get the pattern ID from the registered position mapping
+								curvesService.TryGetPatternId(simStop.EntryOrderUUID, out patternId);
+							
 								double thompsonScoreModifier = 1;
 		                        if (!string.IsNullOrEmpty(patternId))
 		                        {
-		                            thompsonScoreModifier = curvesService.thompsonScores[patternId];
-		                            
+		                            if (curvesService.thompsonScores.TryGetValue(patternId, out double score))
+		                            {
+		                                thompsonScoreModifier = score;
+		                            }
 		                        }
 								// Use cached divergence value (no HTTP call)
-								double thisRecordDivergence = curvesService.CheckDivergence(simStop.EntryOrderUUID);
+								double thisRecordDivergence = curvesService.CheckDivergence(simStop.EntryOrderUUID)*Math.Sign((int)currentProfit);
 								simStop.OrderRecordMasterLite.OrderSupplementals.divergence = thisRecordDivergence;
 								simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence = Math.Max(simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence, thisRecordDivergence);
 								
@@ -377,13 +382,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								
 								if(DivergenceSignalThresholds)
 								{ 
-									if(divergencePullback || CurvesV2Service.CurrentShouldExit || (simStop.OrderRecordMasterLite.OrderSupplementals.divergence < -dynamicDivergenceThreshold && currentProfit < -softTakeProfitMult))
+									if(simStop.OrderRecordMasterLite.OrderSupplementals.divergence > dynamicDivergenceThreshold && currentProfit < simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit)
 									{
 									
 									if(simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true)
 									{
 										try {
-									            Print($"[DIVERGENCE VIOLATION!] {simStop.EntryOrderUUID}:  divergencePullback {divergencePullback} , shouldExit {CurvesV2Service.CurrentShouldExit } , Score={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit=${currentProfit:F2}");
+									            Print($"[DIVERGENCE VIOLATION!] {simStop.EntryOrderUUID}: DIV={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit=${currentProfit:F2}");
 
 									            // Check divergence using the new adaptive system
 											//if (curvesService.GetExitSignal(simStop.EntryOrderUUID) > 0)

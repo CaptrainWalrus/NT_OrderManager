@@ -35,34 +35,13 @@ public partial class CurvesStrategy : MainStrategy
 	[XmlIgnore]
 	private bool terminatedStatePrinted = false;
 	
-	// Comment out most custom fields
-	// private readonly TimeSpan updateInterval = TimeSpan.FromMilliseconds(100);
-	// private DateTime lastUpdate = DateTime.MinValue;
-	// private DateTime lastProcessedTime = DateTime.MinValue;
-	// private int lastProcessedBar = -1;
-	// private bool isProcessingQueue;
-	// private Dictionary<string, double> signalStrengths = new Dictionary<string, double>();
-	// private Dictionary<string, DateTime> lastSignalTimes = new Dictionary<string, DateTime>();
-	// public static double CurrentResistance { get; private set; } 
-	// public static double CurrentSupport { get; private set; }
-	// public static double ConfluencePair { get; private set; }
-	// public double LastBullStrength = double.MinValue;
-	// public double LastBearStrength = double.MinValue;
-	// public string timestamp_bar;
-	// public double high_bar;
-	// public double low_bar;
-	// public double open_bar;
-	// public double close_bar;
-	// public int volume_bar;
-	// public bool historicalSync = false;
-	// private DateTime backtestStartTime; 
-	// private DateTime? firstBarTime; 
-
+	private bool historicalBarsSent = false;
 	// Restore NinjaScript Properties
 	[NinjaScriptProperty]    
 	[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
-	public bool UseRemoteService { get; set; }
+	public bool UseRemoteServiceParameter { get; set; }
 	
+	public bool UseRemoteService = false;
 	
 
 	
@@ -139,7 +118,17 @@ public partial class CurvesStrategy : MainStrategy
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
 		{
-			Print("CurvesStrategy.OnStateChange: State.Historical (No custom logic)");
+			UseRemoteService = false;
+			Print($"CurvesStrategy.OnStateChange: State.Historical UseRemoteService {UseRemoteService}");
+			// Custom logic (bar iteration, etc.) remains commented out
+		}
+		else if (State == State.Realtime)
+		{
+			if(UseRemoteServiceParameter == true)
+			{
+				UseRemoteService = true;
+			}
+			Print($"CurvesStrategy.OnStateChange: State.Realtime UseRemoteService {UseRemoteService}");
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
 		// *** Restore Terminated block structure ***
@@ -175,6 +164,7 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		base.OnBarUpdate(); 
+		Print($"{Time[0]} CURVES OBU");
 		try
 		{
 			// Skip processing if service isn't available
@@ -193,17 +183,70 @@ public partial class CurvesStrategy : MainStrategy
 				}
 			}
 			
-			
+			// In OnBarUpdate or a timer
+			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
+			{
+			    // Use the service's built-in heartbeat timing and send if needed
+			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
+			}
+						
 			bool isConnected = curvesService.IsConnected;
+			
+			// Only send historical bars once, when we have enough data
+		    if (UseRemoteService = false && BarsInProgress == 0 && sendHistoricalBars && !historicalBarsSent && CurrentBar >= 1) // Wait for 50000 bars
+		    {
+		        // Prepare historical bars
+		        var historicalBars = new List<object>();
+		        
+		        // Collect the last 1500 bars (reverse order for chronological sequence)
+		       // for (int i = 50000; i >= 0; i--)
+		        //{
+		            historicalBars.Add(new
+		            {
+		                timestamp = Time[0],
+		                open = Open[0],
+		                high = High[0],
+		                low = Low[0],
+		                close = Close[0],
+		                volume = Volume[0]
+		            });
+		        //}
+		        
+		        Print($"Starting synchronous send of {historicalBars.Count} historical bars to IBI Analysis Tool...");
+		        
+		        // Use synchronous wrapper instead of Task.Run to prevent concurrent processing
+		        try
+		        {
+		            bool success = SendHistoricalBarsSync(historicalBars, Instrument.MasterInstrument.Name);
+		            
+		            if (success)
+		            {
+		                Print("Historical bars sent successfully to IBI Analysis Tool!");
+		                historicalBarsSent = true;
+		            }
+		            else
+		            {
+		                Print("Failed to send historical bars to IBI Analysis Tool");
+		            }
+		        }
+		        catch (Exception ex)
+		        {
+		            Print($"Error sending historical bars: {ex.Message}");
+		        }
+		        
+		        return; // Skip normal processing this bar
+		    }
+		
 				
 			
 			
 			
-			if (BarsInProgress != 0)
+			if (BarsInProgress == 0 && isConnected && curvesService.lastSPJSON != "")
 			{
-				//Print($"{Time[0]} BarsInProgress {BarsInProgress} BAR # {CurrentBars[0]}");
+				Print($"{Time[0]} {curvesService.lastSPJSON}");
 				return;
 			}
+			
 			///small status update of progress
 			if(BarsInProgress == 0 && CurrentBars[0] % 10 == 0)
 			{
@@ -251,11 +294,15 @@ public partial class CurvesStrategy : MainStrategy
 	// Fix BuildNewSignal to actually return entry signals
 	protected override patternFunctionResponse BuildNewSignal()
 	{
-		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
-	    patternFunctionResponse thisSignal = new patternFunctionResponse();
+		string msg = "A";
+		patternFunctionResponse thisSignal = new patternFunctionResponse();
 		thisSignal.newSignal = FunctionResponses.NoAction;
 	    thisSignal.patternSubType = "none";
 		thisSignal.patternId = "";
+		try{
+		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
+	 
+		msg = "A2 ";
 	    if(CurrentBars[0] < BarsRequiredToTrade)
 	    {
 	        return thisSignal;
@@ -264,7 +311,7 @@ public partial class CurvesStrategy : MainStrategy
 	    {
 	        return thisSignal;
 	    }
-	    
+	    msg = "B";
 	    // Calculate total positions and working orders
 	    int totalPositions = getAllcustomPositionsCombined();
 	    // Check if we have room for more positions
@@ -286,92 +333,53 @@ public partial class CurvesStrategy : MainStrategy
 	    {      // Get current signal values
 	            double currentBullStrength = CurvesV2Service.CurrentBullStrength;
 	            double currentBearStrength = CurvesV2Service.CurrentBearStrength;
-             
+             msg =  "C ";
 				
 			        if (CurvesV2Service.SignalsAreFresh && (CurvesV2Service.CurrentSubtype == patternSubtypesPicker.ToString() || patternSubtypesPicker == patternSubtypes.All))
 			        {
 			      
-		
+						msg = "D";
 			            // Enhanced logging to debug signal values
 			           // Print($"[DEBUG] Signal details: Bull={currentBullStrength:F2}%, Bear={currentBearStrength:F2}%, PatternType={CurvesV2Service.CurrentPatternType}, PatternId={CurvesV2Service.CurrentPatternId}");
 				            if(currentBullStrength > currentBearStrength)
 							{
 								//Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Bull={currentBullStrength}  [subtype] {CurvesV2Service.CurrentSubtype} ");
-	
-								// ADDED: Get Thompson Sampling score for this pattern
-								double thompsonScore = 0.5; // Default neutral score
-								string currentPatternId = CurvesV2Service.CurrentPatternId?.ToString();
-								if (!string.IsNullOrEmpty(currentPatternId))
-								{
-									// Request Thompson score from signal pool service (async, use cached value)
-									try {
-										var thompsonTask = curvesService.GetThompsonScoreAsync(currentPatternId);
-										thompsonScore = thompsonTask.IsCompleted ? thompsonTask.Result : 0.5;
-									} catch {
-										thompsonScore = 0.5; // Fallback to neutral
-									}
-								}
+
 								
-								// ADDED: Thompson-influenced entry threshold
-								// Higher Thompson score = lower threshold required (better patterns need less confirmation)
-								double adjustedThreshold = OutlierScoreRequirement * (1.5 - thompsonScore); // 1.0x to 1.5x threshold based on Thompson score
-								
+							
 				            		// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-						            if (CurvesV2Service.CurrentRawScore > adjustedThreshold)
+						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && IsRising(EMA4))
 						            {
-										Print($"[THOMPSON] LONG Entry: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, OrigThreshold={OutlierScoreRequirement:F2}, AdjThreshold={adjustedThreshold:F2}, RawScore={CurvesV2Service.CurrentRawScore:F2}");
+										Print($"[LONG] RawScore {CurvesV2Service.CurrentRawScore:F2}");
 										
-							                ThrottleAll = Times[BarsInProgress][0];
+										
+							                ThrottleAll = Times[0][0];
 							                thisSignal.newSignal = FunctionResponses.EnterLong;
 											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
 											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
 											return thisSignal;
 									}
-									else
-									{
-										// Log why entry was rejected
-										Print($"[THOMPSON] LONG Rejected: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, Required={adjustedThreshold:F2}, Actual={CurvesV2Service.CurrentRawScore:F2}");
-									}
+									
 								
 				            }
 							if(currentBearStrength > currentBullStrength)
 							{
 								
 								//Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Bear={currentBearStrength} [subtype] {CurvesV2Service.CurrentSubtype}");
-	
-								// ADDED: Get Thompson Sampling score for this pattern
-								double thompsonScore = 0.5; // Default neutral score
-								string currentPatternId = CurvesV2Service.CurrentPatternId?.ToString();
-								if (!string.IsNullOrEmpty(currentPatternId))
-								{
-									// Request Thompson score from signal pool service (async, use cached value)
-									try {
-										var thompsonTask = curvesService.GetThompsonScoreAsync(currentPatternId);
-										thompsonScore = thompsonTask.IsCompleted ? thompsonTask.Result : 0.5;
-									} catch {
-										thompsonScore = 0.5; // Fallback to neutral
-									}
-								}
+
 								
-								// ADDED: Thompson-influenced entry threshold
-								// Higher Thompson score = lower threshold required (better patterns need less confirmation)
-								double adjustedThreshold = OutlierScoreRequirement * (1.5 - thompsonScore); // 1.0x to 1.5x threshold based on Thompson score
-							
-						            if (CurvesV2Service.CurrentRawScore > adjustedThreshold)
+			
+						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && IsFalling(EMA4))
 						            {
-										Print($"[THOMPSON] SHORT Entry: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, OrigThreshold={OutlierScoreRequirement:F2}, AdjThreshold={adjustedThreshold:F2}, RawScore={CurvesV2Service.CurrentRawScore:F2}");
+										Print($"[SHORT] RawScore {CurvesV2Service.CurrentRawScore:F2}");
 																		
-										ThrottleAll = Times[BarsInProgress][0];
+										ThrottleAll = Times[0][0];
 							            thisSignal.newSignal = FunctionResponses.EnterShort;
 										thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
 										thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
 										return thisSignal;
 									}
-									else
-									{
-										// Log why entry was rejected
-										Print($"[THOMPSON] SHORT Rejected: Pattern={currentPatternId}, Thompson={thompsonScore:F3}, Required={adjustedThreshold:F2}, Actual={CurvesV2Service.CurrentRawScore:F2}");
-									}
+									
 							
 							}
 							else
@@ -387,6 +395,12 @@ public partial class CurvesStrategy : MainStrategy
 	    }
 		//Print("[DEBUG] BuildNewSignal: No signals generated");
 	    return thisSignal;
+		}
+		catch (Exception ex)
+		{
+			NinjaTrader.Code.Output.Process($"Error in BuildNewSignal: {ex.Message} + {msg}", PrintTo.OutputTab1); 
+			 return thisSignal;
+		}
 	    
 	}
 	// Keep ProcessSignal commented out
@@ -417,8 +431,23 @@ public partial class CurvesStrategy : MainStrategy
 		return instrumentCode;
 	}
 
-
-
+	// Synchronous wrapper for SendHistoricalBarsAsync to prevent concurrent writes
+	private bool SendHistoricalBarsSync(List<object> bars, string instrument)
+	{
+	    try
+	    {
+	        Print($"SendHistoricalBarsSync: Blocking until {bars.Count} bars are sent...");
+	        var task = curvesService.SendHistoricalBarsAsync(bars, instrument);
+	        bool result = task.GetAwaiter().GetResult();
+	        Print($"SendHistoricalBarsSync: Completed with result={result}");
+	        return result;
+	    }
+	    catch (Exception ex)
+	    {
+	        Print($"Error in SendHistoricalBarsSync: {ex.Message}");
+	        return false;
+	    }
+	}
 
 	// Restore ConvertPatternsToSignals method definition
 	private List<Signal> ConvertPatternsToSignals(List<PatternMatch> patterns)

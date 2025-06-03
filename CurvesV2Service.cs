@@ -15,6 +15,15 @@ using System.IO;
 using System.Net.Http.Headers;
 using NinjaTrader.NinjaScript.Strategies.OrganizedStrategy;
 
+// Helper extension for DateTime to Unix milliseconds conversion
+public static class DateTimeExtensions
+{
+    public static long ToUnixTimeMilliseconds(this DateTime dateTime)
+    {
+        return (long)(dateTime.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+    }
+}
+
 namespace NinjaTrader.NinjaScript.Strategies
 {
     // CurvesV2 signal response format
@@ -208,6 +217,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		// Add a new property to get Signal Pool URL
 		private readonly string signalPoolUrl;
+		public string lastSPJSON { get; private set; }
 		public static string CurrentSubtype { get; private set; }
 		public static long CurrentRequestTimestampEpoch { get; private set; }
 		public static double CurrentBullStrength { get; private set; }
@@ -263,6 +273,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private const int ERROR_COOLDOWN_SECONDS = 10;
 		private const int MAX_BARS_TO_CHECK = 50; // Limit the number of bars to check for divergence
 
+        // Add mapping for entry signal IDs to pattern IDs
+        private readonly Dictionary<string, string> entrySignalToPatternId = new Dictionary<string, string>();
+
+        // Thread-safe method to get pattern ID for an entry signal
+        public bool TryGetPatternId(string entrySignalId, out string patternId)
+        {
+            lock (divergenceLock)
+            {
+                return entrySignalToPatternId.TryGetValue(entrySignalId, out patternId);
+            }
+        }
+
         // Class to represent a position in the divergence tracking system
         private class RegisteredPosition
         {
@@ -288,6 +310,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             FallbackDivergenceThreshold = threshold;
         }
+
+        // Add heartbeat tracking
+        private DateTime lastHeartbeat = DateTime.MinValue;
+        private const int HEARTBEAT_INTERVAL_SECONDS = 30; // Send heartbeat every 30 seconds
 
         // Constructor
         public CurvesV2Service(CurvesV2Config config, Action<string> logger = null)
@@ -410,6 +436,104 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
                 return false;
             }
+        }
+
+        // Heartbeat method to keep connections alive during 1-minute trading intervals
+        public async Task<bool> SendHeartbeatAsync(bool useRemoteService = false)
+        {
+            lock(disposeLock) { if(disposed) return false; }
+
+            try
+            {
+                // Build endpoint URLs for all services
+                string miUrl = useRemoteService ? "https://curves-market-ingestion.onrender.com" : baseUrl;
+                string meUrl = useRemoteService ? "https://matching-engine-service.onrender.com" : "http://localhost:5000";
+                string spUrl = useRemoteService ? "https://curves-signal-pool-service.onrender.com" : signalPoolUrl;
+
+                var heartbeatTasks = new List<Task<bool>>();
+
+                // Send heartbeat to all services concurrently
+                heartbeatTasks.Add(SendHeartbeatToService(miUrl, "MI"));
+                heartbeatTasks.Add(SendHeartbeatToService(meUrl, "ME"));
+                heartbeatTasks.Add(SendHeartbeatToService(spUrl, "SP"));
+
+                // Wait for all heartbeats to complete
+                var results = await Task.WhenAll(heartbeatTasks);
+                
+                // Update last heartbeat time
+                lastHeartbeat = DateTime.Now;
+                
+                // Return true if at least one service responded
+                bool anySuccess = results.Any(r => r);
+                if (anySuccess)
+                {
+                    Log($"[HEARTBEAT] Sent to services (Success: {results.Count(r => r)}/{results.Length})");
+                }
+                else
+                {
+                    Log($"[HEARTBEAT] All services failed to respond");
+                }
+                
+                return anySuccess;
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERROR] Heartbeat failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Helper method to send heartbeat to individual service
+        private async Task<bool> SendHeartbeatToService(string serviceUrl, string serviceName)
+        {
+            try
+            {
+                string endpoint = $"{serviceUrl}/health";
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                {
+                    var response = await client.GetAsync(endpoint, timeoutCts.Token);
+                    response.Dispose();
+                    return response.IsSuccessStatusCode;
+                }
+            }
+            catch
+            {
+                // Silently fail individual service heartbeats
+                return false;
+            }
+        }
+
+        // Synchronous heartbeat method
+        public bool SendHeartbeat(bool useRemoteService = false)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                return SendHeartbeatAsync(useRemoteService).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log($"[ERROR] Synchronous heartbeat failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Check if heartbeat should be sent (called from strategy)
+        public bool ShouldSendHeartbeat()
+        {
+            if (IsDisposed()) return false;
+            
+            var timeSinceLastHeartbeat = DateTime.Now - lastHeartbeat;
+            return timeSinceLastHeartbeat.TotalSeconds >= HEARTBEAT_INTERVAL_SECONDS;
+        }
+
+        // Combined method to check and send heartbeat if needed
+        public bool CheckAndSendHeartbeat(bool useRemoteService = false)
+        {
+            if (!ShouldSendHeartbeat()) return true; // No heartbeat needed
+            
+            return SendHeartbeat(useRemoteService);
         }
 
         // Synchronous Bar Sending
@@ -551,7 +675,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             try
             {
                 string baseInstrument = instrument.Split(' ')[0];  // Extract ES or NQ
-                const int batchSize = 100;  // Send 100 bars at a time
+                const int batchSize = 25;  // Further reduced batch size to prevent overwhelming
                 
                 // Find min/max timestamps for logging
                 DateTime? minTimestamp = null;
@@ -569,78 +693,122 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Log($"Sending {bars.Count} historical bars for {baseInstrument} in batches of {batchSize}. " +
                     $"Timeframe: {minTimestamp?.ToString("yyyy-MM-dd HH:mm:ss")} to {maxTimestamp?.ToString("yyyy-MM-dd HH:mm:ss")}");
                 
-                for (int i = 0; i < bars.Count; i += batchSize)
+                // Create a dedicated HttpClient for IBI with longer timeout
+                using (var ibiClient = new HttpClient())
                 {
-                    // Get current batch
-                    var batch = bars.Skip(i).Take(batchSize).ToList();
+                    ibiClient.Timeout = TimeSpan.FromSeconds(60); // Increased timeout for file operations
+                    ibiClient.DefaultRequestHeaders.Accept.Clear();
+                    ibiClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                     
-                    // Restructure data to match server expectations
-                    var data = new
+                    // SEQUENTIAL processing - wait for each batch to complete
+                    for (int i = 0; i < bars.Count; i += batchSize)
                     {
-                        instrument = baseInstrument,
-                        bars = batch.Select(bar => {
-                            dynamic b = bar;
-                            return new {
-                                timestamp = (long)(b.timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds,
-                                high = (double)b.high,
-                                low = (double)b.low,
-                                open = (double)b.open,
-                                close = (double)b.close,
-                                volume = (int)b.volume
-                            };
-                        }).ToList()
-                    };
-
-                    var json = JsonConvert.SerializeObject(data);
-                    string endpoint = $"{baseUrl}/api/bars/{baseInstrument}";
-                    
-                    Log($"Sending batch {i}/{bars.Count} bars to {endpoint}");
-
-                    var content = new StringContent(
-                        json,
-                        Encoding.UTF8,
-                        "application/json"
-                    );
-
-                    var response = await client.PostAsync(endpoint, content);
-                    var responseContent = await response.Content.ReadAsStringAsync();
-                    
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Log($"Server returned error: {response.StatusCode} - {responseContent}");
-                        return false;
-                    }
-                    
-                    // Parse response for timeframe information
-                    try
-                    {
-                        dynamic responseObj = JsonConvert.DeserializeObject(responseContent);
-                        if (responseObj != null && responseObj.timeframe != null)
+                        // Get current batch
+                        var batch = bars.Skip(i).Take(batchSize).ToList();
+                        
+                        // Restructure data to match server expectations
+                        var data = new
                         {
-                            Log($"Server processed bars with timeframe: {responseObj.timeframe.minFormatted} to {responseObj.timeframe.maxFormatted}");
+                            instrument = baseInstrument,
+                            bars = batch.Select(bar => {
+                                dynamic b = bar;
+                                return new {
+                                    timestamp = (long)(b.timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds,
+                                    high = (double)b.high,
+                                    low = (double)b.low,
+                                    open = (double)b.open,
+                                    close = (double)b.close,
+                                    volume = (int)b.volume
+                                };
+                            }).ToList()
+                        };
+
+                        var json = JsonConvert.SerializeObject(data);
+                        
+                        // HARDCODED URL for IBI Offline Analysis Tool
+                        string endpoint = $"http://localhost:4002/api/historical/{baseInstrument}";
+                        
+                        Log($"Sending batch {(i/batchSize) + 1}/{(int)Math.Ceiling((double)bars.Count/batchSize)} ({batch.Count} bars) to IBI Analysis Tool");
+
+                        var content = new StringContent(
+                            json,
+                            Encoding.UTF8,
+                            "application/json"
+                        );
+
+                        // WAIT for each request to complete before sending the next
+                        var response = await ibiClient.PostAsync(endpoint, content);
+                        var responseContent = await response.Content.ReadAsStringAsync();
+                        
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            Log($"IBI Analysis Tool returned error: {response.StatusCode} - {responseContent}");
+                            return false;
                         }
-                    }
-                    catch
-                    {
-                        // Ignore parsing errors, just continue
-                    }
-                    
-                    // Brief delay between batches
-                    await Task.Delay(100);
-                    
-                    // Log progress every 500 bars
-                    if (i % 500 == 0 && i > 0)
-                    {
-                        Log($"Sent {i} of {bars.Count} bars...");
+                        
+                        // Parse response for status information
+                        try
+                        {
+                            dynamic responseObj = JsonConvert.DeserializeObject(responseContent);
+                            if (responseObj != null)
+                            {
+                                Log($"Batch {(i/batchSize) + 1} accepted: {responseObj.message}");
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore parsing errors, just continue
+                        }
+                        
+                        // LONGER delay between batches to ensure file operations complete
+                        if (i + batchSize < bars.Count) // Don't delay after the last batch
+                        {
+                            await Task.Delay(1000); // Increased to 1 second between batches
+                        }
+                        
+                        // Log progress every 10 batches
+                        if ((i / batchSize) % 10 == 0 && i > 0)
+                        {
+                            Log($"Sent {i} of {bars.Count} bars...");
+                        }
                     }
                 }
                 
-                Log($"Successfully sent all {bars.Count} historical bars for {baseInstrument}");
+                Log($"Successfully sent all {bars.Count} historical bars for {baseInstrument} to IBI Analysis Tool");
+                
+                // Wait longer before triggering profile generation to ensure all file writes are complete
+                Log($"Waiting 5 seconds for file operations to complete...");
+                await Task.Delay(5000);
+                
+                // Automatically trigger profile generation if we sent enough data
+                if (bars.Count >= 1000)
+                {
+                    Log($"Triggering IBI profile generation for {baseInstrument}...");
+                    var generateEndpoint = $"http://localhost:4002/api/generate-profile/{baseInstrument}";
+                    
+                    using (var generateClient = new HttpClient())
+                    {
+                        generateClient.Timeout = TimeSpan.FromSeconds(120); // Very long timeout for profile generation
+                        var generateResponse = await generateClient.PostAsync(generateEndpoint, new StringContent("", Encoding.UTF8, "application/json"));
+                        
+                        if (generateResponse.IsSuccessStatusCode)
+                        {
+                            var profileContent = await generateResponse.Content.ReadAsStringAsync();
+                            Log($"IBI Profile generated successfully: {profileContent}");
+                        }
+                        else
+                        {
+                            var errorContent = await generateResponse.Content.ReadAsStringAsync();
+                            Log($"Failed to generate IBI profile: {generateResponse.StatusCode} - {errorContent}");
+                        }
+                    }
+                }
+                
                 return true;
             }
             catch (Exception ex)
             {
-                Log($"Failed to send historical bars: {ex.Message}");
+                Log($"Failed to send historical bars to IBI Analysis Tool: {ex.Message}");
                 return false;
             }
         }
@@ -672,11 +840,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 				CurrentRequestTimestampEpoch = epochMs;
 
                 // Build the URL for the endpoint
-				string microServiceUrl = useRemoteService == true ? "https://curves-monolith.onrender.com" : baseUrl;
+				string microServiceUrl = useRemoteService == true ? "https://curves-market-ingestion.onrender.com" : baseUrl;
 				string endpoint = $"{microServiceUrl}/api/ingest/bars/{instrument}";
                 
                 // Create payload
                 var payloadObject = new {
+                     strategyId = sessionID,  // NEW: Add sessionID as strategyId
                      timestamp = epochMs,
                      open = open,
                      high = high,
@@ -756,7 +925,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			{
 				// Pre-build endpoint once (avoid StringBuilder overhead)
 				string microServiceUrl = useRemoteService ? "https://curves-signal-pool-service.onrender.com" : signalPoolUrl;
-				string endpoint = $"{microServiceUrl}/api/signals/available?instrument={instrument}";
+				string endpoint = $"{microServiceUrl}/api/signals/available?strategyId={sessionID}&instrument={instrument}";
 				
 				// Increment counter and fire-and-forget
 				Interlocked.Increment(ref concurrentRequests);
@@ -777,7 +946,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						{
 							string responseText = await response.Content.ReadAsStringAsync();
 							var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
-							
+							lastSPJSON = responseText;
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
 							{
 								// Quick categorization without complex LINQ
@@ -804,6 +973,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 								CurrentPatternType = firstSignal.patternType;
 								CurrentSubtype = firstSignal.subtype;
 								CurrentPatternId = firstSignal.patternId;
+							
 								CurrentOppositionStrength = signalPoolResponse.signals.Max(s => s.oppositionStrength);
 								CurrentConfluenceScore = signalPoolResponse.signals.Max(s => s.confluenceScore);
 								CurrentEffectiveScore = signalPoolResponse.signals.Max(s => s.effectiveScore);
@@ -1225,11 +1395,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return false;
                 }
 
+                // NEW: Add strategyId to the record
+                var recordWithStrategy = new
+                {
+                    strategyId = sessionID,
+                    contextId = record.contextId,
+                    timestamp_ms = record.timestamp_ms,
+                    bar_timestamp_ms = record.bar_timestamp_ms,
+                    maxGain = record.maxGain,
+                    maxLoss = record.maxLoss,
+                    isLong = record.isLong,
+                    instrument = record.instrument
+                };
+
                 // Use endpoint URL pointing to MatchingEngine service Thompson routes
                 string endpoint = $"{meServiceUrl}/api/thompson/record-pattern-performance";
                 
                 // Serialize the record to JSON
-                string jsonPayload = JsonConvert.SerializeObject(record);
+                string jsonPayload = JsonConvert.SerializeObject(recordWithStrategy);
                 using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
                 {
                     // Send request to the server
@@ -1240,7 +1423,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         if (response.IsSuccessStatusCode)
                         {
                             string responseText = await response.Content.ReadAsStringAsync(); 
-                            Log($"[INFO] Pattern performance record sent successfully: {record.contextId}");
+                            //Log($"[INFO] Pattern performance record sent successfully: {record.contextId}");
                             
                             // Remove the mapping after successful recording
                             lock (signalContextLock)
@@ -1280,7 +1463,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 // First check if the signal exists and is fresh enough
                 long signalEpochMs = barTimestamp;
-                string endpoint = $"{signalPoolUrl}/api/signals/available?simulationTime={signalEpochMs}&instrument={instrument}";
+                string endpoint = $"{signalPoolUrl}/api/signals/available?strategyId={sessionID}&simulationTime={signalEpochMs}&instrument={instrument}";
                 
                 using (var checkTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
                 {
@@ -1325,6 +1508,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Build the purchase request
                 var purchaseRequest = new
                 {
+                    strategyId = sessionID,  // NEW: Add sessionID as strategyId
                     traderId = sessionID, // Use the session ID as the trader ID
                     patternId = patternId,
                     instrument = instrument,
@@ -1460,6 +1644,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
+            // Store the mapping of entry signal ID to pattern ID
+            lock (divergenceLock)
+            {
+                entrySignalToPatternId[entrySignalId] = patternUuid;
+            }
+
             // Try up to 3 times with retry logic
             for (int attempt = 1; attempt <= 3; attempt++)
             {
@@ -1471,6 +1661,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Create the request payload
                     var requestPayload = new
                     {
+                        strategyId = sessionID,  // NEW: Add sessionID as strategyId
                         entrySignalId = entrySignalId,
                         patternUuid = patternUuid,
                         instrument = instrument,
@@ -1519,6 +1710,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                             
                             return true;
                         }
+                        
                         else
                         {
                             string errorContent = await response.Content.ReadAsStringAsync();
@@ -1607,12 +1799,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 		    if (IsDisposed()) return -9999999;
 		    
-		    // Return cached value if available
-		    if (divergenceScores.ContainsKey(entrySignalId))
-		    {
-		        return divergenceScores[entrySignalId];
-		    }
-		    
+		   
 		    // Check if we already have a pending request for this entry
 		    Task<double> pendingTask = null;
 		    lock (divergenceLock)
@@ -1679,17 +1866,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                    
 		                    // Store the divergence score for caching
 		                    divergenceScores[entrySignalId] = CurrentDivergenceScore;
-		                    Log($"[DIVERGENCE] divergence for {entrySignalId}: {CurrentDivergenceScore}");
+		                    Log($"[DIVERGENCE] divergence for {entrySignalId}: {CurrentDivergenceScore}, thompsonScore {divergenceResponse.thompsonScore}");
 		            
 		                    // ADDED: Cache Thompson score from divergence response
 		                    if (divergenceResponse.thompsonScore >= 0 && divergenceResponse.thompsonScore <= 1)
 		                    {
-		                        // Extract pattern ID from entry signal ID (assuming format: patternId_timestamp_Entry)
-		                        string patternId = ExtractPatternIdFromEntrySignal(entrySignalId);
+		                        // Use the stored pattern ID mapping instead of extraction
+		                        string patternId = null;
+		                        lock (divergenceLock)
+		                        {
+		                            entrySignalToPatternId.TryGetValue(entrySignalId, out patternId);
+		                        }
+		                        
 		                        if (!string.IsNullOrEmpty(patternId))
 		                        {
 		                            thompsonScores[patternId] = divergenceResponse.thompsonScore;
-		                            Log($"[THOMPSON] Cached score for {patternId}: {divergenceResponse.thompsonScore:F3}");
+		                            //Log($"[THOMPSON] Cached score for {patternId}: {divergenceResponse.thompsonScore:F3}");
 		                        }
 		                    }
 		                }
@@ -1775,6 +1967,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
+            // Clean up the entry signal to pattern mapping
+            lock (divergenceLock)
+            {
+                entrySignalToPatternId.Remove(entrySignalId);
+            }
+
             // Try up to 2 times (fewer retries for deregistration since it's less critical)
             for (int attempt = 1; attempt <= 2; attempt++)
             {
@@ -1795,6 +1993,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Create the payload with exit outcome data
                     var exitOutcomeData = new 
                     {
+                        strategyId = sessionID,  // NEW: Add sessionID as strategyId
                         wasGoodExit = wasGoodExit,
                         finalDivergence = finalDivergenceP
                     };
@@ -1827,7 +2026,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                             if (activePositions.ContainsKey(entrySignalId))
                             {
                                 activePositions.Remove(entrySignalId);
-                                Log($"[DIVERGENCE] Successfully deregistered position {entrySignalId} with wasGoodExit={wasGoodExit}, finalDivergence={finalDivergenceP}");
+                                //Log($"[DIVERGENCE] Successfully deregistered position {entrySignalId} with wasGoodExit={wasGoodExit}, finalDivergence={finalDivergenceP}");
                             }
                             
                             return true;

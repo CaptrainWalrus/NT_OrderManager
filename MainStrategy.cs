@@ -251,6 +251,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		protected AttractingMA attractingMA;
 		public EMA EMA3; 
+		public EMA EMA4; 
 	
 		//const EMA_PERIODS = [8, 13, 21, 34, 55, 89]; // Standard periods
 
@@ -395,7 +396,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				Description									= @"Management of order handling and responses to entry signals, logic for exits";
 				Name										= "OrganizedStrategy_MainStrategy";
-				Calculate									= Calculate.OnPriceChange;
+				Calculate									= Calculate.OnBarClose;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
 				IsExitOnSessionCloseStrategy				= true;
@@ -440,7 +441,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				selectedBroker = brokerSelection.Topstep;
 		
 				ema3_val = 10;
-		
+				
 				vwap1 = 20;
 				commonPeriod_smooth = 5;
 				VWAPScalingFactor = 1;
@@ -531,15 +532,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				myStrategyControlPane.AssociatedStrategy = this;
 				
 				
-	            if (!IsInStrategyAnalyzer)
-	            {
-	                AddDataSeries(BarsPeriodType.Tick, 150);
-	            }
-	            
-	            if (IsInStrategyAnalyzer)
-	            {
-	                AddDataSeries(Instrument.FullName, BarsPeriodType.Second, 5);
-	            }
+	           /// for stops
+	           AddDataSeries(Instrument.FullName,BarsPeriodType.Second, 5);
+	           AddDataSeries(Instrument.FullName,BarsPeriodType.Minute, 30);
+	              
 	         
 			}
 			else if (State == State.DataLoaded)
@@ -568,7 +564,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				SMA200 = SMA(BarsArray[0],100);
 				
 				EMA3 = EMA(BarsArray[0],ema3_val);
-				
+				EMA4 = EMA(BarsArray[2],50);
 				EMA8 = EMA(BarsArray[0],8);
 				EMA13 = EMA(BarsArray[0],13);
 				EMA21 = EMA(BarsArray[0],21);
@@ -855,7 +851,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		 msg = "OnBarUpdate start 2";
 
-		if (CurrentBars[0] < BarsRequiredToTrade )
+		if (CurrentBars[1] < (BarsRequiredToTrade*12) || CurrentBars[0] < BarsRequiredToTrade )
 		{
 		    DebugPrint(debugSection.OnBarUpdate, "start 3");
 			
@@ -1272,9 +1268,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			///get entry signals
    			
 			//FunctionResponses newSignal = BuildNewSignal();
+			msg = "about BuildNewSignal";
 			patternFunctionResponse builtSignal = BuildNewSignal(); 
 			FunctionResponses newSignal = builtSignal.newSignal;
-		
+			msg = "after BuildNewSignal";
 			
 			if(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
@@ -1398,7 +1395,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                       
 											
 											int indexQuantity = strategyDefaultQuantity;
-											if(isRealTime) Print($"{signalPackageSignal} continue BarsInProgress: {BarsInProgress}, Time: {Times[BarsInProgress][0]}");
+											//if(isRealTime) Print($"{signalPackageSignal} continue BarsInProgress: {BarsInProgress}, Time: {Times[BarsInProgress][0]}");
 
 					                        if (thisSignalPackage.SignalReturnAction.Sentiment == signalReturnActionType.Bullish && marketPosAllowed != marketPositionsAllowed.Short)
 					                        {   
@@ -1837,6 +1834,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[NinjaScriptProperty]
 		[Display(Name="Sensitive EMA Ribbon Threshold", Description="Cosine similarity threshold for Sensitive EMA Ribbon patterns", Order=6, GroupName="Matching Engine Config")]
 		public double SensitiveEmaRibbonCosineSimilarityThreshold { get; set; } = 0.78;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Send Historical Bars", Description="Send Historical Bars", Order=7, GroupName="Matching Engine Config")]
+		public bool sendHistoricalBars { get; set; }
 		
 		#region Properties
 		[NinjaScriptProperty]    
