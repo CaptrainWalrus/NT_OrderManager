@@ -75,13 +75,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						};
 						Print($"OnMyButtonClickEntry 4");
 				
-					
+						patternFunctionResponse thisSignal = new patternFunctionResponse();
+						thisSignal.newSignal = FunctionResponses.NoAction;
+					    thisSignal.patternSubType = "noneManual";
+						thisSignal.patternId = "";
+						thisSignal.stopModifier = 1;
+						thisSignal.pullbackModifier = 1;
 					
 							if (GetMarketPositionByIndex(BarsInProgress) == isThisMarketPosition)
                         	{ 
 								Print($"OnMyButtonClickEntry 5");
 								Print(Time[0] + " MANUAL LONG FROM LONG");
-								EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", CurrentBars[0], mainEntryOrderType,"noneManual",""); 
+								EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", CurrentBars[0], mainEntryOrderType,thisSignal); 
                                 return;
 									
 							}
@@ -90,7 +95,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								Print(Time[0] + " MANUAL LONG FROM FLAT");
 								
 								
-                                EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", CurrentBars[0], mainEntryOrderType,"noneManual",""); 
+                                EntryLimitFunctionLite(1, entryOrderAction, btnSignalPackage, "", CurrentBars[0], mainEntryOrderType,thisSignal); 
                                 return;
 							}
 							else

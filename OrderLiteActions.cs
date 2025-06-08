@@ -29,10 +29,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
     {
 		private List<OrderRecordMasterLite> openOrders = new List<OrderRecordMasterLite>();
 
-      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string appendSignal,int thisBar,OrderType orderType,string subTypeParam, string patternIdString)
+      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string appendSignal,int thisBar,OrderType orderType,patternFunctionResponse builtSignal)
 		{	 
 		
-		
+		string subTypeParam = builtSignal.patternSubType;
+		string patternIdString = builtSignal.patternId;
+		double stopModifier = builtSignal.stopModifier;
+		double pullbackModifier = builtSignal.pullbackModifier;
 		string tryCatchSection = "Begin Order Management Lite "+OA+" "+signalPackageParam.SignalReturnAction;
 	
 		try
@@ -79,7 +82,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						thisSignalExitAction = signalExitAction.NA,
 						sourceSignalPackage = signalPackageParam,
 						patternSubtype = subTypeParam,
-						patternId = patternIdString
+						patternId = patternIdString,
+						pullbackModifier = pullbackModifier,
+						stopModifier = stopModifier,
 			
 					};
 					tryCatchSection = "Section 3c Order Management Lite ";
@@ -91,9 +96,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						OrderStatsHardProfitTarget = 0,/// Profit is scalable so dont let to overscale
 						OrderStatsAllTimeHighProfit = 0,
 						OrderStatsAllTimeLowProfit = 0,
-						OrderStatspullBackThreshold = 0,
+						OrderStatspullBackThreshold = SoftTakeProfit*(pullbackModifier > 0 ? pullbackModifier : 1),
 						OrderStatspullBackPct = pullBackPct,
-						OrderMaxLoss = 0,/// loss is scalable so dont let to overscale
+						OrderMaxLoss = microContractStoploss*(stopModifier > 0 ? stopModifier : 1),/// loss is scalable so dont let to overscale
 					};
 					tryCatchSection = "Section 3d Order Management Lite ";
 					

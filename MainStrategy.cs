@@ -324,7 +324,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		protected List<simulatedEntry> MasterSimulatedEntries;
 		protected List<simulatedStop> MasterSimulatedStops;
-
+		protected List<OrderActionResult> OrderActionResultList;
 		
 		/// new version of OrderFlowPatternATH
 			
@@ -356,7 +356,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				/// </summary>
 		protected double perOrderCapitalStopLoss = 0;
 	
-		
+		public DateTime StrategyLastScaleInTime;
 		public DateTime StrategyLastEntryTime;/// for entry spacing
 		public DateTime AccountLastEntryTime;/// for entry spacing
 		public DateTime tempAccountLastEntryTime;
@@ -383,6 +383,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public string OutputText { get; set; }
 
 		public MyStrategyControlPane myStrategyControlPane;
+	
+		// DEBUG PRINT WRAPPER - SET TO TRUE TO ENABLE FREEZE DEBUGGING
+		private static bool ENABLE_FREEZE_DEBUG = false;
+		
+		protected void DebugFreezePrint(string message, [System.Runtime.CompilerServices.CallerFilePath] string fileName = "", [System.Runtime.CompilerServices.CallerLineNumber] int lineNumber = 0)
+		{
+			if (ENABLE_FREEZE_DEBUG)
+			{
+				string fileNameOnly = System.IO.Path.GetFileName(fileName);
+				Print($"[PRINT BLOCK DEBUG] - [{fileNameOnly}, {lineNumber}] {message}");
+			}
+		}
 	
 		protected override void OnStateChange()
 		{
@@ -515,7 +527,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				//restingSeries = new Series<double>(this);
 				//imbalanceSeries = new Series<double>(this);
 				customPosition = new CustomPosition(this, BarsArray, 5);
-
+				OrderActionResultList = new List<OrderActionResult>();
 				MasterSimulatedEntries = new List<simulatedEntry>();
 				MasterSimulatedStops = new List<simulatedStop>();
 				MastersimulatedEntryToDelete = new Queue<simulatedEntry>();
@@ -534,7 +546,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 	           /// for stops
 	           AddDataSeries(Instrument.FullName,BarsPeriodType.Second, 5);
-	           AddDataSeries(Instrument.FullName,BarsPeriodType.Minute, 30);
+	          // AddDataSeries(Instrument.FullName,BarsPeriodType.Minute, 30);
 	              
 	         
 			}
@@ -564,7 +576,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				SMA200 = SMA(BarsArray[0],100);
 				
 				EMA3 = EMA(BarsArray[0],ema3_val);
-				EMA4 = EMA(BarsArray[2],50);
+				//EMA4 = EMA(BarsArray[2],50);
 				EMA8 = EMA(BarsArray[0],8);
 				EMA13 = EMA(BarsArray[0],13);
 				EMA21 = EMA(BarsArray[0],21);
@@ -645,13 +657,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					config.EnableSyncMode = UseDirectSync;
 					Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
 					
-					curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
-					// In your NinjaTrader strategy initialization:
-					CurvesV2Service.SetFallbackDivergenceThreshold(6.0); // Custom threshold for legacy mode
-					// Use a simple GUID instead of the previous GenerateSignalId method
-					
-					
-					Print("CurvesV2Service Initialized (async connection pending).");
+									curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
+				
+				// Pass reference to MasterSimulatedStops for accurate position tracking
+				curvesService.SetMasterSimulatedStops(MasterSimulatedStops);
+				
+				// In your NinjaTrader strategy initialization:
+				CurvesV2Service.SetFallbackDivergenceThreshold(6.0); // Custom threshold for legacy mode
+				// Use a simple GUID instead of the previous GenerateSignalId method
+				
+				
+				Print("CurvesV2Service Initialized (async connection pending).");
 					
 					// Establish connection after initialization
 					if (UseDirectSync)
@@ -747,7 +763,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					    //Print("Flattening position before real-time trading starts.");
 					    ExitActiveOrders(ExitOrderType.ASAP_Other,signalExitAction.FE_EXIT3,false);
 					}		
-					
+					dailyProfit = 0;
 				
 					
 					
@@ -834,6 +850,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
    /// ON BAR UPDATE
    		protected override void OnBarUpdate()
 		{
+		DebugFreezePrint("OnBarUpdate START");
 		
 		if(IsInStrategyAnalyzer && endAll == true)
 		{		
@@ -841,6 +858,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		string msg = "OnBarUpdate start";
 		try{
+		DebugFreezePrint("Basic validation checks");
 		///try
 		//	{
 		if(strategyDefaultQuantity > strategyMaxQuantity || strategyDefaultQuantity > accountMaxQuantity || strategyMaxQuantity > (accountMaxQuantity-1))
@@ -851,11 +869,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		 msg = "OnBarUpdate start 2";
 
+		DebugFreezePrint("Checking BarsRequiredToTrade");
 		if (CurrentBars[1] < (BarsRequiredToTrade*12) || CurrentBars[0] < BarsRequiredToTrade )
 		{
 		    DebugPrint(debugSection.OnBarUpdate, "start 3");
 			
-			//Print("Loading: %"+Math.Round((((double)CurrentBars[0]/BarsRequiredToTrade)*100),1));
+			Print("Loading: %"+Math.Round((((double)CurrentBars[0]/BarsRequiredToTrade)*100),1));
 		    return;
 		}
 		 msg = "OnBarUpdate start 2.1";
@@ -904,6 +923,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		/// check for session close
 		DateTime now = Time[0];
+		DebugFreezePrint("Session close check START");
 			 msg = "OnBarUpdate start 3444";
 
 		sessionIterator.GetNextSession(Time[0], true);
@@ -913,15 +933,19 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 	    DateTime flattenTime = sessionEnd.AddMinutes(-30); // 10 minutes before session end
 	 msg = "OnBarUpdate start 3666";
+		DebugFreezePrint("Session close check COMPLETE");
 		
 	    if (now == flattenTime && now < sessionEnd) // In the flattening window
 	    {
+			DebugFreezePrint("HIT SESSION CLOSE WINDOW");
 			if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 			{
 		       // Print($"Flattening at {now}. Session ends at {sessionEnd}.");
 		        ExitActiveOrders(ExitOrderType.EOSC,signalExitAction.FE_EOD,false);
 				
 	    	}
+			Print("RETURN : HIT FE_EOD 1");
+
 			return;/// dont do more things
 		}
 	 msg = "OnBarUpdate start 3777";
@@ -975,11 +999,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		  }
 		/// check the stats thread for all open order stats
 	
+		DebugFreezePrint("Stats thread check START");
 		if (!stopStatsThread)
 		{
 
 	        lock (statsLock)
 	        {
+	        	DebugFreezePrint("Inside statsLock");
 	             foreach (simulatedStop simStop in MasterSimulatedStops)
 	                {
 	                    if (simStop.OrderRecordMasterLite != null)
@@ -992,6 +1018,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			                }
 							if(simStop.OrderRecordMasterLite.OrderSupplementals.forceExit == true)
 							{
+								DebugFreezePrint("Processing forceExit");
 								int instrumentSeriesIndex = simStop.instrumentSeriesIndex;
 					            var action = simStop.OrderRecordMasterLite.EntryOrder.OrderAction == OrderAction.Buy ? OrderAction.Sell : OrderAction.BuyToCover;
 					            // Execute the force exit order
@@ -1023,6 +1050,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            }
 	        }
 		}
+		DebugFreezePrint("Stats thread check COMPLETE");
 		
 		///updatePriceStats();/// moved to thread
 		///syncStops();/// moved to thread
@@ -1038,54 +1066,103 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		if(MasterSimulatedStops.Count() > 0)
 		{
+			DebugFreezePrint("MasterSimulatedStops processing START");
 			lock (eventLock)
 			{
-				if(BarsInProgress == 1) ///every request to CheckDivergence increments by 1 so its important to do only once per bar per item
+				if(BarsInProgress == 0) ///every request to CheckDivergence increments by 1 so its important to do only once per bar per item
 				{
+					DebugFreezePrint("About to update divergence scores async");
+					//Print($"{Time[0]} Update divergence scores for all active positions");
 					// Update divergence scores for all active positions (async, non-blocking)
-					_ = Task.Run(async () => 
+					// Option 1: Wait for completion (Recommended)
+					var updateTask = Task.Run(async () => 
 					{
-						try 
-						{
-							await curvesService.UpdateAllDivergenceScoresAsync();
-						}
-						catch (Exception ex)
-						{
-							Print($"[ERROR] Failed to update divergence scores: {ex.Message}");
-						}
+					    try 
+					    {
+					        await curvesService.UpdateAllDivergenceScoresAsync();
+					    }
+					    catch (Exception ex)
+					    {
+					        Print($"[ERROR] Failed to update divergence scores: {ex.Message}");
+					    }
 					});
 					
-					 foreach (var simStop in MasterSimulatedStops)
-	                {
-						if(simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true)
-						{
-							
-						
-
-						}
-					}
+					// Wait up to 1 second for update to complete
+					//updateTask.Wait(TimeSpan.FromSeconds(1));
+					DebugFreezePrint("Divergence score update task started");
+					
+					
 				}
 			}
+			DebugFreezePrint("About to enter second eventLock for UpdateOrderStats");
+		
+
 			lock (eventLock)
 			{
-				 foreach (var simStop in MasterSimulatedStops)
-                {
-				   
-                    try
-                    {
-					    msg = "MasterSimulatedStops 1";
-                  
-                        
-					
-						UpdateOrderStats(simStop);
-					}
-                    catch (Exception ex)
-                    {
-                        Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
-                    }
-                }
-		
+				OrderActionResultList.Clear();
+			    foreach (var simStop in MasterSimulatedStops)
+			    {
+			        try
+			        {
+			            msg = "MasterSimulatedStops 1";
+			      
+			            OrderActionResult exitAction = UpdateOrderStats(simStop);
+			            
+			            // Only add actions that need to be executed
+			            if (exitAction != null && exitAction.accountEntryQuantity > 0)
+			            {
+			                OrderActionResultList.Add(exitAction);
+			            }
+			            
+			        }
+			        catch (Exception ex)
+			        {
+			            Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
+			        }
+			    }
 			}
+			
+			if(OrderActionResultList.Count() > 0)
+			{
+				int totalAccountQuantityX = getAllcustomPositionsCombined();
+			
+			    // Check if we have room to scale for ANY actions
+			    if(totalAccountQuantityX+strategyDefaultQuantity <= strategyMaxQuantity && 
+			       totalAccountQuantityX+strategyDefaultQuantity <= (accountMaxQuantity) && 
+			       getAllcustomPositionsCombined() < strategyMaxQuantity)
+			    {
+					int limit = strategyMaxQuantity - getAllcustomPositionsCombined();
+			        // Execute scale-in actions
+			        for(int i = 0; i < limit; i++)
+			        {
+			            var action = OrderActionResultList[i];
+			            
+			            EntryLimitFunctionLite(
+			                action.accountEntryQuantity, 
+			                action.OA, 
+			                action.signalPackageParam, 
+			                action.appendSignal, 
+			                action.thisBar, 
+			                action.orderType, 
+			                action.builtSignal
+			            );
+			            BackBrush = Brushes.DarkBlue;
+			            Print($"[SCALE-IN] Executed entry for action {i+1}/{OrderActionResultList.Count()}");
+						break;
+			        }
+					OrderActionResultList.Clear();
+			    }
+			    else
+			    {
+			        // No room to scale - execute exits instead
+			        Print($"[NO-ROOM] Portfolio full, executing exits for {OrderActionResultList.Count()} signals");
+			        // TODO: Add exit logic here if needed
+			    }
+			}
+			
+			DebugFreezePrint("MasterSimulatedStops processing COMPLETE");
+			
+	
 		}
 		
 		  msg = "OnBarUpdate start 1";
@@ -1099,7 +1176,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 	
 			
-			NinjaTrader.Code.Output.Process($"{Time[0]} Checking # Open Orders : {openOrderTest} vs {getAllcustomPositionsCombined()}", PrintTo.OutputTab2);
 
 
 			if (Bars.IsFirstBarOfSession)
@@ -1145,11 +1221,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				{
 			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
 				}
-				
+				Print("RETURN : HIT dailyProfitMaxLoss 1");
 				return;
 			}
 			if(dailyProfit < -dailyProfitMaxLoss)
 			{
+				Print("RETURN : HIT dailyProfitMaxLoss 2");
 				return;	
 			}
 			if(BarsInProgress == 0)
@@ -1171,7 +1248,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				{
 			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_TP_SAFE, false);
 				}
-				
+				Print("RETURN : HIT FE_CAP_TP_SAFE");
 				return;
 			}
 		
@@ -1255,7 +1332,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 			
 			int totalAccountQuantity = getAllcustomPositionsCombined();
-			
+			//Print($"[DEBUG] totalAccountQuantity: {totalAccountQuantity}, BarsInProgress: {BarsInProgress}");
+
 			
 			if(BarsInProgress == 1)
 			{
@@ -1263,23 +1341,26 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			    SignalBackgroundCheck(); // Signal the background thread to check stops
 			    ProcessStatsQueue();     // Process any pending updates to collections
 			}
-						
+			
+			//Print($"[DEBUG] About to check entry signals - BarsInProgress: {BarsInProgress}");				
 			
 			///get entry signals
    			
 			//FunctionResponses newSignal = BuildNewSignal();
 			msg = "about BuildNewSignal";
-			Print($"[MAIN] About to call BuildNewSignal - BarsInProgress: {BarsInProgress}, Time: {Time[0]}");
+			DebugFreezePrint("About to call BuildNewSignal");
+			//Print($"[MAIN] About to call BuildNewSignal - BarsInProgress: {BarsInProgress}, Time: {Time[0]}");
 			
 			patternFunctionResponse builtSignal = BuildNewSignal(); 
 			FunctionResponses newSignal = builtSignal.newSignal;
+			DebugFreezePrint("BuildNewSignal returned");
 			msg = "after BuildNewSignal";
-			Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
+			//Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
 			
 			if(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
 				
-				
+				DebugFreezePrint("Signal processing START");
 				msg = "BuildNewSignal()?";
 				
 				
@@ -1332,7 +1413,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				}
 				if(targetSeriesIndex == 0)
 				{
-					
 					
 					
 						thisSignalPackage = getOrderFlowSignalPackage(targetSeriesIndex, newSignal, noActionSignalPackage);
@@ -1411,14 +1491,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
 					                            	{ 
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM LONG");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
+														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
 						                                return;
 															
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM FLAT");
-						                                EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
+						                                EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
 						                                return;
 													}
 													else
@@ -1439,13 +1519,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                                if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
 					                           		{  
 														if (isRealTime) Print(Time[0] + " ENTER SHORT FROM SHORT");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
 						                                return;
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER SHORTFROM FLAT");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal.patternSubType,builtSignal.patternId); 
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
 						                                return;
 						                               
 													}
@@ -1470,9 +1550,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 		 	}
 
+		
+		DebugFreezePrint("OnBarUpdate END");
 		}
 		catch (Exception ex)
 		{
+		    DebugFreezePrint($"ERROR in OnBarUpdate: {ex.Message}");
 		    Print("MAINSTRAT Error in OnBarUpdate  " + ex.Message +" "+msg);
 		}
 	}
@@ -1769,6 +1852,47 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						DefaultThreshold = 0.70,        // Relaxed default threshold
 						EmaRibbon = 0.75,               // Slightly higher for EMA patterns
 						SensitiveEmaRibbon = 0.78       // Highest for sensitive patterns
+					},
+					// NEW: Risk Management Configuration
+					RiskManagement = new RiskManagementConfig
+					{
+						MaxTolerance = 100.0,           // $100 max stop loss
+						DefaultStopPct = 0.60,          // 60% of max tolerance default
+						DefaultPullbackPct = 0.20,      // 20% pullback default
+						PatternPreferences = new Dictionary<string, PatternRiskConfig>
+						{
+							// Mean Reversion patterns - tighter stops, quicker exits
+							["MGC_MeanReversion"] = new PatternRiskConfig { StopPct = 0.45, PullbackPct = 0.15, ConfidenceScaling = true },
+							["gc_range_reversion_strong"] = new PatternRiskConfig { StopPct = 0.50, PullbackPct = 0.18, ConfidenceScaling = true },
+							["mean_reversion_oversold"] = new PatternRiskConfig { StopPct = 0.45, PullbackPct = 0.15, ConfidenceScaling = true },
+							
+							// Trend Continuation patterns - wider stops, patient exits  
+							["gc_trend_continuation_strong"] = new PatternRiskConfig { StopPct = 0.75, PullbackPct = 0.25, ConfidenceScaling = true },
+							["trend_continuation_momentum"] = new PatternRiskConfig { StopPct = 0.70, PullbackPct = 0.22, ConfidenceScaling = true },
+							["EMARibbonHarmonics"] = new PatternRiskConfig { StopPct = 0.65, PullbackPct = 0.20, ConfidenceScaling = true },
+							
+							// IBI Composite patterns - adaptive approach
+							["ibi_composite_bullish"] = new PatternRiskConfig { StopPct = 0.60, PullbackPct = 0.20, ConfidenceScaling = true },
+							["ibi_composite_bearish"] = new PatternRiskConfig { StopPct = 0.60, PullbackPct = 0.20, ConfidenceScaling = true },
+							["IBI_Confluence"] = new PatternRiskConfig { StopPct = 0.60, PullbackPct = 0.20, ConfidenceScaling = true },
+							
+							// MGC Specific patterns (EXACT NAMES from your logs)
+							["MGC_Pullback"] = new PatternRiskConfig { StopPct = 0.55, PullbackPct = 0.18, ConfidenceScaling = true },
+							
+							// Momentum patterns - balanced approach
+							["momentum_divergence"] = new PatternRiskConfig { StopPct = 0.65, PullbackPct = 0.20, ConfidenceScaling = true },
+							["volatility_contraction"] = new PatternRiskConfig { StopPct = 0.55, PullbackPct = 0.18, ConfidenceScaling = true },
+							
+							// Fuzzy Shapes - slightly more conservative
+							["FuzzyShape"] = new PatternRiskConfig { StopPct = 0.65, PullbackPct = 0.22, ConfidenceScaling = true }
+						},
+						ScalingFactors = new ScalingFactors
+						{
+							HighConfidenceBoost = 1.1,      // 10% looser stops for high confidence (>0.8)
+							LowConfidencePenalty = 0.8,     // 20% tighter stops for low confidence (<0.6)
+							HighConfluenceBoost = 1.2,      // 20% more patient exits for high confluence (>0.8)
+							LowConfluencePenalty = 0.8      // 20% quicker exits for low confluence (<0.6)
+						}
 					}
 				};
 				

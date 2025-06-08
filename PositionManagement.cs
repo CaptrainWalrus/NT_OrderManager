@@ -82,6 +82,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												simEntry.isEnterReady = false;
 												Print($"ENTRY {simEntry.EntryOrderUUID} LONG, >>> exit will be {simEntry.ExitOrderUUID}");
 												EnterLong(strategyDefaultQuantity,simEntry.quantity,simEntry.EntryOrderUUID);
+												if(IsInStrategyAnalyzer) SetStopLoss(simEntry.EntryOrderUUID,CalculationMode.Currency,microContractStoploss,false);
 												//SubmitOrderUnmanaged(1, OrderAction.Buy, OrderType.Market, simEntry.quantity, 0, 0,null, simEntry.EntryOrderUUID);
 												continue;
 												
@@ -96,6 +97,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID}, Quantity {Q} EnterShort {GetMarketPositionByIndex(BarsInProgress)}");
 												
 												EnterShort(strategyDefaultQuantity,simEntry.quantity,simEntry.EntryOrderUUID);
+												if(IsInStrategyAnalyzer) SetStopLoss(simEntry.EntryOrderUUID,CalculationMode.Currency,microContractStoploss,false);
 												//SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, simEntry.quantity, 0, 0, null,simEntry.EntryOrderUUID);
 												continue;
 												

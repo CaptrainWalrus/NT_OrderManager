@@ -177,367 +177,291 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	        
 	
 
-		private void UpdateOrderStats(simulatedStop simStop)
+		private OrderActionResult UpdateOrderStats(simulatedStop simStop)
 		{
-			string msg = " 1 ";
-			try{
-		    var order = simStop.OrderRecordMasterLite;
-			 msg = " 2 ";
-		    if (order?.PriceStats != null)
-		    {
-		  
+			OrderActionResult action = new OrderActionResult();
+			string msg = "";
+
+			try 
+			{
+				// ========== DEFINE ALL VALUES UPFRONT ==========
 				
-				  
+				// Basic order info
+				bool hasValidEntry = simStop.OrderRecordMasterLite?.EntryOrder != null;
+				bool hasValidExit = simStop.OrderRecordMasterLite?.ExitOrder != null;
+				bool isExitReady = simStop.OrderRecordMasterLite?.OrderSupplementals?.SimulatedStop?.isExitReady == true;
+				bool forceExit = simStop.OrderRecordMasterLite?.OrderSupplementals?.forceExit == true;
+				bool hasScaledIn = simStop.OrderRecordMasterLite?.OrderSupplementals?.hasScaledIn == true;
 				
+				if (!hasValidEntry || hasValidExit || forceExit || !isExitReady)
+					return action;
+
+				// Position info
+				bool isLong = simStop.OrderRecordMasterLite.EntryOrder.IsLong;
+				int instrumentSeriesIndex = simStop.instrumentSeriesIndex;
+				int quantity = simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+				double entryPrice = simStop.OrderRecordMasterLite.EntryOrder.AverageFillPrice;
 				
-				if(UseVwapStop)
+				// Price info
+				double currentAsk = GetCurrentAsk(instrumentSeriesIndex);
+				double currentBid = GetCurrentBid(instrumentSeriesIndex);
+				double open = Open[0];
+				double close = Close[0];
+				
+				// Profit calculations
+				double longProfit = (currentAsk - entryPrice) * quantity * BarsArray[instrumentSeriesIndex].Instrument.MasterInstrument.PointValue;
+				double shortProfit = (entryPrice - currentAsk) * quantity * BarsArray[instrumentSeriesIndex].Instrument.MasterInstrument.PointValue;
+				double currentProfit = isLong ? longProfit : shortProfit;
+				double allTimeHighProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit;
+				double allTimeLowProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeLowProfit;
+				
+				// Thresholds and modifiers
+				double stopModifier = simStop.OrderRecordMasterLite.OrderSupplementals.stopModifier;
+				double pullbackModifier = simStop.OrderRecordMasterLite.OrderSupplementals.pullbackModifier;
+				double maxLoss = microContractStoploss;
+        
+        // DEBUG: Verify max loss calculation
+        //Print($"[MAXLOSS-CALC] {simStop.EntryOrderUUID.Substring(0,8)}: stopModifier={stopModifier:F2}, microContractStoploss={microContractStoploss:F2}, maxLoss={maxLoss:F2}");
+				double pbMod = simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackPct > 0 ? simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackPct : 1;
+				double softProfitTarget = pbMod * softTakeProfitMult * quantity;
+				double hardProfitTarget = instrumentSeriesIndex == 3 ? standardContractTakeProfit * quantity : microContractTakeProfit * quantity;
+				
+				// Position management
+				int totalAccountQuantity = getAllcustomPositionsCombined();
+				bool canScaleIn = totalAccountQuantity + strategyDefaultQuantity <= strategyMaxQuantity && 
+								 totalAccountQuantity + strategyDefaultQuantity <= accountMaxQuantity && 
+								 getAllcustomPositionsCombined() < strategyMaxQuantity && 
+								 !hasScaledIn;
+				
+				        // Divergence info
+        string patternId = null;
+        curvesService.TryGetPatternId(simStop.EntryOrderUUID, out patternId);
+        double thompsonScoreModifier = 1;
+        if (!string.IsNullOrEmpty(patternId) && curvesService.thompsonScores.TryGetValue(patternId, out double score))
+        {
+            thompsonScoreModifier = score;
+        }
+		
+		
+   
+        // DEBUG: Log divergence and max loss values for comparison
+        //Print($"[DEBUG] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, thisRecordDivergence={thisRecordDivergence:F3}, dynamicDivergenceThreshold={dynamicDivergenceThreshold:F3}");
+       
+				
+				// Condition flags
+				bool isNewAllTimeHigh = currentProfit > allTimeHighProfit;
+				bool isNewAllTimeLow = currentProfit < allTimeLowProfit;
+				bool maxLossHit = currentProfit < -simStop.OrderRecordMasterLite.PriceStats.OrderMaxLoss;
+				bool hardProfitTargetReached = currentProfit > hardProfitTarget;
+				bool softProfitPullbackTarget = allTimeHighProfit > softProfitTarget && 
+											   (currentProfit < 0 || (currentProfit > 0 && currentProfit < Math.Max(softProfitTarget, pullBackPct * allTimeHighProfit)));
+		       
+	
+
+				// VWAP conditions
+				bool vwapLongExit = UseVwapStop && isLong && open > BB0.Lower[0] && close < BB0.Lower[0];
+				bool vwapShortExit = UseVwapStop && !isLong && open < BB0.Upper[0] && close > BB0.Upper[0];
+
+				        // ========== SEQUENTIAL CONDITION CHECKS ==========
+        
+        // 1. VWAP STOP CHECK (highest priority)
+        if (UseVwapStop)
 				{
 					foreach(var kvp in vwapStopMapping)
 					{
-					    var key = kvp.Key;
-					    var value = kvp.Value;
-									
+						var key = kvp.Key;
+						var value = kvp.Value;
 						key.VWAPValue = VWAP1;
 						
-	
-						if(key.isLong == true)
+						if (key.isLong && vwapLongExit && vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady)
 						{
-							if(Open[0] > key.BBValue.Lower[0] && Close[0] < key.BBValue.Lower[0] && vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady == true)
-							//if(Open[0] > key.VWAPValue[0] && Close[0] < key.VWAPValue[0] && vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady == true)
-							{
-								
-								vwapStopMapping[key].OrderSupplementals.thisSignalExitAction = signalExitAction.VWAPL;
-					            vwapStopMapping[key].OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid());
-								
-								ExitLong(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
-
-								//SubmitOrderUnmanaged(1, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.EntryOrderUUID, simStop.ExitOrderUUID);
-								
-								vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady = false;
-					      		vwapStopMapping[key].OrderSupplementals.forceExit = true;
-								//Print("Enqueue MastersimulatedStopToDelete");
-							            // Queue for deletion on main thread
-					            MastersimulatedStopToDelete.Enqueue(vwapStopMapping[key].OrderSupplementals.SimulatedStop);
-								continue;
-							}
+							vwapStopMapping[key].OrderSupplementals.thisSignalExitAction = signalExitAction.VWAPL;
+							vwapStopMapping[key].OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid());
+							ExitLong(1, simStop.OrderRecordMasterLite.EntryOrder.Quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+							vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady = false;
+							vwapStopMapping[key].OrderSupplementals.forceExit = true;
+							MastersimulatedStopToDelete.Enqueue(vwapStopMapping[key].OrderSupplementals.SimulatedStop);
+							return action;
 						}
-						else if(key.isLong == false)
+						else if (!key.isLong && vwapShortExit && vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady)
 						{
-							if(Open[0] < key.BBValue.Upper[0] && Close[0] > key.BBValue.Upper[0] && vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady == true)
-							//if(Open[0] < key.VWAPValue[0] && Close[0] > key.VWAPValue[0] && vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady == true)
-							{
-								vwapStopMapping[key].OrderSupplementals.thisSignalExitAction = signalExitAction.VWAPL;
-					            vwapStopMapping[key].OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid());
-					       		
-								ExitShort(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
-								//SubmitOrderUnmanaged(1, OrderAction.BuyToCover, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  simStop.EntryOrderUUID, simStop.ExitOrderUUID);
-								
-								vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady = false;
-								vwapStopMapping[key].OrderSupplementals.forceExit = true;
-								//Print("Enqueue MastersimulatedStopToDelete");
-					            // Queue for deletion on main thread
-					            MastersimulatedStopToDelete.Enqueue(vwapStopMapping[key].OrderSupplementals.SimulatedStop);
-								break;
-							}
+							vwapStopMapping[key].OrderSupplementals.thisSignalExitAction = signalExitAction.VWAPL;
+							vwapStopMapping[key].OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid());
+							ExitShort(1, simStop.OrderRecordMasterLite.EntryOrder.Quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+							vwapStopMapping[key].OrderSupplementals.SimulatedStop.isExitReady = false;
+							vwapStopMapping[key].OrderSupplementals.forceExit = true;
+							MastersimulatedStopToDelete.Enqueue(vwapStopMapping[key].OrderSupplementals.SimulatedStop);
+							return action;
 						}
 					}
 				}
-				
-		        if(simStop.OrderRecordMasterLite.ExitOrder == null && simStop.OrderRecordMasterLite.EntryOrder != null && simStop.OrderRecordMasterLite.OrderSupplementals.forceExit == false)
-				{
-					
-					/// ALLTIME HIGH
-					msg = "ATH";
-						if (simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit > simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit)
-						{
-						    simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit;
-							
-							///PULLBACK THRESHOLD
 
-							if(simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit > softTakeProfitMult && simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackThreshold == 0)
-							{
-								simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackThreshold = GetCurrentBid(0); // set the price at which we went past the mult
-							}
-						}
-						///ALLTIME LOW
-						msg = "ATL";
-						if (simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit < simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeLowProfit)
-						{
-						    simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeLowProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit;
-						}
-						
-						
-						
-						int instrumentSeriesIndex = simStop.instrumentSeriesIndex;
-						
-						double longProfit = (GetCurrentAsk(instrumentSeriesIndex) - simStop.OrderRecordMasterLite.EntryOrder.AverageFillPrice) * simStop.OrderRecordMasterLite.EntryOrder.Quantity * BarsArray[instrumentSeriesIndex].Instrument.MasterInstrument.PointValue;
-						double shortProfit = (simStop.OrderRecordMasterLite.EntryOrder.AverageFillPrice-GetCurrentAsk(instrumentSeriesIndex)) * simStop.OrderRecordMasterLite.EntryOrder.Quantity * BarsArray[instrumentSeriesIndex].Instrument.MasterInstrument.PointValue;
-						double profit = simStop.OrderRecordMasterLite.EntryOrder.IsLong ? longProfit : shortProfit;	
-						
-						msg = "Profit";
-						if(simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit != profit)
-						{
-							/// profit update
-							simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit = profit;
-							
-							
-						}
-						/// MAX LOSS 
-						/// 
-					
-						msg = "MLL";
-						if(simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady == true)
-						{
-							// NOTE: This might need to be moved to the main thread if it modifies
-							// collections accessed by the main thread
-							if (!statsUpdateQueue.Contains(simStop)) {
-								statsUpdateQueue.Enqueue(simStop);
-							}
-							
-							int instrumentSeriesIndexThis = simStop.OrderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex;
-				            double maxLoss = GetMaxLoss(simStop);
-				
-				            if (profit < -maxLoss)
-				            {
-				                // Only flag for exit if not already flagged to prevent repetitive messages
-				                if (!order.OrderSupplementals.forceExit)
-				                {
-				                    // Set forceExit to true and specify the exit action
-				                    order.OrderSupplementals.forceExit = true;
-				                    
-				                    order.OrderSupplementals.thisSignalExitAction = order.EntryOrder.OrderAction == OrderAction.Buy ? signalExitAction.MLL : (order.EntryOrder.OrderAction == OrderAction.SellShort ? signalExitAction.MLS : signalExitAction.NA);
- 									if(simStop.EntryOrderAction == OrderAction.Buy)
-									{
-										
-	
-										ExitLong(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
-										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
-							      		simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-										return;
-									}
-									if(simStop.EntryOrderAction == OrderAction.SellShort)
-									{
-										
-										ExitShort(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
-										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
-							      		simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-										return;
-									}
-                				}
-				               
-				            }
-				        
-								
-
-						}
-						
-						////HARD TAKE, SOFT TAKE
-						/// 
-						msg = "TP";
-						if(simStop.OrderRecordMasterLite.EntryOrderUUID == simStop.EntryOrderUUID && simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady == true && simStop.OrderRecordMasterLite.OrderSupplementals.forceExit == false)
-						{
-							
-							
-							// Confirm matching record isn't yet filled
-							if (simStop.OrderRecordMasterLite.EntryOrder != null && 
-							    simStop.OrderRecordMasterLite.EntryOrder.OrderState == OrderState.Filled && 
-							    (simStop.OrderRecordMasterLite.EntryOrder.OrderAction == OrderAction.SellShort || simStop.OrderRecordMasterLite.EntryOrder.OrderAction == OrderAction.Buy) && 
-							    simStop.OrderRecordMasterLite.ExitOrder == null)
-							{
-								
-								int instrumentSeriesIndexVar = simStop.instrumentSeriesIndex;
-								double tickValue = simStop.instrumentSeriesTickValue;
-
-								maximumOpenInstrumentIndex = Math.Max(maximumOpenInstrumentIndex,instrumentSeriesIndexVar);
-								
-							
-		           
-							    double currentProfit = 	CalculateTotalOpenPositionProfitForInstrument(instrumentSeriesIndex);
-							    double allTimeHighProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit;
-								
-								bool EMA3_ok = (simStop.OrderRecordMasterLite.EntryOrder.IsLong) ? IsRising(EMA3) : IsFalling(EMA3);
-								
-								int positionAge = CurrentBars[0] - simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedEntry.EntryBar;
-								
-								string patternId = null;
-								// Get the pattern ID from the registered position mapping
-								curvesService.TryGetPatternId(simStop.EntryOrderUUID, out patternId);
-							
-								double thompsonScoreModifier = 1;
-		                        if (!string.IsNullOrEmpty(patternId))
-		                        {
-		                            if (curvesService.thompsonScores.TryGetValue(patternId, out double score))
-		                            {
-		                                thompsonScoreModifier = score;
-		                            }
-		                        }
-								// Use cached divergence value (no HTTP call)
-								double thisRecordDivergence = curvesService.CheckDivergence(simStop.EntryOrderUUID)*Math.Sign((int)currentProfit);
-								simStop.OrderRecordMasterLite.OrderSupplementals.divergence = thisRecordDivergence;
-								simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence = Math.Max(simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence, thisRecordDivergence);
-								
-								bool divergencePullback = simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence > softTakeProfitMult && simStop.OrderRecordMasterLite.OrderSupplementals.divergence < (pullBackPct * simStop.OrderRecordMasterLite.OrderSupplementals.maxDivergence);
-								
-								double dynamicDivergenceThreshold = (thompsonScoreModifier*DivergenceThreshold);
-								
-								if(DivergenceSignalThresholds)
-								{ 
-									if(simStop.OrderRecordMasterLite.OrderSupplementals.divergence > dynamicDivergenceThreshold && currentProfit < simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit)
-									{
-									
-									if(simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true)
-									{
-										try {
-									            Print($"[DIVERGENCE VIOLATION!] {simStop.EntryOrderUUID}: DIV={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit=${currentProfit:F2}");
-
-									            // Check divergence using the new adaptive system
-											//if (curvesService.GetExitSignal(simStop.EntryOrderUUID) > 0)
-									           // {
-													// Enhanced logging with adaptive divergence information
-													string adaptiveInfo = "";
-													if (CurvesV2Service.CurrentShouldExit)
-													{
-														adaptiveInfo = $" [ADAPTIVE: {CurvesV2Service.CurrentConsecutiveBars}/{CurvesV2Service.CurrentConfirmationBarsRequired} bars confirmed]";
-													}
-													else
-													{
-														adaptiveInfo = $" [LEGACY: Score > threshold]";
-													}
-													
-
-											        if(simStop.EntryOrderAction == OrderAction.Buy)// && IsFalling(SMA200) && SMA200[0] < Close[0])
-													{
-														
-					
-														simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_L;
-														simStop.OrderRecordMasterLite.OrderSupplementals.divergence = curvesService.divergenceScores[simStop.EntryOrderUUID];
-														ExitLong(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
-														simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
-							      						simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-														return;
-													}
-													if(simStop.EntryOrderAction == OrderAction.SellShort)// && IsRising(SMA200) && SMA200[0] > Close[0])
-													{
-														simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_S;
-														simStop.OrderRecordMasterLite.OrderSupplementals.divergence = curvesService.divergenceScores[simStop.EntryOrderUUID];
-														ExitShort(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
-														simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
-							      						simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-														return;
-													}
-									            
-											
-									        }
-									        catch (Exception ex) {
-									          // Print($"Divergence catch : {ex}");
-									        }
-										}
-									}
-								}
-								
-								
-								
-								
-							  	int indexQuantity = GetPositionCountByIndex(instrumentSeriesIndex);/// quantity across instrument size
-							
-						
-								double softProfitTarget = softTakeProfitMult*simStop.OrderRecordMasterLite.EntryOrder.Quantity;
-							    double hardProfitTarget = instrumentSeriesIndex == 3 ? standardContractTakeProfit*simStop.OrderRecordMasterLite.EntryOrder.Quantity : microContractTakeProfit*simStop.OrderRecordMasterLite.EntryOrder.Quantity;
-								
-								//softProfitTarget *= ATR(100)[0];
-								//hardProfitTarget *= ATR(100)[0];
-								/// this version doesnt use age
-							   	// bool softProfitPullbackTarget = (allTimeHighProfit > softProfitTarget && 
-							    //                                 currentProfit < Math.Max(softProfitTarget, pullBackPct * allTimeHighProfit));
-							    bool hardProfitTargetReached = (currentProfit > hardProfitTarget);
-							    int age = CurrentBars[0] - simStop.OrderRecordMasterLite.EntryBar;
-							
-							
-								
-								bool softProfitPullbackTarget = (allTimeHighProfit > softProfitTarget && (currentProfit < 0 || (currentProfit > 0 && currentProfit < Math.Max(softProfitTarget, pullBackPct * allTimeHighProfit))));
-																
-								signalExitAction thisSignalExitAction = signalExitAction.NULL;
-							
-		            		  
-							  
-							    if (hardProfitTargetReached && TakeBigProfitEnabled && simStop.isExitReady)/// dont do take for large movements
-							    {
-							        thisSignalExitAction = (simStop.OrderRecordMasterLite.EntryOrder.IsLong) ? signalExitAction.TBPL : signalExitAction.TBPS;
-							    }
-							    else if (softProfitPullbackTarget && PullBackExitEnabled && simStop.isExitReady)
-							    {
-							     
-							
-									thisSignalExitAction = (simStop.OrderRecordMasterLite.EntryOrder.IsLong) ? signalExitAction.PBL : signalExitAction.PBS;
-									
-							    }
-							 	
-								
-								
-								
-								
-								
-								switch (thisSignalExitAction)
-							    {
-							        case signalExitAction.TBPL:
-							        case signalExitAction.PBL:
-							        case signalExitAction.FUNCL:
-							        case signalExitAction.AGEL:
-										
-										
-							            simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
-							            simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
-							            //Print($"{Time[0]}  SELL {simStop.OrderRecordMasterLite.ExitOrderUUID} to Close {simStop.OrderRecordMasterLite.EntryOrderUUID} at {thisSignalExitAction} PROFIT ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit} ");
-										
-										ExitLong(1,1,simStop.ExitOrderUUID,simStop.EntryOrderUUID);
-										//SubmitOrderUnmanaged(1, OrderAction.Sell, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  null, simStop.ExitOrderUUID);
-										
-										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
-							      		simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-										//Print("Enqueue MastersimulatedStopToDelete");
-							            // Queue for deletion on main thread
-							            MastersimulatedStopToDelete.Enqueue(simStop);
-										break;
-										
-							
-							        case signalExitAction.TBPS:
-							        case signalExitAction.PBS:
-							        case signalExitAction.FUNCS:
-							        case signalExitAction.AGES:
-										
-										
-							            simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
-							            simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
-										//Print($"{Time[0]} BUYTOCOVER {simStop.OrderRecordMasterLite.ExitOrderUUID} to Close {simStop.OrderRecordMasterLite.EntryOrderUUID} at {thisSignalExitAction} PROFIT ${simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit}  ");								
-							       
-										ExitShort(1,1,simStop.ExitOrderUUID,simStop.EntryOrderUUID);
-
-										//SubmitOrderUnmanaged(1, OrderAction.BuyToCover, OrderType.Market, simStop.OrderRecordMasterLite.EntryOrder.Quantity, 0, 0,  null, simStop.ExitOrderUUID);
-										
-										simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
-										simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
-										//Print("Enqueue MastersimulatedStopToDelete");
-							            // Queue for deletion on main thread
-							            MastersimulatedStopToDelete.Enqueue(simStop);
-										break;
-										
-									default:
-								            // No exit action, continue processing
-								            break;
-							
-							    }
-							}
-
-						}
-						
-						
-				}
-		    }
+				        // 2. DIVERGENCE CHECK (prioritize over max loss for earlier exits)
+   			bool divergenceViolation = false;
+    		if(curvesService.divergenceScores.ContainsKey(simStop.EntryOrderUUID))
+			{
+		        double dynamicDivergenceThreshold = (DivergenceThreshold);
+		        simStop.OrderRecordMasterLite.OrderSupplementals.divergence = curvesService.divergenceScores[simStop.EntryOrderUUID];
+				divergenceViolation = DivergenceSignalThresholds && curvesService.divergenceScores[simStop.EntryOrderUUID] > dynamicDivergenceThreshold && simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true;
 			}
-			 catch (Exception ex)
+	        if (divergenceViolation && DivergenceSignalThresholds && currentProfit < -softProfitTarget)
 	        {
-	            Print($"Error in UpdateOrderStats: {ex.Message} + {msg}");
+	            try {
+	                Print($"[DIVERGENCE EXIT] {simStop.EntryOrderUUID}: DIV={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit=${currentProfit:F2}");
+	                
+	                if (isLong)
+	                {
+	                    simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_L;
+	               
+	                    ExitLong(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+	                }
+	                else
+	                {
+	                    simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_S;
+	                    
+	                    ExitShort(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+	                }
+	                
+	                simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
+	                simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+	                return action;
+	            }
+	            catch (Exception ex) {
+	                Print($"Divergence catch : {ex}");
+	            }
 	        }
+	
+	        // 3. UPDATE PRICE STATS
+	        if (isNewAllTimeHigh)
+	        {
+	            simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeHighProfit = currentProfit;
+	            if (currentProfit > softTakeProfitMult && simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackThreshold == 0)
+	            {
+	                simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackThreshold = GetCurrentBid(0);
+	            }
+	        }
+	        
+	        if (isNewAllTimeLow)
+	        {
+	            simStop.OrderRecordMasterLite.PriceStats.OrderStatsAllTimeLowProfit = currentProfit;
+	        }
+	        
+	        if (simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit != currentProfit)
+	        {
+	            simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit = currentProfit;
+	        }
+	
+	        // 4. MAX LOSS CHECK (after divergence)
+	        if (maxLossHit)
+	        {
+	            //Print($"[MAX LOSS EXIT] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, MaxLoss=${-maxLoss:F2} (divergence didn't trigger)");
+	            
+	            if (!statsUpdateQueue.Contains(simStop)) {
+	                statsUpdateQueue.Enqueue(simStop);
+	            }
+	            
+	            simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+	            simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = isLong ? signalExitAction.MLL : signalExitAction.MLS;
+	            
+	            if (isLong)
+	            {
+	                ExitLong(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+	            }
+	            else
+	            {
+	                ExitShort(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+	            }
+	            
+	            simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
+	            simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+	            return action;
+	        }
+	
+	                // 5. PROFIT TARGET CHECKS
+					signalExitAction thisSignalExitAction = signalExitAction.NULL;
+					
+					if (hardProfitTargetReached && TakeBigProfitEnabled)
+					{
+						thisSignalExitAction = isLong ? signalExitAction.TBPL : signalExitAction.TBPS;
+					}
+					else if (softProfitPullbackTarget && PullBackExitEnabled)
+					{
+						thisSignalExitAction = isLong ? signalExitAction.PBL : signalExitAction.PBS;
+					}
+	
+					// 6. EXECUTE EXIT ACTIONS
+					if (thisSignalExitAction == signalExitAction.TBPL || thisSignalExitAction == signalExitAction.TBPS || thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS)
+					{
+						DateTime xMinutesSpacedGoal = StrategyLastScaleInTime.AddMinutes(entriesPerDirectionSpacingTime);
+						if(canScaleIn && Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0 )
+							   
+				             
+						{
+							// Scale in logic
+							simStop.OrderRecordMasterLite.OrderSupplementals.hasScaledIn = true;
+							
+							action.accountEntryQuantity = strategyDefaultQuantity;
+							action.appendSignal = "";
+							action.builtSignal = new patternFunctionResponse();
+							action.builtSignal.patternId = simStop.OrderRecordMasterLite.OrderSupplementals.patternId;
+							action.builtSignal.patternSubType = simStop.OrderRecordMasterLite.OrderSupplementals.patternSubtype;
+							action.OA = simStop.EntryOrderAction;
+							action.orderType = OrderType.Market;
+							action.signalPackageParam = simStop.OrderRecordMasterLite.OrderSupplementals.sourceSignalPackage;
+							action.thisBar = CurrentBars[0];
+							StrategyLastScaleInTime = Time[0]; ///no full order but will stop rapid-fire orders
+						}
+						else
+						{
+							// Exit logic
+							simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
+							simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
+							
+							if (isLong)
+							{
+								ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+							}
+							else
+							{
+								ExitShort(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+							}
+							
+							simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
+							simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+							MastersimulatedStopToDelete.Enqueue(simStop);
+						}
+					}
+					else if (thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS ||
+							 thisSignalExitAction == signalExitAction.FUNCL || thisSignalExitAction == signalExitAction.FUNCS ||
+							 thisSignalExitAction == signalExitAction.AGEL || thisSignalExitAction == signalExitAction.AGES)
+					{
+						simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
+						simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
+						
+						if (isLong)
+						{
+							ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+						}
+						else
+						{
+							ExitShort(1, 1, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+						}
+						
+						simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
+						simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+						MastersimulatedStopToDelete.Enqueue(simStop);
+					}
+	
+					
+				
+			return action;
+			}
+			catch (Exception ex)
+			{
+				Print($"Error in UpdateOrderStats: {ex.Message} + {msg}");
+				return action;
+			}
+				
 		}
 
         /// <summary>

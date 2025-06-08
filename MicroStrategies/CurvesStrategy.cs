@@ -163,10 +163,14 @@ public partial class CurvesStrategy : MainStrategy
 	////////////////////////////
 	protected override void OnBarUpdate()
 	{
+
+		DebugFreezePrint("CurvesStrategy OnBarUpdate START");
 		base.OnBarUpdate(); 
-		Print($"{Time[0]}");
+		DebugFreezePrint("Base OnBarUpdate completed");
+		
 		try
 		{
+			DebugFreezePrint("Service availability check");
 			// Skip processing if service isn't available
 			if (curvesService == null)
 			{
@@ -182,7 +186,11 @@ public partial class CurvesStrategy : MainStrategy
 					return;
 				}
 			}
-			
+			if(CurrentBars[0] % 60 == 0)
+			{
+			Print($"{Time[0]}");
+			}
+			DebugFreezePrint("Heartbeat check");
 			// In OnBarUpdate or a timer
 			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
 			{
@@ -190,12 +198,14 @@ public partial class CurvesStrategy : MainStrategy
 			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
 			    Print("Heartbeat call returned - strategy continues");
 			}
+			DebugFreezePrint("Heartbeat completed");
 						
 			bool isConnected = curvesService.IsConnected;
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
 			// Only send historical bars once, when we have enough data
 		    if (UseRemoteService == false && BarsInProgress == 0 && sendHistoricalBars && !historicalBarsSent && CurrentBar >= 1) // Wait for 50000 bars
 		    {
+		    	DebugFreezePrint("Historical bars processing START");
 		        // Prepare historical bars
 		        var historicalBars = new List<object>();
 		        
@@ -218,7 +228,9 @@ public partial class CurvesStrategy : MainStrategy
 		        // Use synchronous wrapper instead of Task.Run to prevent concurrent processing
 		        try
 		        {
+		        	DebugFreezePrint("About to call SendHistoricalBarsSync");
 		            bool success = SendHistoricalBarsSync(historicalBars, Instrument.MasterInstrument.Name);
+		            DebugFreezePrint("SendHistoricalBarsSync completed");
 		            
 		            if (success)
 		            {
@@ -234,19 +246,11 @@ public partial class CurvesStrategy : MainStrategy
 		        {
 		            Print($"Error sending historical bars: {ex.Message}");
 		        }
+		        DebugFreezePrint("Historical bars processing COMPLETE");
 		        
 		        return; // Skip normal processing this bar
 		    }
 		
-		
-			
-			///small status update of progress
-			if(BarsInProgress == 0 && CurrentBars[0] % 10 == 0)
-			{
-				Print($"{Time[0]} BarsInProgress {BarsInProgress} BAR # {CurrentBars[0]}");
-			}
-			
-			
 			
 			
 			// Log connection status periodically
@@ -254,12 +258,14 @@ public partial class CurvesStrategy : MainStrategy
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
 			if (isConnected && BarsInProgress == 0)
 			{
-				Print($"{Time[0]} isConnected, SEND");
-
+				DebugFreezePrint("Connected bar processing START");
+				//Print($"{Time[0]} isConnected, SEND");
+				
 				// Extract instrument code
 				string instrumentCode = GetInstrumentCode();
 			
 				// 1. Simple, direct send of bar data - fire and forget
+				DebugFreezePrint("About to call SendBarFireAndForget");
 				bool barSent = curvesService.SendBarFireAndForget(
 					UseRemoteService,
 					instrumentCode,
@@ -271,37 +277,42 @@ public partial class CurvesStrategy : MainStrategy
 					Volume[0],
 					IsInStrategyAnalyzer ? "backtest" : "1m"
 				);
-				Print($"{Time[0]} : barSent {barSent}");
+				DebugFreezePrint("SendBarFireAndForget completed");
+				//Print($"{Time[0]} : barSent {barSent}");
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
+				DebugFreezePrint("About to call CheckSignalsFireAndForget");
 				curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
+				DebugFreezePrint("CheckSignalsFireAndForget completed");
+				double currentPrice = Close[0];  // Use the current bar's close price
+			    curvesService.UpdateAllDivergenceScoresAsync(currentPrice);
 				
 			}
 			
-			if (BarsInProgress == 0 && isConnected && curvesService.lastSPJSON != "")
-			{
-				Print($"{Time[0]} {curvesService.lastSPJSON}");
-				return;
-			}
 			
 		}
 		catch (Exception ex)
 		{
+			DebugFreezePrint($"ERROR in CurvesStrategy OnBarUpdate: {ex.Message}");
 			NinjaTrader.Code.Output.Process($"Error in OnBarUpdate: {ex.Message}", PrintTo.OutputTab1); 
 		}
+		
+		DebugFreezePrint("CurvesStrategy OnBarUpdate END");
 	}
 	
 	// Fix BuildNewSignal to actually return entry signals
 	protected override patternFunctionResponse BuildNewSignal()
 	{
-		NinjaTrader.Code.Output.Process($"[CURVES] BuildNewSignal CALLED - BarsInProgress: {BarsInProgress}, Time: {Time[0]}", PrintTo.OutputTab1);
-		Print("[BuildNewSignal] CurvesStrategy");
+		DebugFreezePrint("CurvesStrategy BuildNewSignal START");
+		//NinjaTrader.Code.Output.Process($"[CURVES] BuildNewSignal CALLED - BarsInProgress: {BarsInProgress}, Time: {Time[0]}", PrintTo.OutputTab1);
+		//Print("[BuildNewSignal] CurvesStrategy");
 		string msg = "A";
 		patternFunctionResponse thisSignal = new patternFunctionResponse();
 		thisSignal.newSignal = FunctionResponses.NoAction;
 	    thisSignal.patternSubType = "none";
 		thisSignal.patternId = "";
 		try{
-		Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
+		DebugFreezePrint("BuildNewSignal validation checks");
+		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
 	 
 		msg = "A2 ";
 	    if(CurrentBars[0] < BarsRequiredToTrade)
@@ -313,6 +324,7 @@ public partial class CurvesStrategy : MainStrategy
 	        return thisSignal;
 	    }
 	    msg = "B";
+	    DebugFreezePrint("BuildNewSignal position calculations");
 	    // Calculate total positions and working orders
 	    int totalPositions = getAllcustomPositionsCombined();
 	    // Check if we have room for more positions
@@ -332,12 +344,14 @@ public partial class CurvesStrategy : MainStrategy
 		if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 
 	    {      // Get current signal values
+	    	    DebugFreezePrint("BuildNewSignal signal evaluation START");
 	            double currentBullStrength = CurvesV2Service.CurrentBullStrength;
 	            double currentBearStrength = CurvesV2Service.CurrentBearStrength;
              msg =  "C ";
 				
 			        if (CurvesV2Service.SignalsAreFresh && (CurvesV2Service.CurrentSubtype == patternSubtypesPicker.ToString() || patternSubtypesPicker == patternSubtypes.All))
 			        {
+			        	DebugFreezePrint("Fresh signals found - evaluating");
 			      
 						msg = "D";
 			            // Enhanced logging to debug signal values
@@ -349,8 +363,9 @@ public partial class CurvesStrategy : MainStrategy
 								
 							
 				            		// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && IsRising(EMA4))
+						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && VWAP1[0] < EMA3[0])//&& IsRising(EMA3) && IsRising(VWAP1))
 						            {
+										DebugFreezePrint("LONG signal generated");
 										Print($"[LONG] RawScore {CurvesV2Service.CurrentRawScore:F2}");
 										
 										
@@ -358,6 +373,8 @@ public partial class CurvesStrategy : MainStrategy
 							                thisSignal.newSignal = FunctionResponses.EnterLong;
 											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
 											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+											thisSignal.stopModifier = CurvesV2Service.CurrentStopModifier;
+											thisSignal.pullbackModifier = CurvesV2Service.CurrentPullbackModifier;
 											return thisSignal;
 									}
 									
@@ -370,14 +387,17 @@ public partial class CurvesStrategy : MainStrategy
 
 								
 			
-						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && IsFalling(EMA4))
+						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && VWAP1[0] > EMA3[0] )//&& IsFalling(EMA3)  && IsFalling(VWAP1))
 						            {
+										DebugFreezePrint("SHORT signal generated");
 										Print($"[SHORT] RawScore {CurvesV2Service.CurrentRawScore:F2}");
 																		
 										ThrottleAll = Times[0][0];
 							            thisSignal.newSignal = FunctionResponses.EnterShort;
 										thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
 										thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+										thisSignal.stopModifier = CurvesV2Service.CurrentStopModifier;
+										thisSignal.pullbackModifier = CurvesV2Service.CurrentPullbackModifier;
 										return thisSignal;
 									}
 									
@@ -395,10 +415,12 @@ public partial class CurvesStrategy : MainStrategy
 		        
 	    }
 		//Print("[DEBUG] BuildNewSignal: No signals generated");
+		DebugFreezePrint("CurvesStrategy BuildNewSignal END - No signals");
 	    return thisSignal;
 		}
 		catch (Exception ex)
 		{
+			DebugFreezePrint($"ERROR in CurvesStrategy BuildNewSignal: {ex.Message}");
 			NinjaTrader.Code.Output.Process($"Error in BuildNewSignal: {ex.Message} + {msg}", PrintTo.OutputTab1); 
 			 return thisSignal;
 		}
@@ -523,6 +545,11 @@ public partial class CurvesStrategy : MainStrategy
 					DefaultThreshold = 0.65,        // More relaxed for backtesting
 					EmaRibbon = 0.70,               // Lower threshold for more EMA matches
 					SensitiveEmaRibbon = 0.73       // Lower threshold for sensitive patterns
+				},
+				// NEW: Add risk management for dynamic stops (minimal config)
+				RiskManagement = new RiskManagementConfig
+				{
+					MaxTolerance = 100.0            // Just flag that risk management is enabled
 				}
 			};
 			

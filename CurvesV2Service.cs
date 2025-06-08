@@ -146,6 +146,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double? MaxThresholdPenalty { get; set; }
         public double? AtmosphericThreshold { get; set; }
         public CosineSimilarityThresholds CosineSimilarityThresholds { get; set; }
+        
+        // NEW: Risk Management Configuration
+        public RiskManagementConfig RiskManagement { get; set; }
     }
 
     public class CosineSimilarityThresholds
@@ -153,6 +156,31 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double? DefaultThreshold { get; set; }
         public double? EmaRibbon { get; set; }
         public double? SensitiveEmaRibbon { get; set; }
+    }
+
+    // NEW: Risk Management Configuration
+    public class RiskManagementConfig
+    {
+        public double MaxTolerance { get; set; } = 100.0;        // $100 max stop
+        public double DefaultStopPct { get; set; } = 0.60;       // 60% default
+        public double DefaultPullbackPct { get; set; } = 0.20;   // 20% default
+        public Dictionary<string, PatternRiskConfig> PatternPreferences { get; set; } = new Dictionary<string, PatternRiskConfig>();
+        public ScalingFactors ScalingFactors { get; set; } = new ScalingFactors();
+    }
+
+    public class PatternRiskConfig
+    {
+        public double StopPct { get; set; }
+        public double PullbackPct { get; set; }
+        public bool ConfidenceScaling { get; set; } = true;
+    }
+
+    public class ScalingFactors
+    {
+        public double HighConfidenceBoost { get; set; } = 1.1;    // 10% looser stops for high confidence
+        public double LowConfidencePenalty { get; set; } = 0.8;   // 20% tighter stops for low confidence
+        public double HighConfluenceBoost { get; set; } = 1.2;    // 20% more patient exits for confluence
+        public double LowConfluencePenalty { get; set; } = 0.8;   // 20% quicker exits for low confluence
     }
 
     public class CurvesV2Service : IDisposable
@@ -213,6 +241,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			public double effectiveScore { get; set;}
 			public double rawScore { get; set;}
 			public DtwMatchData dtwMatch { get; set; } // Add DTW match data
+			
+			// NEW: Dynamic risk management modifiers
+			public double stopModifier { get; set; }    // Percentage of max tolerance for stop loss (0.45 = 45%)
+			public double pullbackModifier { get; set; } // Percentage for pullback exits (0.20 = 20%)
 		}
 		
 		// Add a new property to get Signal Pool URL
@@ -226,6 +258,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public static double CurrentConfluenceScore { get; private set; }
 		public static double CurrentEffectiveScore { get; private set; }
 		public static double CurrentRawScore { get; private set; }
+        public static double CurrentStopModifier { get; private set; }
+        public static double CurrentPullbackModifier { get; private set; }
 		public static string CurrentPatternType { get; private set; }
         public static string PatternName { get; private set; }
         public static DateTime LastSignalTimestamp { get; private set; }
@@ -275,6 +309,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // Add mapping for entry signal IDs to pattern IDs
         private readonly Dictionary<string, string> entrySignalToPatternId = new Dictionary<string, string>();
+        
+        // Reference to MainStrategy's MasterSimulatedStops collection for accurate position tracking
+        private List<simulatedStop> MasterSimulatedStops;
+
+        // Method to set the reference to MainStrategy's MasterSimulatedStops collection
+        public void SetMasterSimulatedStops(List<simulatedStop> masterSimulatedStops)
+        {
+            this.MasterSimulatedStops = masterSimulatedStops;
+        }
 
         // Thread-safe method to get pattern ID for an entry signal
         public bool TryGetPatternId(string entrySignalId, out string patternId)
@@ -465,20 +508,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 // Return true if at least one service responded
                 bool anySuccess = results.Any(r => r);
-                if (anySuccess)
-                {
-                    Log($"[HEARTBEAT] Sent to services (Success: {results.Count(r => r)}/{results.Length})");
-                }
-                else
-                {
-                    Log($"[HEARTBEAT] All services failed to respond");
-                }
-                
                 return anySuccess;
             }
             catch (Exception ex)
             {
-                Log($"[ERROR] Heartbeat failed: {ex.Message}");
                 return false;
             }
         }
@@ -514,7 +547,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             catch (Exception ex)
             {
-                Log($"[ERROR] Synchronous heartbeat failed: {ex.Message}");
                 return false;
             }
         }
@@ -542,7 +574,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 catch (Exception ex)
                 {
                     // Silently handle heartbeat errors - don't let them affect trading
-                    Log($"[HEARTBEAT] Background error: {ex.Message}");
                 }
             });
             
@@ -869,7 +900,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                      close = close,
                      volume = volume,
                      timeframe = timeframe,
-                    symbol = instrument
+                     symbol = instrument
                 };
                 
                 string jsonPayload = JsonConvert.SerializeObject(payloadObject);
@@ -930,13 +961,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if (concurrentRequests >= MAX_CONCURRENT_REQUESTS)
 				return false;
 
-			// Reset values immediately (optimistic)
-			CurrentOppositionStrength = 0;
-			CurrentConfluenceScore = 0;
-			CurrentRawScore = 0;
-			CurrentEffectiveScore = 0;
-			CurrentPatternId = null;
-			
+			if(useRemoteService == false)
+			{
+				// Reset values immediately (optimistic)
+				CurrentOppositionStrength = 0;
+				CurrentConfluenceScore = 0;
+				CurrentRawScore = 0;
+				CurrentEffectiveScore = 0;
+				CurrentPatternId = null;
+			}
 			try
 			{
 				// Pre-build endpoint once (avoid StringBuilder overhead)
@@ -945,7 +978,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				// Increment counter and fire-and-forget
 				Interlocked.Increment(ref concurrentRequests);
-				
+				//Log($" Requested {endpoint}");
 				// TRUE fire-and-forget - no blocking
 				Task.Run(async () => {
 					HttpResponseMessage response = null;
@@ -960,11 +993,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 						if (response.IsSuccessStatusCode)
 						{
+							
 							string responseText = await response.Content.ReadAsStringAsync();
 							var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
 							lastSPJSON = responseText;
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
 							{
+								Log($" Request Success {responseText}");
 								// Quick categorization without complex LINQ
 								double bullScore = 0, bearScore = 0;
 								var firstSignal = signalPoolResponse.signals[0];
@@ -993,12 +1028,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 								CurrentOppositionStrength = signalPoolResponse.signals.Max(s => s.oppositionStrength);
 								CurrentConfluenceScore = signalPoolResponse.signals.Max(s => s.confluenceScore);
 								CurrentEffectiveScore = signalPoolResponse.signals.Max(s => s.effectiveScore);
-								CurrentRawScore = signalPoolResponse.signals.Max(s => s.rawScore);
+								CurrentStopModifier = signalPoolResponse.signals.Max(s => s.stopModifier);
+                                CurrentPullbackModifier = signalPoolResponse.signals.Max(s => s.pullbackModifier);
+                                CurrentRawScore = signalPoolResponse.signals.Max(s => s.rawScore);
+                                
 								LastSignalTimestamp = DateTime.UtcNow;
 								CurrentContextId = "signal-" + DateTime.Now.Ticks;
 							}
 							else
 							{
+								Log($" Request Not Success");
 								// Reset on no signals
 								CurrentPatternType = null;
 								CurrentSubtype = null;
@@ -1205,6 +1244,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             CurrentConfluenceScore = 0;
             CurrentEffectiveScore = 0;
 			CurrentRawScore = 0;
+            CurrentStopModifier = 0;
+            CurrentPullbackModifier = 0;
             CurrentDivergenceScore = 0;
             CurrentBarsSinceEntry = 0;
             CurrentShouldExit = false;
@@ -1426,7 +1467,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Use endpoint URL pointing to MatchingEngine service Thompson routes
                 string endpoint = $"{meServiceUrl}/api/thompson/record-pattern-performance";
-                
+              
                 // Serialize the record to JSON
                 string jsonPayload = JsonConvert.SerializeObject(recordWithStrategy);
                 using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
@@ -1646,8 +1687,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // Register a position for divergence tracking
+        // Enhanced registration with entry price and direction for Dynamic Risk Alignment
+        public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null)
+        {
+            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast);
+        }
+
+        // Legacy registration method for compatibility
         public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
+        {
+            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, 0.0, "long", null);
+        }
+
+        // Core registration method with full Dynamic Risk Alignment data
+        private async Task<bool> RegisterPositionWithDataAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice, string direction, double[] originalForecast)
         {
             if (IsDisposed()) return false;
 
@@ -1674,14 +1727,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Convert timestamp to ISO format
                     string isoTimestamp = entryTimestamp.ToUniversalTime().ToString("o");
                     
-                    // Create the request payload
+                    // Create the request payload for Dynamic Risk Alignment System
                     var requestPayload = new
                     {
-                        strategyId = sessionID,  // NEW: Add sessionID as strategyId
+                        strategyId = sessionID,  // Session ID for tracking
                         entrySignalId = entrySignalId,
                         patternUuid = patternUuid,
                         instrument = instrument,
-                        positionEntryTimestamp = isoTimestamp
+                        entryTimestamp = isoTimestamp,
+                        entryPrice = entryPrice, // Actual entry price from strategy
+                        direction = direction, // Actual direction from strategy  
+                        originalForecast = originalForecast ?? new double[] { }, // Forecast from Curved Prediction Service
+                        marketContext = new { // Current market context
+                            timestamp = isoTimestamp,
+                            sessionId = sessionID
+                        }
                     };
                     
                     // Log details on first attempt
@@ -1708,10 +1768,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                         
                         if (response.IsSuccessStatusCode)
                         {
-                            Log($"[DIVERGENCE] Successfully registered position {entrySignalId}");
+                            Log($"[DYNAMIC-RISK] Successfully registered position {entrySignalId} for intelligent risk tracking");
                             
                             // Add a small delay after registration to let the server process 
-                            // This is especially helpful in backtest mode where things happen very quickly
                             await Task.Delay(100);
                             
                             // Add to local registry
@@ -1779,7 +1838,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             return false;
         }
 
-        // Synchronous wrapper for RegisterPositionAsync
+        // Enhanced synchronous registration with entry price and direction
+        public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                return RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log($"[DYNAMIC-RISK] Error in enhanced RegisterPosition: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Legacy synchronous wrapper for compatibility
         public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
         {
             if (IsDisposed()) return false;
@@ -1791,38 +1866,47 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             catch (Exception ex)
             {
-                Log($"[DIVERGENCE] Error in RegisterPosition synchronous method: {ex.Message}");
+                Log($"[DYNAMIC-RISK] Error in RegisterPosition synchronous method: {ex.Message}");
                 return false;
             }
         }
 
         // Check divergence score for a registered position with threshold parameter
+		// UPDATED: Now uses Dynamic Risk Alignment System with binary scoring (0 or 1)
 		public double CheckDivergence(string entrySignalId)
 		{
-		    if (IsDisposed()) return -9999999;
-		    
-		    // Return cached value if available - this is now purely a cache lookup
-		    if (divergenceScores.ContainsKey(entrySignalId))
-		    {
-		        return divergenceScores[entrySignalId];
-		    }
-		    
-		    return 0; // Return default if not cached
+		    return CheckDivergence(entrySignalId, 0.0);
 		}
 
-		// Async version for updating divergence scores - call this during BarsInProgress = 1
+		// NEW: Overloaded method that accepts currentPrice
+		public double CheckDivergence(string entrySignalId, double currentPrice)
+		{
+		    try
+		    {
+		        return CheckDivergenceAsync(entrySignalId, currentPrice).GetAwaiter().GetResult();
+		    }
+		    catch
+		    {
+		        return 0;
+		    }
+		}
+
 		public async Task<double> CheckDivergenceAsync(string entrySignalId)
+		{
+		    return await CheckDivergenceAsync(entrySignalId, 0.0);
+		}
+
+		// NEW: Overloaded method that accepts currentPrice  
+		public async Task<double> CheckDivergenceAsync(string entrySignalId, double currentPrice)
 		{
 		    if (IsDisposed()) return -9999999;
 		    
-		   
 		    // Check if we already have a pending request for this entry
 		    Task<double> pendingTask = null;
 		    lock (divergenceLock)
 		    {
 		        if (pendingDivergenceRequests.ContainsKey(entrySignalId))
 		        {
-		            // Get the pending task reference while inside the lock
 		            pendingTask = pendingDivergenceRequests[entrySignalId];
 		        }
 		    }
@@ -1833,8 +1917,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        return await pendingTask;
 		    }
 		    
-		    // Create and cache the request task
-		    var requestTask = PerformDivergenceRequestAsync(entrySignalId);
+		    // Create and cache the request task for Dynamic Risk Alignment with currentPrice
+		    var requestTask = PerformDynamicRiskRequestAsync(entrySignalId, currentPrice);
 		    
 		    lock (divergenceLock)
 		    {
@@ -1856,12 +1940,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		}
 
-		// Private method to perform the actual HTTP request
-		private async Task<double> PerformDivergenceRequestAsync(string entrySignalId)
+		// UPDATED: Dynamic Risk Alignment with forecast recalculation and 3-strike rule
+		// Returns binary divergence score from intelligent risk assessment
+		private async Task<double> PerformDynamicRiskRequestAsync(string entrySignalId, double currentPrice = 0.0)
 		{
 		    try
 		    {
 		        string endpoint = $"{meServiceUrl}/api/positions/{entrySignalId}/divergence";
+		        
+		        // Add currentPrice parameter if provided
+		        if (currentPrice > 0)
+		        {
+		            endpoint += $"?currentPrice={currentPrice}";
+		        }
+		        
 		        using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
 		        {
 		            var response = await client.GetAsync(endpoint, timeoutCts.Token);
@@ -1873,21 +1965,37 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                
 		                if (divergenceResponse != null)
 		                {
-		                    // Update all values from the new adaptive API response
-		                    CurrentDivergenceScore = divergenceResponse.divergenceScore;
+		                    // Update static properties for compatibility
+		                    CurrentDivergenceScore = divergenceResponse.divergenceScore; // Now 0 or 1
 		                    CurrentBarsSinceEntry = divergenceResponse.barsSinceEntry;
-		                    CurrentShouldExit = divergenceResponse.shouldExit;
-		                    CurrentConsecutiveBars = divergenceResponse.consecutiveBars;
-		                    CurrentConfirmationBarsRequired = divergenceResponse.confirmationBarsRequired;
+		                    CurrentShouldExit = divergenceResponse.shouldExit; // Now based on binary score
+		                    CurrentConsecutiveBars = divergenceResponse.consecutiveBars; // Strike count
+		                    CurrentConfirmationBarsRequired = divergenceResponse.confirmationBarsRequired; // Max strikes
 		                    
-		                    // Store the divergence score for caching
+		                    // Cache binary divergence score (0 = continue, 1 = exit)
 		                    divergenceScores[entrySignalId] = CurrentDivergenceScore;
-		                    Log($"[DIVERGENCE] divergence for {entrySignalId}: {CurrentDivergenceScore}, thompsonScore {divergenceResponse.thompsonScore}");
+		                    
+		                    // Log with accurate interpretation - use shouldExit from API response, not just score
+		                    string action = CurrentShouldExit ? "EXIT" : "CONTINUE";
+		                    string priceInfo = currentPrice > 0 ? $", Price=${currentPrice:F2}" : "";
+		                    
+		                    // Log any score/shouldExit mismatches for debugging
+		                    if (CurrentDivergenceScore == 0 && CurrentShouldExit)
+		                    {
+		                        Log($"[DYNAMIC-RISK] {entrySignalId}: Score={CurrentDivergenceScore} ({action}){priceInfo}, " +
+		                            $"Strikes={CurrentConsecutiveBars}/{CurrentConfirmationBarsRequired}, " +
+		                            $"ThompsonScore={divergenceResponse.thompsonScore:F3} [SCORE-EXIT-MISMATCH]");
+		                    }
+		                    else
+		                    {
+		                        Log($"[DYNAMIC-RISK] {entrySignalId}: Score={CurrentDivergenceScore} ({action}){priceInfo}, " +
+		                            $"Strikes={CurrentConsecutiveBars}/{CurrentConfirmationBarsRequired}, " +
+		                            $"ThompsonScore={divergenceResponse.thompsonScore:F3}");
+		                    }
 		            
-		                    // ADDED: Cache Thompson score from divergence response
+		                    // Cache Thompson score from Dynamic Risk response
 		                    if (divergenceResponse.thompsonScore >= 0 && divergenceResponse.thompsonScore <= 1)
 		                    {
-		                        // Use the stored pattern ID mapping instead of extraction
 		                        string patternId = null;
 		                        lock (divergenceLock)
 		                        {
@@ -1897,15 +2005,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        if (!string.IsNullOrEmpty(patternId))
 		                        {
 		                            thompsonScores[patternId] = divergenceResponse.thompsonScore;
-		                            //Log($"[THOMPSON] Cached score for {patternId}: {divergenceResponse.thompsonScore:F3}");
 		                        }
 		                    }
+		                    
+		                    return CurrentDivergenceScore; // Return binary score (0 or 1)
 		                }
 		            }
 		            else if (response.StatusCode != System.Net.HttpStatusCode.NotFound)
 		            {
-		                // Only log errors that aren't "not found" (which is expected for new positions)
-		                Log($"[DIVERGENCE] Failed to check divergence for {entrySignalId}: {response.StatusCode}");
+		                Log($"[DYNAMIC-RISK] Failed to check risk for {entrySignalId}: {response.StatusCode}");
 		            }
 		        }
 		    }
@@ -1914,11 +2022,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        // Don't log timeout/cancellation exceptions as they're expected
 		        if (!(ex is TaskCanceledException || ex is OperationCanceledException))
 		        {
-		            Log($"[DIVERGENCE] Error checking divergence for {entrySignalId}: {ex.Message}");
+		            Log($"[DYNAMIC-RISK] Error checking risk for {entrySignalId}: {ex.Message}");
 		        }
 		    }
 		    
-		    return 0; // Default value if request fails
+		    return 0; // Default: continue (no exit signal)
 		}
 
         // Helper method to extract pattern ID from entry signal ID
@@ -1946,30 +2054,44 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Batch method to update divergence for all active positions - call this once per bar
-        public async Task UpdateAllDivergenceScoresAsync()
+        public async Task UpdateAllDivergenceScoresAsync(double currentPrice = 0.0)
         {
-            if (IsDisposed() || activePositions.Count == 0) return;
+            // Use MasterSimulatedStops instead of activePositions to get actual open positions
+            if (IsDisposed() || MasterSimulatedStops == null || MasterSimulatedStops.Count == 0) return;
+            
+            //logger?.Invoke($"[DEBUG DIVERGENCE] UpdateAllDivergenceScoresAsync START - {MasterSimulatedStops.Count} positions");
             
             var updateTasks = new List<Task>();
             
-            // Create tasks for all active positions
-            foreach (var entrySignalId in activePositions.Keys.ToList())
+            // Create tasks for all positions in MasterSimulatedStops (actual open positions)
+            foreach (var simStop in MasterSimulatedStops.ToList())
             {
-                updateTasks.Add(CheckDivergenceAsync(entrySignalId));
+                if (!string.IsNullOrEmpty(simStop.EntryOrderUUID))
+                {
+                    //logger?.Invoke($"[DEBUG DIVERGENCE] Creating task for position: {simStop.EntryOrderUUID}");
+                    updateTasks.Add(CheckDivergenceAsync(simStop.EntryOrderUUID, currentPrice));
+                }
             }
+            
+            //logger?.Invoke($"[DEBUG DIVERGENCE] About to await {updateTasks.Count} tasks with 10s timeout");
             
             // Wait for all updates to complete (with reasonable timeout)
             try
             {
                 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
                 {
+                    //logger?.Invoke($"[DEBUG DIVERGENCE] Starting Task.WhenAll...");
                     await Task.WhenAll(updateTasks).ConfigureAwait(false);
+                    //logger?.Invoke($"[DEBUG DIVERGENCE] Task.WhenAll completed successfully");
                 }
             }
             catch (Exception ex)
             {
+                //logger?.Invoke($"[DEBUG DIVERGENCE] ERROR in Task.WhenAll: {ex.Message}");
                 Log($"[DIVERGENCE] Error updating batch divergence scores: {ex.Message}");
             }
+            
+            //logger?.Invoke($"[DEBUG DIVERGENCE] UpdateAllDivergenceScoresAsync END");
         }
 
         // Deregister a position when it's closed

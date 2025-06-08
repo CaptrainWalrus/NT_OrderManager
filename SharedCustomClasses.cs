@@ -776,7 +776,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public string patternId { get; set; }
 			public double divergence { get; set; }
 			public double maxDivergence { get; set; }
-
+			public bool hasScaledIn { get; set; }
+			public double pullbackModifier { get; set; }
+			public double stopModifier { get; set; }
 			public bool isEntryRegisteredDTW { get; set; }
 			public DateTime? forceExitTimestamp { get; set; } // Added to track when exit was flagged
 
@@ -815,6 +817,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public FunctionResponses newSignal { get; set; }
 			public string patternSubType { get; set; }
 			public string patternId { get; set; }
+			public double stopModifier { get; set; }
+			public double pullbackModifier { get; set; }
 			
 		}
 		
@@ -832,7 +836,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public string SignalContextId { get; set; } // Added for pattern performance timeline
 		}
 		
-		
+		public class OrderActionResult 
+	    {
+			public int accountEntryQuantity  { get; set; }
+			public OrderAction OA { get; set; } 
+			public signalPackage signalPackageParam { get; set; }
+			public string appendSignal { get; set; }
+			public int thisBar { get; set; }
+			public OrderType orderType { get; set; }
+			public patternFunctionResponse builtSignal  { get; set; }
+
+	      
+	    }
 
 	
 		
