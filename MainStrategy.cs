@@ -408,7 +408,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				Description									= @"Management of order handling and responses to entry signals, logic for exits";
 				Name										= "OrganizedStrategy_MainStrategy";
-				Calculate									= Calculate.OnBarClose;
+				Calculate									= Calculate.OnPriceChange;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
 				IsExitOnSessionCloseStrategy				= true;
@@ -1095,73 +1095,74 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				}
 			}
 			DebugFreezePrint("About to enter second eventLock for UpdateOrderStats");
-		
-
-			lock (eventLock)
+			/// RE ENTRY ONLY 1x max per bar
+			if(IsFirstTickOfBar)
 			{
-				OrderActionResultList.Clear();
-			    foreach (var simStop in MasterSimulatedStops)
-			    {
-			        try
-			        {
-			            msg = "MasterSimulatedStops 1";
-			      
-			            OrderActionResult exitAction = UpdateOrderStats(simStop);
-			            
-			            // Only add actions that need to be executed
-			            if (exitAction != null && exitAction.accountEntryQuantity > 0)
-			            {
-			                OrderActionResultList.Add(exitAction);
-			            }
-			            
-			        }
-			        catch (Exception ex)
-			        {
-			            Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
-			        }
-			    }
-			}
-			
-			if(OrderActionResultList.Count() > 0)
-			{
-				int totalAccountQuantityX = getAllcustomPositionsCombined();
-			
-			    // Check if we have room to scale for ANY actions
-			    if(totalAccountQuantityX+strategyDefaultQuantity <= strategyMaxQuantity && 
-			       totalAccountQuantityX+strategyDefaultQuantity <= (accountMaxQuantity) && 
-			       getAllcustomPositionsCombined() < strategyMaxQuantity)
-			    {
-					int limit = strategyMaxQuantity - getAllcustomPositionsCombined();
-			        // Execute scale-in actions
-			        for(int i = 0; i < limit; i++)
-			        {
-			            var action = OrderActionResultList[i];
-			            
-			            EntryLimitFunctionLite(
-			                action.accountEntryQuantity, 
-			                action.OA, 
-			                action.signalPackageParam, 
-			                action.appendSignal, 
-			                action.thisBar, 
-			                action.orderType, 
-			                action.builtSignal
-			            );
-			            BackBrush = Brushes.DarkBlue;
-			            Print($"[SCALE-IN] Executed entry for action {i+1}/{OrderActionResultList.Count()}");
-						break;
-			        }
+				lock (eventLock)
+				{
 					OrderActionResultList.Clear();
-			    }
-			    else
-			    {
-			        // No room to scale - execute exits instead
-			        Print($"[NO-ROOM] Portfolio full, executing exits for {OrderActionResultList.Count()} signals");
-			        // TODO: Add exit logic here if needed
-			    }
-			}
+				    foreach (var simStop in MasterSimulatedStops)
+				    {
+				        try
+				        {
+				            msg = "MasterSimulatedStops 1";
+				      
+				            OrderActionResult exitAction = UpdateOrderStats(simStop);
+				            
+				            // Only add actions that need to be executed
+				            if (exitAction != null && exitAction.accountEntryQuantity > 0)
+				            {
+				                OrderActionResultList.Add(exitAction);
+				            }
+				            
+				        }
+				        catch (Exception ex)
+				        {
+				            Print($"[ERROR] Error updating stats for simulated stop: {ex.Message} + {msg}");
+				        }
+				    }
+				}
+				
+				if(OrderActionResultList.Count() > 0)
+				{
+					int totalAccountQuantityX = getAllcustomPositionsCombined();
+				
+				    // Check if we have room to scale for ANY actions
+				    if(totalAccountQuantityX+strategyDefaultQuantity <= strategyMaxQuantity && 
+				       totalAccountQuantityX+strategyDefaultQuantity <= (accountMaxQuantity) && 
+				       getAllcustomPositionsCombined() < strategyMaxQuantity)
+				    {
+						int limit = strategyMaxQuantity - getAllcustomPositionsCombined();
+				        // Execute scale-in actions
+				        for(int i = 0; i < limit; i++)
+				        {
+				            var action = OrderActionResultList[i];
+				            
+				            EntryLimitFunctionLite(
+				                action.accountEntryQuantity, 
+				                action.OA, 
+				                action.signalPackageParam, 
+				                action.appendSignal, 
+				                action.thisBar, 
+				                action.orderType, 
+				                action.builtSignal
+				            );
+				            BackBrush = Brushes.DarkBlue;
+				            Print($"[SCALE-IN] Executed entry for action {i+1}/{OrderActionResultList.Count()}");
+							break;
+				        }
+						OrderActionResultList.Clear();
+				    }
+				    else
+				    {
+				        // No room to scale - execute exits instead
+				        Print($"[NO-ROOM] Portfolio full, executing exits for {OrderActionResultList.Count()} signals");
+				        // TODO: Add exit logic here if needed
+				    }
+				}
 			
 			DebugFreezePrint("MasterSimulatedStops processing COMPLETE");
-			
+			}
 	
 		}
 		
@@ -1356,8 +1357,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			DebugFreezePrint("BuildNewSignal returned");
 			msg = "after BuildNewSignal";
 			//Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
-			
-			if(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
+			if(builtSignal.newSignal == FunctionResponses.NoAction)
+			{
+				///no signal
+				return;
+			}
+			if(lastActionBar < CurrentBars[0] && totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
 				
 				DebugFreezePrint("Signal processing START");

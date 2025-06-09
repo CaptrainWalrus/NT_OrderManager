@@ -118,7 +118,14 @@ public partial class CurvesStrategy : MainStrategy
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
 		{
-			UseRemoteService = false;
+			if(IsInStrategyAnalyzer)
+			{
+				UseRemoteService = false;
+			}
+			else if(!IsInStrategyAnalyzer)
+			{
+				UseRemoteService = true;
+			}
 			Print($"CurvesStrategy.OnStateChange: State.Historical UseRemoteService {UseRemoteService}");
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
@@ -186,17 +193,19 @@ public partial class CurvesStrategy : MainStrategy
 					return;
 				}
 			}
-			if(CurrentBars[0] % 60 == 0)
+			if(IsInStrategyAnalyzer && CurrentBars[0] % 12 == 0)
 			{
-			Print($"{Time[0]}");
+			 Print($"{Time[0]}");
 			}
 			DebugFreezePrint("Heartbeat check");
 			// In OnBarUpdate or a timer
 			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
 			{
-			    Print("Heartbeat, now truly fire-and-forget");
+			    //Print("Heartbeat, now truly fire-and-forget");
 			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
-			    Print("Heartbeat call returned - strategy continues");
+				
+				Print($" Last Heartbeat : {curvesService.lastHeartbeat}, Current Time == {{Time[0]}}");
+			    //Print("Heartbeat call returned - strategy continues");
 			}
 			DebugFreezePrint("Heartbeat completed");
 						
@@ -256,7 +265,7 @@ public partial class CurvesStrategy : MainStrategy
 			// Log connection status periodically
 			CurvesV2Service.CurrentContextId = null;
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
-			if (isConnected && BarsInProgress == 0)
+			if (isConnected && BarsInProgress == 0 && IsFirstTickOfBar)
 			{
 				DebugFreezePrint("Connected bar processing START");
 				//Print($"{Time[0]} isConnected, SEND");

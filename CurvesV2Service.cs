@@ -355,7 +355,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Add heartbeat tracking
-        private DateTime lastHeartbeat = DateTime.MinValue;
+        public DateTime lastHeartbeat = DateTime.MinValue;
         private const int HEARTBEAT_INTERVAL_SECONDS = 30; // Send heartbeat every 30 seconds
 
         // Constructor
