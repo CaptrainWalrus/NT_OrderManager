@@ -213,6 +213,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private ClientWebSocket webSocket;
         private bool webSocketConnected = false;
         public int ErrorCounter = 0;
+        private DateTime webSocketConnectStartTime = DateTime.MinValue;
         // Static properties for signal data
         		
 		// Add this new class to represent Signal Pool responses
@@ -269,7 +270,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public static bool SignalsAreFresh => (DateTime.Now - LastSignalTimestamp).TotalSeconds < 30;
         
         // Add DTW Service URL for divergence tracking
-        private readonly string meServiceUrl = "http://localhost:5000"; // Adjust port as needed
+        private readonly string meServiceUrl = "https://matching-engine-service.onrender.com";// "http://localhost:5000"; // Adjust port as needed
         
         // Divergence tracking properties
         public static double CurrentDivergenceScore { get; private set; } = 0;
@@ -357,6 +358,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Add heartbeat tracking
         public DateTime lastHeartbeat = DateTime.MinValue;
         private const int HEARTBEAT_INTERVAL_SECONDS = 30; // Send heartbeat every 30 seconds
+        
+        // Strategy state tracking for conditional sync/async behavior
+        private bool isHistoricalMode = false;
+        private readonly object stateLock = new object();
+
+        private readonly object barSendLock = new object();
 
         // Constructor
         public CurvesV2Service(CurvesV2Config config, Action<string> logger = null)
@@ -470,12 +477,48 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return isHealthy;
                 }
                 }
+            catch (TaskCanceledException)
+            {
+                bool wasDisposed; 
+                lock(disposeLock) { wasDisposed = disposed; }
+                if (!wasDisposed) {
+                   Log($"[WARN] Health check timed out - service may be unavailable");
+                }
+                // In historical mode, return true to allow backtest to continue
+                if (IsHistoricalMode())
+                {
+                    Log("[INFO] Historical mode: Continuing despite health check timeout");
+                    return true;
+                }
+                return false;
+            }
+            catch (HttpRequestException httpEx)
+            {
+                bool wasDisposed; 
+                lock(disposeLock) { wasDisposed = disposed; }
+                if (!wasDisposed) {
+                   Log($"[WARN] Health check failed - HTTP error: {httpEx.Message}");
+                }
+                // In historical mode, return true to allow backtest to continue
+                if (IsHistoricalMode())
+                {
+                    Log("[INFO] Historical mode: Continuing despite HTTP error");
+                    return true;
+                }
+                return false;
+            }
                 catch (Exception ex)
                 {
                 bool wasDisposed; 
                 lock(disposeLock) { wasDisposed = disposed; }
                 if (!wasDisposed) {
                    Log($"[ERROR] Health check failed: {ex.GetType().Name} - {ex.Message}");
+                }
+                // In historical mode, return true to allow backtest to continue
+                if (IsHistoricalMode())
+                {
+                    Log("[INFO] Historical mode: Continuing despite health check error");
+                    return true;
                 }
                 return false;
             }
@@ -537,13 +580,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Synchronous heartbeat method
+        // FIRE-AND-FORGET VERSION: SendHeartbeat - Non-blocking heartbeat
         public bool SendHeartbeat(bool useRemoteService = false)
         {
             if (IsDisposed()) return false;
             
             try
             {
-                return SendHeartbeatAsync(useRemoteService).GetAwaiter().GetResult();
+                // Fire-and-forget heartbeat in background
+                Task.Run(async () => {
+                    try
+                    {
+                        await SendHeartbeatAsync(useRemoteService);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Silently handle heartbeat errors - don't let them affect trading
+                    }
+                });
+                
+                // Return success immediately (fire-and-forget)
+                return true;
             }
             catch (Exception ex)
             {
@@ -617,16 +674,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                 using (StringContent content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) 
                 {
-                    // BLOCKING CALL
-                    response = client.PostAsync(endpoint, content, timeoutCts.Token).GetAwaiter().GetResult();
+                    // FIX: Use ConfigureAwait(false) to prevent deadlocks
+                    response = client.PostAsync(endpoint, content, timeoutCts.Token).ConfigureAwait(false).GetAwaiter().GetResult();
                 }
 
                 Log($"[DEBUG] SendBarSync: Received status {response.StatusCode} for {barData.Instrument}");
 
                 string responseContent = ""; // Read content regardless of status code for logging
                 try { 
-                    // BLOCKING CALL
-                    responseContent = response.Content.ReadAsStringAsync().GetAwaiter().GetResult(); 
+                    // FIX: Use ConfigureAwait(false) to prevent deadlocks
+                    responseContent = response.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult(); 
                 }
                 catch { /* Ignore read errors */ }
 
@@ -869,7 +926,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		/// send currentbars for Qdrant
         // Ultra-simple bar sender that TRULY never blocks - MODIFIED FOR DEBUG: ALWAYS USE HTTP
-        public bool SendBarFireAndForget(bool useRemoteService,string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
+        public bool SendBarFireAndForget(bool useRemoteService, string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m", string serviceName = "SendBarFireAndForget")
         {
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
 		    return false;
@@ -877,7 +934,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Check if we're at the concurrent request limit
             if (concurrentRequests >= MAX_CONCURRENT_REQUESTS)
             {
-                // Drop the request to prevent overwhelming the system
+                // Log when we hit the limit to help diagnose connection pool exhaustion
+                Log($"[CONNECTION POOL] Hit max concurrent requests ({MAX_CONCURRENT_REQUESTS}) - dropping request for {instrument} [SERVICE: {serviceName}]");
                 return false;
             }
                 
@@ -908,8 +966,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Increment concurrent request counter
                 Interlocked.Increment(ref concurrentRequests);
                 
-                // Use HttpClient for better connection management
-                Task.Run(async () => {
+                // Diagnostic logging for connection monitoring
+                if (concurrentRequests > MAX_CONCURRENT_REQUESTS / 2)
+                {
+                    Log($"[CONNECTIONS] Active: {concurrentRequests}/{MAX_CONCURRENT_REQUESTS}");
+                }
+                
+                // Create the task but with a safety timeout wrapper
+                var sendTask = Task.Run(async () => {
                             try
                             {
                                 if (IsDisposed() || IsShuttingDown()) return;
@@ -939,11 +1003,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                         Interlocked.Decrement(ref concurrentRequests);
                             }
                 });
+                
+                // Add a safety timeout to prevent indefinite hangs
+                Task.Run(async () => {
+                    await Task.Delay(5000); // Wait 5 seconds
+                    if (!sendTask.IsCompleted)
+                    {
+                        Log($"[ERROR] Bar send operation timed out after 5s - possible connection pool exhaustion for {instrument}");
+                        // Force decrement if the task is hung
+                        Interlocked.Decrement(ref concurrentRequests);
+                            }
+                });
                     
                     return true;
             }
             catch (Exception ex)
             {
+                Interlocked.Decrement(ref concurrentRequests); // Ensure we decrement on exception
                 Log($"[DEBUG HTTP] SendBarFireAndForget: Unexpected error for {instrument}: {ex.Message}");
                 return false;
             }
@@ -980,7 +1056,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				Interlocked.Increment(ref concurrentRequests);
 				//Log($" Requested {endpoint}");
 				// TRUE fire-and-forget - no blocking
-				Task.Run(async () => {
+				var checkTask = Task.Run(async () => {
 					HttpResponseMessage response = null;
 					try
 					{
@@ -999,7 +1075,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							lastSPJSON = responseText;
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
 							{
-								Log($" Request Success {responseText}");
+								//Log($" Request Success {responseText}");
 								// Quick categorization without complex LINQ
 								double bullScore = 0, bearScore = 0;
 								var firstSignal = signalPoolResponse.signals[0];
@@ -1067,6 +1143,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 					}
 				});
 				
+				// Add a safety timeout to prevent indefinite hangs
+				Task.Run(async () => {
+					await Task.Delay(5000); // Wait 5 seconds
+					if (!checkTask.IsCompleted)
+					{
+						Log($"[ERROR] Signal check operation timed out after 5s - possible connection pool exhaustion");
+						// Force decrement if the task is hung
+						Interlocked.Decrement(ref concurrentRequests);
+					}
+				});
+				
 				return true;
 			}
 			catch (Exception ex)
@@ -1084,60 +1171,117 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Synchronously send a bar and wait for confirmation
         public bool SendBarSync(string instrument, DateTime timestamp, double open, double high, double low, double close, double volume, string timeframe = "1m")
         {
-            NinjaTrader.Code.Output.Process("SendBarSync: Entered method", PrintTo.OutputTab1);
-            
+            lock (barSendLock)
+            {
             if (IsDisposed() || string.IsNullOrEmpty(instrument))
             {
-                NinjaTrader.Code.Output.Process($"SendBarSync: Exiting early - Disposed={IsDisposed()}, Instrument null/empty={string.IsNullOrEmpty(instrument)}", PrintTo.OutputTab1);
                 return false;
             }
             
             try
             {
-                NinjaTrader.Code.Output.Process($"SendBarSync: Sending bar for {instrument} @ {timestamp}", PrintTo.OutputTab1);
-                
-                // Check if WebSocket is connected
-                NinjaTrader.Code.Output.Process($"SendBarSync: Checking WebSocket state (Current: {webSocket?.State})", PrintTo.OutputTab1);
-                if (webSocket == null || webSocket.State != WebSocketState.Open)
-                {
-                    NinjaTrader.Code.Output.Process("SendBarSync: WebSocket not connected, attempting to connect...", PrintTo.OutputTab1);
+                    // SIMPLIFIED: In historical mode, send via HTTP synchronously with minimal logging
+                    if (IsHistoricalMode())
+                    {
+                        // Create bar data object
+                        var barData = new
+                        {
+                            instrument = instrument,
+                            timestamp = DateTimeToUnixMs(timestamp),
+                            open = open,
+                            high = high,
+                            low = low,
+                            close = close,
+                            volume = volume,
+                            timeframe = timeframe
+                        };
+                        
+                        // Send synchronously via HTTP with very short timeout
+                        string jsonPayload = JsonConvert.SerializeObject(barData);
+                        using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
+                        {
+                            try
+                            {
+                                // Use very short timeout for backtesting to avoid delays
+                                using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+                                {
+                                    var response = client.PostAsync($"{baseUrl}/api/bars", content, cts.Token).ConfigureAwait(false).GetAwaiter().GetResult();
+                                    response.Dispose();
+                                    return true; // Always return true in historical mode
+                                }
+                            }
+                            catch
+                            {
+                                // Silently fail in historical mode - service unavailable is expected
+                                return true;
+                            }
+                        }
+                    }
                     
+                    // IMPORTANT: Return early for historical mode to avoid WebSocket logic below
+                    if (IsHistoricalMode())
+                    {
+                        return true;
+                    }
+                    
+                    // Real-time mode: Use WebSocket (existing complex logic)
+                    // CRITICAL FIX: Skip if already connecting to prevent overlapping connection attempts
+                    if (webSocket != null && webSocket.State == WebSocketState.Connecting)
+                    {
+                        // Check if connection has been attempting for too long (10 seconds)
+                        if (webSocketConnectStartTime != DateTime.MinValue && 
+                            (DateTime.Now - webSocketConnectStartTime).TotalSeconds > 10)
+                        {
+                            webSocket.Dispose();
+                            webSocket = null;
+                            webSocketConnected = false;
+                            webSocketConnectStartTime = DateTime.MinValue;
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    }
+                    
+                    // Handle aborted/closed connections - reset and retry
+                    if (webSocket != null && (webSocket.State == WebSocketState.Aborted || webSocket.State == WebSocketState.Closed))
+                    {
+                        webSocket.Dispose();
+                        webSocket = null;
+                        webSocketConnected = false;
+                    }
+                    
+                    if (webSocket == null || webSocket.State != WebSocketState.Open)
+                    {
                     // Try to connect asynchronously, but wait synchronously
-                    NinjaTrader.Code.Output.Process("SendBarSync: Calling ConnectWebSocketAsync...", PrintTo.OutputTab1);
+                        webSocketConnectStartTime = DateTime.Now; // Track when we started connecting
                     var connectTask = ConnectWebSocketAsync();
-                    NinjaTrader.Code.Output.Process("SendBarSync: Waiting for ConnectWebSocketAsync (max 3s)...", PrintTo.OutputTab1);
+                        
+                        // FIXED: This blocking wait is still needed for SendBarSync method functionality
                     if (!connectTask.Wait(3000)) // Wait up to 3 seconds with timeout
                     {
-                        NinjaTrader.Code.Output.Process("SendBarSync: WebSocket connection timed out", PrintTo.OutputTab1);
                         return false;
                     }
-                    NinjaTrader.Code.Output.Process($"SendBarSync: ConnectWebSocketAsync completed (Result={connectTask.Result})", PrintTo.OutputTab1);
                     
-                    if (!connectTask.Result)
+                        // FIXED: Remove blocking .Result calls - Use .NET Framework compatible check
+                        bool connectionSuccess = connectTask.Status == TaskStatus.RanToCompletion;
+                        
+                        if (!connectionSuccess)
                     {
-                        NinjaTrader.Code.Output.Process("SendBarSync: Failed to connect WebSocket after wait", PrintTo.OutputTab1);
                         return false;
                     }
-                    // Add a small delay after connection to allow stabilization
-                    NinjaTrader.Code.Output.Process("SendBarSync: Delaying 50ms after connection...", PrintTo.OutputTab1);
-                    Task.Delay(50).Wait(); 
-                    NinjaTrader.Code.Output.Process("SendBarSync: Delay complete", PrintTo.OutputTab1);
                 }
                 
                 // Ensure WebSocket is open after connection attempt
-                NinjaTrader.Code.Output.Process($"SendBarSync: Re-checking WebSocket state (Current: {webSocket?.State})", PrintTo.OutputTab1);
                 if (webSocket == null || webSocket.State != WebSocketState.Open)
                 {
-                    NinjaTrader.Code.Output.Process($"SendBarSync: WebSocket still not open after connection attempt. State: {webSocket?.State}", PrintTo.OutputTab1);
                     return false;
                 }
                 
                 // Convert timestamp to milliseconds since epoch
-                NinjaTrader.Code.Output.Process("SendBarSync: Converting timestamp...", PrintTo.OutputTab1);
                 long epochMs = (long)(timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds;
                 
                 // Create bar message
-                NinjaTrader.Code.Output.Process("SendBarSync: Creating bar message object...", PrintTo.OutputTab1);
                 var barMessage = new
                 {
                     type = "bar",
@@ -1152,50 +1296,35 @@ namespace NinjaTrader.NinjaScript.Strategies
                 };
                 
                 // Serialize to JSON
-                NinjaTrader.Code.Output.Process("SendBarSync: Serializing message to JSON...", PrintTo.OutputTab1);
                 string jsonMessage = JsonConvert.SerializeObject(barMessage);
                 byte[] messageBytes = Encoding.UTF8.GetBytes(jsonMessage);
                 
                 // Send synchronously with timeout
-                NinjaTrader.Code.Output.Process("SendBarSync: Calling SendAsync on WebSocket...", PrintTo.OutputTab1);
                 var sendTask = webSocket.SendAsync(
                     new ArraySegment<byte>(messageBytes),
                     WebSocketMessageType.Text,
                     true,
-                    CancellationToken.None // No cancellation token needed for synchronous Wait
+                        CancellationToken.None
                 );
-                NinjaTrader.Code.Output.Process("SendBarSync: Waiting for SendAsync (max 2s)...", PrintTo.OutputTab1);
                 
                 // Wait for completion with timeout
                 if (sendTask.Wait(2000)) // 2 second timeout
                 {
-                    NinjaTrader.Code.Output.Process($"SendBarSync: Successfully sent bar for {instrument}", PrintTo.OutputTab1);
                     return true;
                 }
                 else
                 {
-                    NinjaTrader.Code.Output.Process("SendBarSync: Timeout sending bar data", PrintTo.OutputTab1);
                     return false;
                 }
             }
             catch (AggregateException aggEx) when (aggEx.InnerException is OperationCanceledException)
             {
-                NinjaTrader.Code.Output.Process("SendBarSync: Task cancelled (likely timeout)", PrintTo.OutputTab1);
                 return false;
             }
             catch (Exception ex)
             {
-                NinjaTrader.Code.Output.Process($"SendBarSync ERROR: {ex.GetType().Name} - {ex.Message}", PrintTo.OutputTab1);
-                // Log inner exception if present
-                if (ex.InnerException != null)
-                {
-                    NinjaTrader.Code.Output.Process($"  Inner Exception: {ex.InnerException.GetType().Name} - {ex.InnerException.Message}", PrintTo.OutputTab1);
-                }
                 return false;
             }
-            finally
-            {
-                NinjaTrader.Code.Output.Process("SendBarSync: Exiting method.", PrintTo.OutputTab1);
             }
         }
        
@@ -1296,7 +1425,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Connect with timeout
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
                 {
+                    try
+                {
                     await webSocket.ConnectAsync(new Uri(wsEndpoint), timeoutCts.Token);
+                    }
+                    catch (Exception connectEx)
+                    {
+                        // Connection failed - ensure WebSocket is cleaned up
+                        Log($"WebSocket ConnectAsync failed: {connectEx.Message}");
+                        throw; // Re-throw to be caught by outer catch
+                    }
                 }
                 
                 webSocketConnected = true;
@@ -1311,6 +1449,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 Log($"WebSocket connection error: {ex.Message}");
                 webSocketConnected = false;
+                
+                // CRITICAL: Clean up the failed WebSocket to prevent stuck "Connecting" state
+                if (webSocket != null)
+                {
+                    try { webSocket.Dispose(); } catch { }
+                    webSocket = null;
+                }
+                webSocketConnectStartTime = DateTime.MinValue;
+                
                 return false;
             }
         }
@@ -1671,18 +1818,45 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // Synchronous wrapper for SendMatchingConfigAsync
+        // Synchronous wrapper for SendMatchingConfigAsync - CONDITIONAL SYNC/ASYNC
         public bool SendMatchingConfig(string instrument, MatchingConfig config)
         {
             if (IsDisposed()) return false;
             
             try
             {
-                return SendMatchingConfigAsync(instrument, config).GetAwaiter().GetResult();
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls for sequential bar processing
+                    Log($"[HISTORICAL-SYNC] SendMatchingConfig starting sync call for {instrument}");
+                    var result = SendMatchingConfigAsync(instrument, config).ConfigureAwait(false).GetAwaiter().GetResult();
+                    Log($"[HISTORICAL-SYNC] SendMatchingConfig completed sync call for {instrument}");
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Use fire-and-forget to prevent freezes
+                    Task.Run(async () => {
+                        try
+                        {
+                            Log($"[REALTIME-ASYNC] SendMatchingConfig starting background call for {instrument}");
+                            await SendMatchingConfigAsync(instrument, config);
+                            Log($"[REALTIME-ASYNC] SendMatchingConfig completed background call for {instrument}");
             }
             catch (Exception ex)
             {
-                Log($"[ERROR] Error in SendMatchingConfig synchronous method: {ex.Message}");
+                            Log($"[REALTIME-ASYNC] SendMatchingConfig background call failed for {instrument}: {ex.Message}");
+                        }
+                    });
+                    
+                    // Return success immediately (fire-and-forget)
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[CONDITIONAL] Error in SendMatchingConfig synchronous method: {ex.Message}");
                 return false;
             }
         }
@@ -1838,35 +2012,88 @@ namespace NinjaTrader.NinjaScript.Strategies
             return false;
         }
 
-        // Enhanced synchronous registration with entry price and direction
+        // Enhanced synchronous registration with entry price and direction - CONDITIONAL SYNC/ASYNC
         public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null)
         {
             if (IsDisposed()) return false;
             
             try
             {
-                return RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast).GetAwaiter().GetResult();
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls for sequential bar processing
+                    Log($"[HISTORICAL-SYNC] RegisterPosition starting sync call for {entrySignalId}");
+                    var result = RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast).ConfigureAwait(false).GetAwaiter().GetResult();
+                    Log($"[HISTORICAL-SYNC] RegisterPosition completed sync call for {entrySignalId}");
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Use fire-and-forget to prevent freezes
+                    Task.Run(async () => {
+                        try
+                        {
+                            Log($"[REALTIME-ASYNC] RegisterPosition starting background registration for {entrySignalId}");
+                            await RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast);
+                            Log($"[REALTIME-ASYNC] RegisterPosition completed background registration for {entrySignalId}");
             }
             catch (Exception ex)
             {
-                Log($"[DYNAMIC-RISK] Error in enhanced RegisterPosition: {ex.Message}");
+                            Log($"[REALTIME-ASYNC] RegisterPosition background registration failed for {entrySignalId}: {ex.Message}");
+                        }
+                    });
+                    
+                    // Return success immediately (fire-and-forget)
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[CONDITIONAL] Error in enhanced RegisterPosition: {ex.Message}");
                 return false;
             }
         }
 
-        // Legacy synchronous wrapper for compatibility
+        // Legacy synchronous wrapper for compatibility - CONDITIONAL SYNC/ASYNC
         public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
         {
             if (IsDisposed()) return false;
             
             try
             {
-                // Call the async method and wait for it to complete
-                return RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp).GetAwaiter().GetResult();
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls for sequential bar processing
+                    Log($"[HISTORICAL-SYNC] Legacy RegisterPosition starting sync call for {entrySignalId}");
+                    var result = RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp).ConfigureAwait(false).GetAwaiter().GetResult();
+                    Log($"[HISTORICAL-SYNC] Legacy RegisterPosition completed sync call for {entrySignalId}");
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Use fire-and-forget to prevent freezes
+                    Task.Run(async () => {
+                        try
+                        {
+                            Log($"[REALTIME-ASYNC] Legacy RegisterPosition starting background registration for {entrySignalId}");
+                            await RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp);
+                            Log($"[REALTIME-ASYNC] Legacy RegisterPosition completed background registration for {entrySignalId}");
             }
             catch (Exception ex)
             {
-                Log($"[DYNAMIC-RISK] Error in RegisterPosition synchronous method: {ex.Message}");
+                            Log($"[REALTIME-ASYNC] Legacy RegisterPosition background registration failed for {entrySignalId}: {ex.Message}");
+                        }
+                    });
+                    
+                    // Return success immediately (fire-and-forget)
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[CONDITIONAL] Error in RegisterPosition synchronous method: {ex.Message}");
                 return false;
             }
         }
@@ -1878,15 +2105,50 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    return CheckDivergence(entrySignalId, 0.0);
 		}
 
-		// NEW: Overloaded method that accepts currentPrice
+		// NEW: Overloaded method that accepts currentPrice - CONDITIONAL SYNC/ASYNC
 		public double CheckDivergence(string entrySignalId, double currentPrice)
 		{
 		    try
 		    {
-		        return CheckDivergenceAsync(entrySignalId, currentPrice).GetAwaiter().GetResult();
-		    }
-		    catch
-		    {
+				// CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+				if (IsHistoricalMode())
+				{
+					// BACKTESTING: Use synchronous calls for sequential bar processing
+					Log($"[HISTORICAL-SYNC] CheckDivergence starting sync call for {entrySignalId}");
+					var result = CheckDivergenceAsync(entrySignalId, currentPrice).ConfigureAwait(false).GetAwaiter().GetResult();
+					Log($"[HISTORICAL-SYNC] CheckDivergence completed sync call for {entrySignalId}");
+					return result;
+				}
+				else
+				{
+					// REAL-TIME: Use fire-and-forget to prevent freezes
+					// Return cached value if available
+					if (divergenceScores.ContainsKey(entrySignalId))
+					{
+						return divergenceScores[entrySignalId];
+					}
+					
+					// Fire-and-forget async update in background
+					Task.Run(async () => {
+						try
+						{
+							Log($"[REALTIME-ASYNC] CheckDivergence starting background update for {entrySignalId}");
+							await CheckDivergenceAsync(entrySignalId, currentPrice);
+							Log($"[REALTIME-ASYNC] CheckDivergence completed background update for {entrySignalId}");
+						}
+						catch (Exception ex)
+						{
+							Log($"[REALTIME-ASYNC] CheckDivergence background update failed for {entrySignalId}: {ex.Message}");
+						}
+					});
+					
+					// Return cached value or default
+					return divergenceScores.ContainsKey(entrySignalId) ? divergenceScores[entrySignalId] : 0;
+				}
+			}
+			catch (Exception ex)
+			{
+				Log($"[CONDITIONAL] CheckDivergence failed for {entrySignalId}: {ex.Message}");
 		        return 0;
 		    }
 		}
@@ -2027,6 +2289,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		    
 		    return 0; // Default: continue (no exit signal)
+		}
+
+        // Strategy state management for conditional sync/async behavior
+        public void SetStrategyState(bool isHistorical)
+        {
+            lock (stateLock)
+            {
+                isHistoricalMode = isHistorical;
+            }
+            Log($"[STATE] Strategy state set to: {(isHistorical ? "Historical (Sync)" : "Real-time (Async)")}");
+        }
+        
+        public bool IsHistoricalMode()
+        {
+            lock (stateLock)
+            {
+                return isHistoricalMode;
+            }
 		}
 
         // Helper method to extract pattern ID from entry signal ID
@@ -2228,19 +2508,52 @@ namespace NinjaTrader.NinjaScript.Strategies
             return true;
         }
 
-        // Synchronous wrapper for DeregisterPositionAsync
+        // Synchronous wrapper for DeregisterPositionAsync - CONDITIONAL SYNC/ASYNC
         public bool DeregisterPosition(string entrySignalId, bool wasGoodExit = false, double finalDivergence = 0.0)
         {
             if (IsDisposed()) return false;
             
             try
             {
-                // Call the async method and wait for it to complete
-                return DeregisterPositionAsync(entrySignalId, wasGoodExit, finalDivergence).GetAwaiter().GetResult();
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls for sequential bar processing
+                    Log($"[HISTORICAL-SYNC] DeregisterPosition starting sync call for {entrySignalId}");
+                    var result = DeregisterPositionAsync(entrySignalId, wasGoodExit, finalDivergence).ConfigureAwait(false).GetAwaiter().GetResult();
+                    Log($"[HISTORICAL-SYNC] DeregisterPosition completed sync call for {entrySignalId}");
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Use fire-and-forget to prevent freezes
+                    // Immediately clean up local cache
+                    if (divergenceScores.ContainsKey(entrySignalId))
+                    {
+                        divergenceScores.Remove(entrySignalId);
+                    }
+                    
+                    // Fire-and-forget async deregistration in background
+                    Task.Run(async () => {
+                        try
+                        {
+                            Log($"[REALTIME-ASYNC] DeregisterPosition starting background deregistration for {entrySignalId}");
+                            await DeregisterPositionAsync(entrySignalId, wasGoodExit, finalDivergence);
+                            Log($"[REALTIME-ASYNC] DeregisterPosition completed background deregistration for {entrySignalId}");
             }
             catch (Exception ex)
             {
-                Log($"[DIVERGENCE] Error in DeregisterPosition synchronous method: {ex.Message}");
+                            Log($"[REALTIME-ASYNC] DeregisterPosition background deregistration failed for {entrySignalId}: {ex.Message}");
+                        }
+                    });
+                    
+                    // Return success immediately (fire-and-forget)
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[CONDITIONAL] Error in DeregisterPosition synchronous method: {ex.Message}");
                 return false;
             }
         }

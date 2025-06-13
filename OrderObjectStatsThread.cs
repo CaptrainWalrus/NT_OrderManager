@@ -181,7 +181,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			OrderActionResult action = new OrderActionResult();
 			string msg = "";
-
+			//Print($"UpdateOrderStats {simStop.EntryOrderUUID}");
 			try 
 			{
 				// ========== DEFINE ALL VALUES UPFRONT ==========
@@ -220,8 +220,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				double pullbackModifier = simStop.OrderRecordMasterLite.OrderSupplementals.pullbackModifier;
 				double maxLoss = microContractStoploss;
         
-        // DEBUG: Verify max loss calculation
-        //Print($"[MAXLOSS-CALC] {simStop.EntryOrderUUID.Substring(0,8)}: stopModifier={stopModifier:F2}, microContractStoploss={microContractStoploss:F2}, maxLoss={maxLoss:F2}");
+		        // DEBUG: Verify max loss calculation
+		        //Print($"[MAXLOSS-CALC] {simStop.EntryOrderUUID.Substring(0,8)}: stopModifier={stopModifier:F2}, microContractStoploss={microContractStoploss:F2}, maxLoss={maxLoss:F2}");
 				double pbMod = simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackPct > 0 ? simStop.OrderRecordMasterLite.PriceStats.OrderStatspullBackPct : 1;
 				double softProfitTarget = pbMod * softTakeProfitMult * quantity;
 				double hardProfitTarget = instrumentSeriesIndex == 3 ? standardContractTakeProfit * quantity : microContractTakeProfit * quantity;
@@ -233,20 +233,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								 getAllcustomPositionsCombined() < strategyMaxQuantity && 
 								 !hasScaledIn;
 				
-				        // Divergence info
-        string patternId = null;
-        curvesService.TryGetPatternId(simStop.EntryOrderUUID, out patternId);
-        double thompsonScoreModifier = 1;
-        if (!string.IsNullOrEmpty(patternId) && curvesService.thompsonScores.TryGetValue(patternId, out double score))
-        {
-            thompsonScoreModifier = score;
-        }
-		
-		
-   
-        // DEBUG: Log divergence and max loss values for comparison
-        //Print($"[DEBUG] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, thisRecordDivergence={thisRecordDivergence:F3}, dynamicDivergenceThreshold={dynamicDivergenceThreshold:F3}");
-       
+				// Divergence info
+		        string patternId = null;
+		        curvesService.TryGetPatternId(simStop.EntryOrderUUID, out patternId);
+		        double thompsonScoreModifier = 1;
+		        if (!string.IsNullOrEmpty(patternId) && curvesService.thompsonScores.TryGetValue(patternId, out double score))
+		        {
+		            thompsonScoreModifier = score;
+		        }
+				
+				
+		   
+		        // DEBUG: Log divergence and max loss values for comparison
+		        //Print($"[DEBUG] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, thisRecordDivergence={thisRecordDivergence:F3}, dynamicDivergenceThreshold={dynamicDivergenceThreshold:F3}");
+		       
 				
 				// Condition flags
 				bool isNewAllTimeHigh = currentProfit > allTimeHighProfit;
@@ -298,16 +298,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 				        // 2. DIVERGENCE CHECK (prioritize over max loss for earlier exits)
    			bool divergenceViolation = false;
+			double divergenceScore = 0;
     		if(curvesService.divergenceScores.ContainsKey(simStop.EntryOrderUUID))
 			{
 		        double dynamicDivergenceThreshold = (DivergenceThreshold);
-		        simStop.OrderRecordMasterLite.OrderSupplementals.divergence = curvesService.divergenceScores[simStop.EntryOrderUUID];
-				divergenceViolation = DivergenceSignalThresholds && curvesService.divergenceScores[simStop.EntryOrderUUID] > dynamicDivergenceThreshold && simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true;
+		        divergenceScore = curvesService.divergenceScores[simStop.EntryOrderUUID];
+		        simStop.OrderRecordMasterLite.OrderSupplementals.divergence = divergenceScore;
+				divergenceViolation = DivergenceSignalThresholds && divergenceScore > dynamicDivergenceThreshold && simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true;
 			}
 	        if (divergenceViolation && DivergenceSignalThresholds && currentProfit < -softProfitTarget)
 	        {
 	            try {
-	                Print($"[DIVERGENCE EXIT] {simStop.EntryOrderUUID}: DIV={curvesService.divergenceScores[simStop.EntryOrderUUID]:F3}, Profit=${currentProfit:F2}");
+	                Print($"[DIVERGENCE EXIT] {simStop.EntryOrderUUID}: DIV={divergenceScore:F3}, Profit=${currentProfit:F2}");
 	                
 	                if (isLong)
 	                {
@@ -350,11 +352,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	        {
 	            simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit = currentProfit;
 	        }
-	
+			
+			DebugFreezePrint($"[PROFIT CHECK] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, Max Loss is ${-maxLoss:F2}");
 	        // 4. MAX LOSS CHECK (after divergence)
 	        if (maxLossHit)
 	        {
-	            //Print($"[MAX LOSS EXIT] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, MaxLoss=${-maxLoss:F2} (divergence didn't trigger)");
+	            Print($"[MAX LOSS HIT] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, MaxLoss=${-maxLoss:F2} (divergence didn't trigger)");
 	            
 	            if (!statsUpdateQueue.Contains(simStop)) {
 	                statsUpdateQueue.Enqueue(simStop);
@@ -365,10 +368,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            
 	            if (isLong)
 	            {
+					Print("Exiting Long MLL");
 	                ExitLong(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
 	            }
 	            else
 	            {
+					Print("Exiting Short MLL");
 	                ExitShort(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
 	            }
 	            
@@ -382,10 +387,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					if (hardProfitTargetReached && TakeBigProfitEnabled)
 					{
+						DebugFreezePrint("FLAG TBPS / PBS");
 						thisSignalExitAction = isLong ? signalExitAction.TBPL : signalExitAction.TBPS;
 					}
 					else if (softProfitPullbackTarget && PullBackExitEnabled)
 					{
+						DebugFreezePrint("FLAG PBL / PBS");
 						thisSignalExitAction = isLong ? signalExitAction.PBL : signalExitAction.PBS;
 					}
 	
@@ -393,11 +400,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					if (thisSignalExitAction == signalExitAction.TBPL || thisSignalExitAction == signalExitAction.TBPS || thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS)
 					{
 						DateTime xMinutesSpacedGoal = StrategyLastScaleInTime.AddMinutes(entriesPerDirectionSpacingTime);
-						if(canScaleIn && Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0 )
+						if(canScaleIn && Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0)
 							   
 				             
 						{
 							// Scale in logic
+							DebugFreezePrint("SCALE IN TBPS / TBPL / PBL / PBS");
 							simStop.OrderRecordMasterLite.OrderSupplementals.hasScaledIn = true;
 							
 							action.accountEntryQuantity = strategyDefaultQuantity;
@@ -410,29 +418,31 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							action.signalPackageParam = simStop.OrderRecordMasterLite.OrderSupplementals.sourceSignalPackage;
 							action.thisBar = CurrentBars[0];
 							StrategyLastScaleInTime = Time[0]; ///no full order but will stop rapid-fire orders
-						}
-						else
-						{
+						//}
+					//	else
+						//{
 							// Exit logic
 							simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
 							simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));
 							
 							if (isLong)
 							{
+								DebugFreezePrint($"Just exit long TBPL");
 								ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 							}
 							else
 							{
+								DebugFreezePrint($"Just exit Short TBPS");
 								ExitShort(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 							}
 							
 							simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 							simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
 							MastersimulatedStopToDelete.Enqueue(simStop);
+							return action;
 						}
 					}
-					else if (thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS ||
-							 thisSignalExitAction == signalExitAction.FUNCL || thisSignalExitAction == signalExitAction.FUNCS ||
+					else if (thisSignalExitAction == signalExitAction.FUNCL || thisSignalExitAction == signalExitAction.FUNCS ||
 							 thisSignalExitAction == signalExitAction.AGEL || thisSignalExitAction == signalExitAction.AGES)
 					{
 						simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
@@ -440,20 +450,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						
 						if (isLong)
 						{
+							DebugFreezePrint("EXIT OTHER LONG");
 							ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 						}
 						else
 						{
+							DebugFreezePrint("EXIT OTHER SHORT");
 							ExitShort(1, 1, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 						}
 						
 						simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 						simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
 						MastersimulatedStopToDelete.Enqueue(simStop);
+						return action;
 					}
 	
 					
-				
+			
 			return action;
 			}
 			catch (Exception ex)

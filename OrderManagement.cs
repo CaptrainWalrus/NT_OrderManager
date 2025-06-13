@@ -807,7 +807,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											{
 												sumProfit += profit;
 												patternIdProfits[orderRecordMaster.OrderSupplementals.patternId] += profit;
-												NinjaTrader.Code.Output.Process($"{Time[0]} patternId  {orderRecordMaster.OrderSupplementals.patternId } > ${Math.Round(profit)}, total ${Math.Round(sumProfit)}", PrintTo.OutputTab2);
+												NinjaTrader.Code.Output.Process($"{Time[0]} [{orderRecordMaster.OrderSupplementals.thisSignalExitAction}] patternId  {orderRecordMaster.OrderSupplementals.patternId } > ${Math.Round(profit)}, total ${Math.Round(sumProfit)}", PrintTo.OutputTab2);
 
 											}
 											else patternIdProfits[orderRecordMaster.OrderSupplementals.patternId] = profit;
@@ -1154,7 +1154,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						lastActionBar = CurrentBars[0];
 					
 					 	// Add the signal to the open positions set
-						orderRecordMasterBuy.OrderSupplementals.SimulatedStop.isExitReady = true;
 					
 						///register
 						orderRecordMasterBuy.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(orderRecordMasterBuy.EntryOrderUUID,orderRecordMasterBuy.OrderSupplementals.patternId, orderRecordMasterBuy.EntryOrder.Instrument.FullName.Split(' ')[0],Time[0]);

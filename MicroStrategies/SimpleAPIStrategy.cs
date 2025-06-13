@@ -129,12 +129,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 signalThresholdBear = BearSignalThreshold;
                 ratioThreshold = SignalRatioThreshold;
 				
-				 if (!IsInStrategyAnalyzer)
+				 if (State != State.Historical)
 	            {
 	                AddDataSeries(BarsPeriodType.Tick, 150);
 	            }
 	            
-	            if (IsInStrategyAnalyzer)
+	            if (State == State.Historical)
 	            {
 	                AddDataSeries(Instrument.FullName, BarsPeriodType.Second, 30);
 	            }
@@ -245,7 +245,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Low[0],
                     Close[0],
                     Volume[0],
-                    IsInStrategyAnalyzer ? "backtest" : "1m"
+                    State == State.Historical ? "backtest" : "1m"
                 );
                 
                 // Check for signals

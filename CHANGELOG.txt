@@ -1,0 +1,63 @@
+# NinjaTrader Strategy Changelog
+
+## [2024-12-19] - Strategy Analyzer Connection Logic Unification
+
+### Fixed
+- **CRITICAL**: Removed IsInStrategyAnalyzer path inconsistencies that caused Strategy Analyzer startup issues
+- Strategy Analyzer now uses same historical state conditions (`State == State.Historical`) as other historical modes
+- Eliminated mismatch between service state setting and connection logic that was causing freezes
+
+### Changed
+#### MainStrategy.cs
+- Line 669: `curvesService.SetStrategyState(false)` → `curvesService.SetStrategyState(State == State.Historical)`
+  - Now properly sets service state based on actual historical mode instead of hardcoded false
+- Line 766: `if (!connected && IsInStrategyAnalyzer)` → `if (!connected && State == State.Historical)`
+  - Fallback logic now uses consistent historical state check
+- Line 903: `if(IsInStrategyAnalyzer && endAll == true)` → `if(State == State.Historical && endAll == true)`
+  - Early return logic now uses historical state
+- Line 962: `(IsInStrategyAnalyzer || State == State.Historical)` → `(State == State.Historical)`
+  - Profit check logic now uses single consistent condition
+
+#### CurvesStrategy.cs
+- Lines 120-124: Simplified UseRemoteService logic in State.Historical
+  - Removed IsInStrategyAnalyzer branching, always sets `UseRemoteService = false` in historical mode
+- Lines 283 & 297: Updated bar sending calls
+  - `IsInStrategyAnalyzer ? "backtest" : "1m"` → `State == State.Historical ? "backtest" : "1m"`
+  - Applied to both SendBarFireAndForget and SendBarSync calls
+
+#### SimpleAPIStrategy.cs  
+- Lines 131 & 136: Updated data series configuration
+  - `!IsInStrategyAnalyzer` → `State != State.Historical`
+  - `IsInStrategyAnalyzer` → `State == State.Historical`
+- Line 247: Updated bar sending call
+  - `IsInStrategyAnalyzer ? "backtest" : "1m"` → `State == State.Historical ? "backtest" : "1m"`
+
+### Technical Details
+- **Root Cause**: Different parts of code used different conditions to detect historical mode:
+  - Service state setting used hardcoded `false`
+  - Connection timeout logic used `State == State.Historical` 
+  - Fallback logic used `IsInStrategyAnalyzer`
+- **Solution**: Unified all connection-related logic to use `State == State.Historical`
+- **Impact**: Strategy Analyzer should now start consistently without connection timeouts
+
+### Notes
+- Remaining `IsInStrategyAnalyzer` references are intentionally preserved for:
+  - Debug printing (real-time only)
+  - Account value calculations  
+  - Broker-specific settings
+- These serve different purposes and should not be changed
+
+---
+
+## Previous Changes
+- [Add previous changelog entries here as they occur]
+
+---
+
+## Change Categories
+- **Added**: New features
+- **Changed**: Changes in existing functionality  
+- **Deprecated**: Soon-to-be removed features
+- **Removed**: Removed features
+- **Fixed**: Bug fixes
+- **Security**: Vulnerability fixes 

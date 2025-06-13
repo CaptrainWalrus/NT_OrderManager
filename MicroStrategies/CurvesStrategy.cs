@@ -73,7 +73,7 @@ public partial class CurvesStrategy : MainStrategy
 			// Defaults are set as per previous step
 			Description = "Curves strategy"; 
 			Name = "Curves"; 
-			Calculate = Calculate.OnPriceChange;
+			Calculate = Calculate.OnBarClose;
 			EntriesPerDirection = 1;
 			EntryHandling = EntryHandling.UniqueEntries;
 			IsExitOnSessionCloseStrategy = false;
@@ -118,14 +118,11 @@ public partial class CurvesStrategy : MainStrategy
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
 		{
-			if(IsInStrategyAnalyzer)
-			{
-				UseRemoteService = false;
-			}
-			else if(!IsInStrategyAnalyzer)
+			if(UseRemoteServiceParameter == true)
 			{
 				UseRemoteService = true;
 			}
+			
 			Print($"CurvesStrategy.OnStateChange: State.Historical UseRemoteService {UseRemoteService}");
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
@@ -155,10 +152,7 @@ public partial class CurvesStrategy : MainStrategy
 				
 				// 5. (Removed ProcessQueue setting since we're now using fire-and-forget)
 				
-				// 6. Force garbage collection to clean up lingering resources
-				Print("6. Running aggressive garbage collection");
-				GC.Collect(2, GCCollectionMode.Forced);
-				GC.WaitForPendingFinalizers();
+				
 				
 				Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
 				
@@ -170,7 +164,13 @@ public partial class CurvesStrategy : MainStrategy
 	////////////////////////////
 	protected override void OnBarUpdate()
 	{
-
+		// KILL SWITCH: Check for abort file
+		if (System.IO.File.Exists(@"C:\temp\kill_backtest.txt"))
+		{
+			Print("KILL SWITCH ACTIVATED - Aborting backtest");
+			return;
+		}
+		
 		DebugFreezePrint("CurvesStrategy OnBarUpdate START");
 		base.OnBarUpdate(); 
 		DebugFreezePrint("Base OnBarUpdate completed");
@@ -193,19 +193,15 @@ public partial class CurvesStrategy : MainStrategy
 					return;
 				}
 			}
-			if(IsInStrategyAnalyzer && CurrentBars[0] % 12 == 0)
-			{
-			 Print($"{Time[0]}");
-			}
+			
 			DebugFreezePrint("Heartbeat check");
 			// In OnBarUpdate or a timer
 			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
 			{
 			    //Print("Heartbeat, now truly fire-and-forget");
 			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
-				
-				Print($" Last Heartbeat : {curvesService.lastHeartbeat}, Current Time == {{Time[0]}}");
-			    //Print("Heartbeat call returned - strategy continues");
+			   // Print("Heartbeat call returned - strategy continues");
+			    if(State == State.Realtime) Print($" Last Heartbeat : {curvesService.lastHeartbeat}, Current Time == {Time[0]}");
 			}
 			DebugFreezePrint("Heartbeat completed");
 						
@@ -274,20 +270,38 @@ public partial class CurvesStrategy : MainStrategy
 				string instrumentCode = GetInstrumentCode();
 			
 				// 1. Simple, direct send of bar data - fire and forget
-				DebugFreezePrint("About to call SendBarFireAndForget");
-				bool barSent = curvesService.SendBarFireAndForget(
-					UseRemoteService,
-					instrumentCode,
-					Time[0],
-					Open[0],
-					High[0],
-					Low[0],
-					Close[0],
-					Volume[0],
-					IsInStrategyAnalyzer ? "backtest" : "1m"
-				);
-				DebugFreezePrint("SendBarFireAndForget completed");
-				//Print($"{Time[0]} : barSent {barSent}");
+				DebugFreezePrint("About to send bar (sync/async based on mode)");
+				if (State == State.Realtime)
+				{
+				    // Real-time: async/fire-and-forget
+				    bool barSent = curvesService.SendBarFireAndForget(
+				        UseRemoteService,
+				        instrumentCode,
+				        Time[0],
+				        Open[0],
+				        High[0],
+				        Low[0],
+				        Close[0],
+				        Volume[0],
+				        State == State.Historical ? "backtest" : "1m"
+				    );
+				    DebugFreezePrint("SendBarFireAndForget completed");
+				}
+				else
+				{
+				    // Backtest (Strategy Analyzer) or Historical (pre-realtime): sync/blocking
+				    bool barSent = curvesService.SendBarSync(
+				        instrumentCode,
+				        Time[0],
+				        Open[0],
+				        High[0],
+				        Low[0],
+				        Close[0],
+				        Volume[0],
+				        State == State.Historical ? "backtest" : "1m"
+				    );
+				    DebugFreezePrint("SendBarSync completed");
+				}
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
 				DebugFreezePrint("About to call CheckSignalsFireAndForget");
 				curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
@@ -463,16 +477,39 @@ public partial class CurvesStrategy : MainStrategy
 		return instrumentCode;
 	}
 
-	// Synchronous wrapper for SendHistoricalBarsAsync to prevent concurrent writes
+	// Hybrid synchronous wrapper for SendHistoricalBarsAsync
 	private bool SendHistoricalBarsSync(List<object> bars, string instrument)
 	{
 	    try
 	    {
-	        Print($"SendHistoricalBarsSync: Blocking until {bars.Count} bars are sent...");
-	        var task = curvesService.SendHistoricalBarsAsync(bars, instrument);
-	        bool result = task.GetAwaiter().GetResult();
-	        Print($"SendHistoricalBarsSync: Completed with result={result}");
-	        return result;
+	        // CONDITIONAL SYNC/ASYNC: Only block during backtesting (Historical Mode) 
+	        if (State == State.Historical)
+	        {
+	            // Historical Mode: Block for sequential processing 
+	            Print($"SendHistoricalBarsSync [HISTORICAL]: Blocking until {bars.Count} bars are sent...");
+	            var task = curvesService.SendHistoricalBarsAsync(bars, instrument);
+	            bool result = task.GetAwaiter().GetResult();
+	            Print($"SendHistoricalBarsSync [HISTORICAL]: Completed with result={result}");
+	            return result;
+	        }
+	        else
+	        {
+	            // Real-time Mode: Fire-and-forget to prevent freezes
+	            Print($"SendHistoricalBarsSync [REAL-TIME]: Fire-and-forget send of {bars.Count} bars...");
+	            Task.Run(async () =>
+	            {
+	                try
+	                {
+	                    await curvesService.SendHistoricalBarsAsync(bars, instrument).ConfigureAwait(false);
+	                    Print($"SendHistoricalBarsSync [REAL-TIME]: Background send completed successfully");
+	                }
+	                catch (Exception ex)
+	                {
+	                    Print($"SendHistoricalBarsSync [REAL-TIME]: Background send failed: {ex.Message}");
+	                }
+	            });
+	            return true; // Return immediately in real-time
+	        }
 	    }
 	    catch (Exception ex)
 	    {
