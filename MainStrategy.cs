@@ -373,7 +373,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[XmlIgnore]
 		public DateTime EndDate { get; private set; }
 
-
+		[NinjaScriptProperty]    
+		[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
+		public bool UseRemoteServiceParameter { get; set; }
 
 
 		/// <summary>
@@ -662,7 +664,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
 					
 				curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
-				
+				curvesService.useRemoteService = UseRemoteServiceParameter;
 				// Pass reference to MasterSimulatedStops for accurate position tracking
 				curvesService.SetMasterSimulatedStops(MasterSimulatedStops);
 				
@@ -998,7 +1000,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		        ExitActiveOrders(ExitOrderType.EOSC,signalExitAction.FE_EOD,false);
 				
 	    	}
-			Print("RETURN : HIT FE_EOD 1");
+			//Print("RETURN : HIT FE_EOD 1");
 
 			return;/// dont do more things
 		}
@@ -1268,7 +1270,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				{
 			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
 				}
-				Print("RETURN : HIT dailyProfitMaxLoss 1");
+				//Print("RETURN : HIT dailyProfitMaxLoss 1");
 				return;
 			}
 			if(dailyProfit < -dailyProfitMaxLoss)
@@ -1481,17 +1483,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				msg = "thisSignalPackage";
 				if (signalsOnly)
 						{
-							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Trending") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.Cyan); //forceDrawDebug("T",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Reversion") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.DodgerBlue);// forceDrawDebug("R",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Breakout") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.Blue); //forceDrawDebug("B",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "Consolidation") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.CornflowerBlue); //forceDrawDebug("C",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterLong && builtSignal.patternSubType == "") Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*5),Brushes.Gray);
+							if(newSignal == FunctionResponses.EnterLong) Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.Cyan); //forceDrawDebug("T",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
 
-							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Trending") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.HotPink);// forceDrawDebug("T",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Reversion") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Pink);//forceDrawDebug("R",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Breakout") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Salmon);//forceDrawDebug("B",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "Consolidation") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Fuchsia);//forceDrawDebug("C",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
-							if(newSignal == FunctionResponses.EnterShort && builtSignal.patternSubType == "") Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.Gray);
+
+							if(newSignal == FunctionResponses.EnterShort) Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.HotPink);// forceDrawDebug("T",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
+						
 							
 							
 							

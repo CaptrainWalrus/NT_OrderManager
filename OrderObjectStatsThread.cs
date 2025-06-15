@@ -395,7 +395,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						DebugFreezePrint("FLAG PBL / PBS");
 						thisSignalExitAction = isLong ? signalExitAction.PBL : signalExitAction.PBS;
 					}
-	
+					
+					
 					// 6. EXECUTE EXIT ACTIONS
 					if (thisSignalExitAction == signalExitAction.TBPL || thisSignalExitAction == signalExitAction.TBPS || thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS)
 					{
@@ -404,6 +405,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							   
 				             
 						{
+							
 							// Scale in logic
 							DebugFreezePrint("SCALE IN TBPS / TBPL / PBL / PBS");
 							simStop.OrderRecordMasterLite.OrderSupplementals.hasScaledIn = true;
@@ -418,9 +420,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							action.signalPackageParam = simStop.OrderRecordMasterLite.OrderSupplementals.sourceSignalPackage;
 							action.thisBar = CurrentBars[0];
 							StrategyLastScaleInTime = Time[0]; ///no full order but will stop rapid-fire orders
-						//}
-					//	else
-						//{
+						
+						}
+						else
+						{
 							// Exit logic
 							simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = thisSignalExitAction;
 							simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "stop @" + Math.Round(GetCurrentBid(instrumentSeriesIndex));

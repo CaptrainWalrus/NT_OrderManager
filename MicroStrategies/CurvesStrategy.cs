@@ -37,14 +37,17 @@ public partial class CurvesStrategy : MainStrategy
 	
 	private bool historicalBarsSent = false;
 	// Restore NinjaScript Properties
-	[NinjaScriptProperty]    
-	[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
-	public bool UseRemoteServiceParameter { get; set; }
+
+	
 	
 	public bool UseRemoteService = false;
 	
+	public DenoiseReversalIndicator DenoiseIndicator;
+ 
+	// Note: Price history no longer needed - ME service maintains its own 200-bar buffer
+	// private List<double> priceHistory = new List<double>(); // REMOVED - not needed
+	// private const int MAX_PRICE_HISTORY = 200; // REMOVED - ME service handles this
 
-	
 	private int stopTest = 0;
 
 	// Make the Signal class serializable
@@ -106,32 +109,31 @@ public partial class CurvesStrategy : MainStrategy
 		else if (State == State.Configure)
 		{
 			NinjaTrader.Code.Output.Process("CurvesStrategy.OnStateChange: State.Configure", PrintTo.OutputTab1);
+			// Super simple - just one parameter!
+			//if (IsInStrategyAnalyzer) DenoiseIndicator = DenoiseReversalIndicator("http://localhost:5000/api/orange-line/analyze",5,200,.6);
 		}
 		else if (State == State.DataLoaded) 
 		{   
 			Print("CurvesStrategy.OnStateChange: Handling State.DataLoaded");
 			// Initialize the service asynchronously
-			
+			//AddChartIndicator(DenoiseIndicator);
 		
 
 		}
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
 		{
-			if(UseRemoteServiceParameter == true)
-			{
-				UseRemoteService = true;
-			}
+			UseRemoteService = UseRemoteServiceParameter;
+			
 			
 			Print($"CurvesStrategy.OnStateChange: State.Historical UseRemoteService {UseRemoteService}");
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
 		else if (State == State.Realtime)
 		{
-			if(UseRemoteServiceParameter == true)
-			{
-				UseRemoteService = true;
-			}
+			
+			UseRemoteService = UseRemoteServiceParameter;
+			
 			Print($"CurvesStrategy.OnStateChange: State.Realtime UseRemoteService {UseRemoteService}");
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
@@ -303,12 +305,36 @@ public partial class CurvesStrategy : MainStrategy
 				    DebugFreezePrint("SendBarSync completed");
 				}
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
-				DebugFreezePrint("About to call CheckSignalsFireAndForget");
-				curvesService.CheckSignalsFireAndForget(UseRemoteService,Time[0],instrumentCode,null,OutlierScoreRequirement,effectiveScoreRequirement, null);
-				DebugFreezePrint("CheckSignalsFireAndForget completed");
 				double currentPrice = Close[0];  // Use the current bar's close price
 			    curvesService.UpdateAllDivergenceScoresAsync(currentPrice);
-				
+
+				/*// Get orange line data from ME service (no price data needed - ME already has it)
+			    if (curvesService != null &&BarsInProgress == 0)
+			    {
+			        // Request existing orange line data from ME service (no price data sent)
+			        curvesService.GetOrangeLineData("MGC", UseRemoteService);
+			        
+			        // Update the indicator's values from the service
+			        if (DenoiseIndicator != null)
+			        {
+			            DenoiseIndicator.lastDenoisedAvg = CurvesV2Service.CurrentOrangeLine;
+			            DenoiseIndicator.lastStdDev = CurvesV2Service.CurrentOrangeLineDeviation;
+			            DenoiseIndicator.lastSignal = CurvesV2Service.CurrentOrangeLineSignal;
+			            DenoiseIndicator.lastConfidence = CurvesV2Service.CurrentOrangeLineConfidence;
+			            
+						
+			            // Debug: Compare current price to orange line
+			            double priceDiff = Close[0] - CurvesV2Service.CurrentOrangeLine;
+			            if (CurvesV2Service.CurrentOrangeLineConfidence > 0.1) // Only log if significant difference
+			            {
+							Draw.Dot(this,$"{CurrentBars[0]}",true,0,CurvesV2Service.CurrentOrangeLine,Brushes.Gray);
+			                Print($"[ORANGE-LINE] Updated {Time[0]}: Line={CurvesV2Service.CurrentOrangeLine:F2}, Deviation={CurvesV2Service.CurrentOrangeLineDeviation:F2}, Signal={CurvesV2Service.CurrentOrangeLineSignal}, Confidence={CurvesV2Service.CurrentOrangeLineConfidence:P1}");
+
+							
+			            }
+			        }
+			    }*/
+					
 			}
 			
 			
@@ -352,7 +378,7 @@ public partial class CurvesStrategy : MainStrategy
 	    int totalPositions = getAllcustomPositionsCombined();
 	    // Check if we have room for more positions
 	    TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
-	
+
 	    
 	    
 	    // Critical safety limit - don't allow more than the max quantity
@@ -370,26 +396,34 @@ public partial class CurvesStrategy : MainStrategy
 	    	    DebugFreezePrint("BuildNewSignal signal evaluation START");
 	            double currentBullStrength = CurvesV2Service.CurrentBullStrength;
 	            double currentBearStrength = CurvesV2Service.CurrentBearStrength;
-             msg =  "C ";
+             
+				string instrumentCode = GetInstrumentCode();
 				
-			        if (CurvesV2Service.SignalsAreFresh && (CurvesV2Service.CurrentSubtype == patternSubtypesPicker.ToString() || patternSubtypesPicker == patternSubtypes.All))
+				DebugFreezePrint("About to call CheckSignalsSync (NEW SYNCHRONOUS VERSION)");
+				// NEW: Use synchronous version that blocks and returns score immediately
+				double score = curvesService.CheckSignalsSync(UseRemoteService, Time[0], instrumentCode, OutlierScoreRequirement, effectiveScoreRequirement);
+				DebugFreezePrint("CheckSignalsSync completed");
+				
+			        if (CurvesV2Service.SignalsAreFresh || score != 0) // Accept fresh signals OR immediate non-zero scores
 			        {
 			        	DebugFreezePrint("Fresh signals found - evaluating");
 			      
 						msg = "D";
 			            // Enhanced logging to debug signal values
-			           // Print($"[DEBUG] Signal details: Bull={currentBullStrength:F2}%, Bear={currentBearStrength:F2}%, PatternType={CurvesV2Service.CurrentPatternType}, PatternId={CurvesV2Service.CurrentPatternId}");
-				            if(currentBullStrength > currentBearStrength)
+			            Print($"[DEBUG] Signal details: Score={score:F2} PatternType={CurvesV2Service.CurrentPatternType}, PatternId={CurvesV2Service.CurrentPatternId}");
+				           
+						
+							if(score > 0)
 							{
-								//Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Bull={currentBullStrength}  [subtype] {CurvesV2Service.CurrentSubtype} ");
+								Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Score={score:F4} [subtype] {CurvesV2Service.CurrentSubtype} ");
 
 								
 							
 				            		// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && VWAP1[0] < EMA3[0])//&& IsRising(EMA3) && IsRising(VWAP1))
+						            if (score > OutlierScoreRequirement && IsRising(EMA3) && IsRising(VWAP1))
 						            {
 										DebugFreezePrint("LONG signal generated");
-										Print($"[LONG] RawScore {CurvesV2Service.CurrentRawScore:F2}");
+										Print($"[LONG] Score={score:F4}, RawScore={CurvesV2Service.CurrentRawScore:F4}");
 										
 										
 							                ThrottleAll = Times[0][0];
@@ -403,17 +437,17 @@ public partial class CurvesStrategy : MainStrategy
 									
 								
 				            }
-							if(currentBearStrength > currentBullStrength)
+							else if(score < 0)
 							{
 								
-								//Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Bear={currentBearStrength} [subtype] {CurvesV2Service.CurrentSubtype}");
+								Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Score={score:F4} [subtype] {CurvesV2Service.CurrentSubtype}");
 
 								
 			
-						            if (CurvesV2Service.CurrentRawScore > OutlierScoreRequirement && VWAP1[0] > EMA3[0] )//&& IsFalling(EMA3)  && IsFalling(VWAP1))
+						            if (Math.Abs(score) > OutlierScoreRequirement && IsFalling(EMA3)  && IsFalling(VWAP1))
 						            {
 										DebugFreezePrint("SHORT signal generated");
-										Print($"[SHORT] RawScore {CurvesV2Service.CurrentRawScore:F2}");
+										Print($"[SHORT] Score={score:F4}, RawScore={CurvesV2Service.CurrentRawScore:F4}");
 																		
 										ThrottleAll = Times[0][0];
 							            thisSignal.newSignal = FunctionResponses.EnterShort;
@@ -426,6 +460,7 @@ public partial class CurvesStrategy : MainStrategy
 									
 							
 							}
+						
 							else
 							{
 								//Print($"[DEBUG] SKIP: Bull={currentBullStrength:F2}% , Bear={currentBearStrength:F2}% |||| [confluenceScore] {CurvesV2Service.CurrentConfluenceScore} , [oppositionStrength] {CurvesV2Service.CurrentOppositionStrength} [effectiveScore] {CurvesV2Service.CurrentEffectiveScore:F2}, [rawScore] {CurvesV2Service.CurrentRawScore:F2}");
