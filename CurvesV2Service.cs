@@ -294,6 +294,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		public Dictionary<string,double> divergenceScores = new Dictionary<string,double>();
 		
+		// NEW: Separate dictionary for RF exit scores to avoid collisions
+		public Dictionary<string,double> rfExitScores = new Dictionary<string,double>();
+		
 		        // Add Thompson score caching
         public Dictionary<string,double> thompsonScores = new Dictionary<string,double>();
         
@@ -1010,7 +1013,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
 							{
-								Log($" Request Success {responseText}");
+								//Log($" Request Success {responseText}");
 								// Quick categorization without complex LINQ
 								double bullScore = 0, bearScore = 0;
 								var firstSignal = signalPoolResponse.signals[0];
@@ -1133,7 +1136,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 						if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0)
 						{
-							//Log($"[SYNC-SIGNALS] Found {signalPoolResponse.signals.Count} signals");
+							//Log($"[SYNC-SIGNALS] Found {responseText}");
 							
 							// Find the best signal by effective score
 							SignalPoolSignal bestSignal = null;
@@ -1469,6 +1472,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             CurrentOrangeLineSignal = "NONE";
             CurrentOrangeLineConfidence = 0.0;
             LastOrangeLineUpdate = DateTime.MinValue;
+            
+            // NEW: Reset RF exit data
+            CurrentRFExitScore = 0;
+            CurrentRFShouldExit = false;
+            CurrentRFExitReason = "";
+            CurrentRFConfidenceChange = 0;
+            LastRFExitUpdate = DateTime.MinValue;
             
             if (CurrentMatches != null)
                 CurrentMatches.Clear();
@@ -2326,6 +2336,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                                 RegistrationTimestamp = DateTime.Now
                             };
                             
+                            // NEW: Also register with RF service for RF-based exit monitoring
+                            try
+                            {
+                                bool rfRegistered = await RegisterRFExitPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, direction, entryPrice);
+                                if (rfRegistered)
+                                {
+                                    Log($"[RF-EXIT] Successfully registered position {entrySignalId} for RF exit monitoring");
+                                }
+                                else
+                                {
+                                    Log($"[RF-EXIT] Warning: Failed to register position {entrySignalId} for RF exit monitoring");
+                                }
+                            }
+                            catch (Exception rfEx)
+                            {
+                                Log($"[RF-EXIT] Error registering RF exit monitoring for {entrySignalId}: {rfEx.Message}");
+                                // Don't fail the overall registration if RF registration fails
+                            }
+                            
                             return true;
                         }
                         
@@ -2703,7 +2732,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // Batch method to update divergence for all active positions - call this once per bar
+        // ENHANCED: Batch method to update BOTH standard divergence AND RF exit scores - call this once per bar
         public async Task UpdateAllDivergenceScoresAsync(double currentPrice = 0.0)
         {
             // Use MasterSimulatedStops instead of activePositions to get actual open positions
@@ -2718,30 +2747,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (!string.IsNullOrEmpty(simStop.EntryOrderUUID))
                 {
-                    //logger?.Invoke($"[DEBUG DIVERGENCE] Creating task for position: {simStop.EntryOrderUUID}");
+                    //logger?.Invoke($"[DEBUG DIVERGENCE] Creating tasks for position: {simStop.EntryOrderUUID}");
+                    
+                    // 1. Standard divergence check (existing)
                     updateTasks.Add(CheckDivergenceAsync(simStop.EntryOrderUUID, currentPrice));
+                    
+                    // 2. NEW: RF divergence exit check
+                    updateTasks.Add(CheckRFDivergenceExitAsync(simStop.EntryOrderUUID, currentPrice));
                 }
             }
             
-            //logger?.Invoke($"[DEBUG DIVERGENCE] About to await {updateTasks.Count} tasks with 10s timeout");
+            //logger?.Invoke($"[DEBUG DIVERGENCE] About to await {updateTasks.Count} tasks (standard + RF) with 10s timeout");
             
             // Wait for all updates to complete (with reasonable timeout)
             try
             {
                 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
                 {
-                    //logger?.Invoke($"[DEBUG DIVERGENCE] Starting Task.WhenAll...");
+                    //logger?.Invoke($"[DEBUG DIVERGENCE] Starting Task.WhenAll for both divergence systems...");
                     await Task.WhenAll(updateTasks).ConfigureAwait(false);
-                    //logger?.Invoke($"[DEBUG DIVERGENCE] Task.WhenAll completed successfully");
+                    //logger?.Invoke($"[DEBUG DIVERGENCE] Task.WhenAll completed successfully for both systems");
                 }
             }
             catch (Exception ex)
             {
                 //logger?.Invoke($"[DEBUG DIVERGENCE] ERROR in Task.WhenAll: {ex.Message}");
-                Log($"[DIVERGENCE] Error updating batch divergence scores: {ex.Message}");
+                Log($"[DIVERGENCE] Error updating batch divergence scores (standard + RF): {ex.Message}");
             }
             
-            //logger?.Invoke($"[DEBUG DIVERGENCE] UpdateAllDivergenceScoresAsync END");
+            //logger?.Invoke($"[DEBUG DIVERGENCE] UpdateAllDivergenceScoresAsync END - Both systems updated");
         }
 
         // Deregister a position when it's closed
@@ -2811,12 +2845,31 @@ namespace NinjaTrader.NinjaScript.Strategies
                             {
                                 divergenceScores.Remove(entrySignalId);
                             }
+                            // NEW: Also clean up RF exit scores
+                            if(rfExitScores.ContainsKey(entrySignalId))
+                            {
+                                rfExitScores.Remove(entrySignalId);
+                            }
                             // Remove from local registry
                             if (activePositions.ContainsKey(entrySignalId))
                             {
                                 activePositions.Remove(entrySignalId);
                                 //Log($"[DIVERGENCE] Successfully deregistered position {entrySignalId} with wasGoodExit={wasGoodExit}, finalDivergence={finalDivergenceP}");
                             }
+                            
+                            // NEW: Also deregister from RF service (fire-and-forget to avoid blocking)
+                            Task.Run(async () => {
+                                try
+                                {
+                                    await DeregisterRFExitPositionAsync(entrySignalId, wasGoodExit);
+                                    Log($"[RF-EXIT] Successfully deregistered RF exit monitoring for {entrySignalId}");
+                                }
+                                catch (Exception rfEx)
+                                {
+                                    Log($"[RF-EXIT] Error deregistering RF exit monitoring for {entrySignalId}: {rfEx.Message}");
+                                    // Don't fail overall deregistration if RF deregistration fails
+                                }
+                            });
                             
                             return true;
                         }
@@ -2903,6 +2956,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         divergenceScores.Remove(entrySignalId);
                     }
+                    // NEW: Also clean up RF exit scores
+                    if (rfExitScores.ContainsKey(entrySignalId))
+                    {
+                        rfExitScores.Remove(entrySignalId);
+                    }
                     
                     // Fire-and-forget async deregistration in background
                     Task.Run(async () => {
@@ -2972,5 +3030,394 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			return meServiceUrl;
 		}
+
+        // NEW: RF-based divergence exit check - follows same pattern as CheckDivergence
+        public double CheckRFDivergenceExit(string entrySignalId, double currentPrice = 0.0)
+        {
+            try
+            {
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls for sequential bar processing
+                    Log($"[HISTORICAL-SYNC] CheckRFDivergenceExit starting sync call for {entrySignalId}");
+                    var result = CheckRFDivergenceExitAsync(entrySignalId, currentPrice).ConfigureAwait(false).GetAwaiter().GetResult();
+                    Log($"[HISTORICAL-SYNC] CheckRFDivergenceExit completed sync call for {entrySignalId}");
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Use fire-and-forget to prevent freezes
+                    // Return cached value if available
+                    if (rfExitScores.ContainsKey(entrySignalId))
+                    {
+                        return rfExitScores[entrySignalId];
+                    }
+                    
+                    // Fire-and-forget async update in background
+                    Task.Run(async () => {
+                        try
+                        {
+                            Log($"[REALTIME-ASYNC] CheckRFDivergenceExit starting background update for {entrySignalId}");
+                            await CheckRFDivergenceExitAsync(entrySignalId, currentPrice);
+                            Log($"[REALTIME-ASYNC] CheckRFDivergenceExit completed background update for {entrySignalId}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[REALTIME-ASYNC] CheckRFDivergenceExit background update failed for {entrySignalId}: {ex.Message}");
+                        }
+                    });
+                    
+                    // Return cached value or default
+                    return rfExitScores.ContainsKey(entrySignalId) ? rfExitScores[entrySignalId] : 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[RF-EXIT] CheckRFDivergenceExit failed for {entrySignalId}: {ex.Message}");
+                return 0;
+            }
+        }
+
+        // NEW: Async RF divergence exit check
+        public async Task<double> CheckRFDivergenceExitAsync(string entrySignalId, double currentPrice = 0.0)
+        {
+            if (IsDisposed()) return 0;
+            
+            // Use entrySignalId directly since we have separate dictionary
+            
+            try
+            {
+                // Build RF service endpoint URL
+                string rfServiceUrl = "http://localhost:3009"; // RF service port
+                string endpoint = $"{rfServiceUrl}/api/rf/divergence-exit/{entrySignalId}";
+                
+                // Add current price if provided
+                if (currentPrice > 0)
+                {
+                    endpoint += $"?currentPrice={currentPrice}";
+                }
+                
+                // Add session ID for tracking
+                char separator = endpoint.Contains('?') ? '&' : '?';
+                endpoint += $"{separator}sessionId={sessionID}";
+                
+               
+                
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                {
+                    var response = await client.GetAsync(endpoint, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var content = await response.Content.ReadAsStringAsync();
+                        var rfExitResponse = JsonConvert.DeserializeObject<dynamic>(content);
+                        
+                        if (rfExitResponse != null)
+                        {
+                            // Extract exit decision - should return 1 for exit, 0 for continue
+                            bool shouldExit = rfExitResponse.shouldExit ?? false;
+                            double exitScore = shouldExit ? 1.0 : 0.0;
+                            
+                            // Cache the result in separate RF exit dictionary
+                            rfExitScores[entrySignalId] = exitScore;
+                            
+                            // NEW: Update static properties for easy access
+                            CurrentRFExitScore = exitScore;
+                            CurrentRFShouldExit = shouldExit;
+                            CurrentRFExitReason = rfExitResponse.reason?.ToString() ?? "";
+                            CurrentRFConfidenceChange = rfExitResponse.rfConfidenceChange ?? 0.0;
+                            LastRFExitUpdate = DateTime.Now;
+                            
+                            // Log RF exit decision details
+                            if (rfExitResponse.confidence != null && rfExitResponse.reason != null)
+                            {
+                                double confidence = rfExitResponse.confidence;
+                                string reason = rfExitResponse.reason;
+                                string action = shouldExit ? "EXIT" : "CONTINUE";
+                                if(shouldExit)
+								{
+                                	Log($"[RF-EXIT] {entrySignalId}: {action} (confidence: {confidence:F3}) - {reason}");
+                            	}
+							}
+                            
+                            return exitScore;
+                        }
+                        else
+                        {
+                            // Handle null response
+                            Log($"[RF-EXIT] Null response from RF service for {entrySignalId}");
+                            return 0;
+                        }
+                    }
+                    else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        Log($"[RF-EXIT] Position {entrySignalId} not found in RF service - may not be registered for RF exit monitoring");
+                        return 0;
+                    }
+                    else
+                    {
+                        Log($"[RF-EXIT] RF service returned error {response.StatusCode} for {entrySignalId}");
+                        return 0;
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                Log($"[RF-EXIT] RF exit check timed out for {entrySignalId}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Log($"[RF-EXIT] Error checking RF exit for {entrySignalId}: {ex.Message}");
+                return 0;
+            }
+        }
+
+        // NEW: Register position for RF-based exit monitoring
+        public bool RegisterRFExitPosition(string entrySignalId, string patternId, string instrument, DateTime entryTimestamp, string direction, double entryPrice = 0.0)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls
+                    var result = RegisterRFExitPositionAsync(entrySignalId, patternId, instrument, entryTimestamp, direction, entryPrice).ConfigureAwait(false).GetAwaiter().GetResult();
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Fire-and-forget
+                    Task.Run(async () => {
+                        try
+                        {
+                            await RegisterRFExitPositionAsync(entrySignalId, patternId, instrument, entryTimestamp, direction, entryPrice);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[RF-EXIT] Background registration failed for {entrySignalId}: {ex.Message}");
+                        }
+                    });
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[RF-EXIT] Error in RegisterRFExitPosition: {ex.Message}");
+                return false;
+            }
+        }
+
+        // NEW: Async registration for RF exit monitoring
+        public async Task<bool> RegisterRFExitPositionAsync(string entrySignalId, string patternId, string instrument, DateTime entryTimestamp, string direction, double entryPrice = 0.0)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // Build registration payload
+                var registrationData = new
+                {
+                    entrySignalId = entrySignalId,
+                    patternId = patternId,
+                    instrument = instrument,
+                    entryTimestamp = entryTimestamp.ToUniversalTime().ToString("o"),
+                    direction = direction,
+                    entryPrice = entryPrice,
+                    sessionId = sessionID,
+                    originalRFPrediction = new {
+                        // Include original RF entry decision for comparison
+                        decision = direction.ToUpper() == "LONG" ? "BUY" : "SELL",
+                        confidence = 0.75, // Use actual confidence from RF entry if available
+                        timestamp = DateTime.UtcNow.ToString("o")
+                    }
+                };
+                
+                string jsonPayload = JsonConvert.SerializeObject(registrationData);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                
+                // Send to RF service
+                string rfServiceUrl = "http://localhost:3009";
+                string endpoint = $"{rfServiceUrl}/api/rf/register-exit-position";
+                
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                {
+                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Log($"[RF-EXIT] Successfully registered RF exit monitoring for {entrySignalId} ({direction} {instrument})");
+                        return true;
+                    }
+                    else
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync();
+                        Log($"[RF-EXIT] Failed to register RF exit position: {response.StatusCode} - {errorContent}");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[RF-EXIT] Error registering RF exit position: {ex.Message}");
+                return false;
+            }
+        }
+
+        // NEW: Deregister position from RF exit monitoring
+        public async Task<bool> DeregisterRFExitPositionAsync(string entrySignalId, bool wasGoodExit = false)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // Build deregistration payload
+                var deregistrationData = new
+                {
+                    entrySignalId = entrySignalId,
+                    wasGoodExit = wasGoodExit,
+                    sessionId = sessionID,
+                    deregistrationTimestamp = DateTime.UtcNow.ToString("o")
+                };
+                
+                string jsonPayload = JsonConvert.SerializeObject(deregistrationData);
+                
+                // Create DELETE request with body
+                var request = new HttpRequestMessage
+                {
+                    Method = HttpMethod.Delete,
+                    RequestUri = new Uri($"http://localhost:3009/api/rf/deregister-exit-position/{entrySignalId}"),
+                    Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
+                };
+                
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                {
+                    var response = await client.SendAsync(request, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        // Success or not found (already deregistered) are both OK
+                        return true;
+                    }
+                    else
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync();
+                        Log($"[RF-EXIT] Failed to deregister RF exit position: {response.StatusCode} - {errorContent}");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[RF-EXIT] Error deregistering RF exit position: {ex.Message}");
+                return false;
+            }
+        }
+
+        // NEW: Static properties to track current RF exit signals (similar to existing divergence properties)
+        public static double CurrentRFExitScore { get; private set; } = 0;
+        public static bool CurrentRFShouldExit { get; private set; } = false;
+        public static string CurrentRFExitReason { get; private set; } = "";
+        public static double CurrentRFConfidenceChange { get; private set; } = 0;
+        public static DateTime LastRFExitUpdate { get; private set; } = DateTime.MinValue;
+
+        // NEW: Convenience method to get both divergence scores for a position
+        public DivergenceScores GetAllDivergenceScores(string entrySignalId, double currentPrice = 0.0)
+        {
+            try
+            {
+                // Get both scores using the existing methods
+                double standardDivergence = CheckDivergence(entrySignalId, currentPrice);
+                double rfExitScore = CheckRFDivergenceExit(entrySignalId, currentPrice);
+                
+                return new DivergenceScores
+                {
+                    StandardDivergence = standardDivergence,
+                    RFExitScore = rfExitScore,
+                    ShouldExit = rfExitScore == 1.0 || standardDivergence >= 15.0, // You can customize this logic
+                    ExitReason = rfExitScore == 1.0 ? "RF Thesis Change" : 
+                                standardDivergence >= 15.0 ? "Standard Divergence" : "Continue",
+                    EntrySignalId = entrySignalId,
+                    CurrentPrice = currentPrice,
+                    Timestamp = DateTime.Now
+                };
+            }
+            catch (Exception ex)
+            {
+                Log($"[DIVERGENCE] Error getting all divergence scores for {entrySignalId}: {ex.Message}");
+                return new DivergenceScores
+                {
+                    StandardDivergence = 0,
+                    RFExitScore = 0,
+                    ShouldExit = false,
+                    ExitReason = "Error",
+                    EntrySignalId = entrySignalId,
+                    CurrentPrice = currentPrice,
+                    Timestamp = DateTime.Now
+                };
+            }
+        }
+
+        // NEW: Async version for comprehensive divergence checking
+        public async Task<DivergenceScores> GetAllDivergenceScoresAsync(string entrySignalId, double currentPrice = 0.0)
+        {
+            try
+            {
+                // Get both scores concurrently
+                var standardTask = CheckDivergenceAsync(entrySignalId, currentPrice);
+                var rfExitTask = CheckRFDivergenceExitAsync(entrySignalId, currentPrice);
+                
+                await Task.WhenAll(standardTask, rfExitTask);
+                
+                double standardDivergence = standardTask.Result;
+                double rfExitScore = rfExitTask.Result;
+                
+                return new DivergenceScores
+                {
+                    StandardDivergence = standardDivergence,
+                    RFExitScore = rfExitScore,
+                    ShouldExit = rfExitScore == 1.0 || standardDivergence >= 15.0,
+                    ExitReason = rfExitScore == 1.0 ? "RF Thesis Change" : 
+                                standardDivergence >= 15.0 ? "Standard Divergence" : "Continue",
+                    EntrySignalId = entrySignalId,
+                    CurrentPrice = currentPrice,
+                    Timestamp = DateTime.Now
+                };
+            }
+            catch (Exception ex)
+            {
+                Log($"[DIVERGENCE] Error getting all divergence scores async for {entrySignalId}: {ex.Message}");
+                return new DivergenceScores
+                {
+                    StandardDivergence = 0,
+                    RFExitScore = 0,
+                    ShouldExit = false,
+                    ExitReason = "Error",
+                    EntrySignalId = entrySignalId,
+                    CurrentPrice = currentPrice,
+                    Timestamp = DateTime.Now
+                };
+            }
+        }
+
+        // NEW: Helper class to return both divergence scores
+        public class DivergenceScores
+        {
+            public double StandardDivergence { get; set; }
+            public double RFExitScore { get; set; }
+            public bool ShouldExit { get; set; }
+            public string ExitReason { get; set; }
+            public string EntrySignalId { get; set; }
+            public double CurrentPrice { get; set; }
+            public DateTime Timestamp { get; set; }
+            
+            public override string ToString()
+            {
+                return $"Standard: {StandardDivergence:F1}, RF: {RFExitScore}, Action: {ExitReason}";
+            }
+        }
     }
 } 

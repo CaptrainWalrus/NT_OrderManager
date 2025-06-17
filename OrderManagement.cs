@@ -302,8 +302,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									customPosition.OnOrderFilled(orderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex, order.OrderAction, quantity, averageFillPrice);
 									
 									string direction = order.OrderAction == OrderAction.Buy ? "long" : "short";
-									///register
-									orderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(orderRecordMasterLite.EntryOrderUUID,orderRecordMasterLite.OrderSupplementals.patternId, orderRecordMasterLite.EntryOrder.Instrument.FullName.Split(' ')[0],time);
+									///register - Enhanced registration with direction and entry price for RF exit monitoring
+									orderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(
+										orderRecordMasterLite.EntryOrderUUID,
+										orderRecordMasterLite.OrderSupplementals.patternId, 
+										orderRecordMasterLite.EntryOrder.Instrument.FullName.Split(' ')[0],
+										time,
+										averageFillPrice, // Entry price for RF monitoring
+										direction,        // Direction for RF monitoring
+										null             // Original forecast (not available here)
+									);
 									
 									// Track pattern for this position to handle EOSC exits (DISABLED)
 									// if (!string.IsNullOrEmpty(orderRecordMasterLite.OrderSupplementals.patternId))
@@ -1155,8 +1163,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					 	// Add the signal to the open positions set
 					
-						///register
-						orderRecordMasterBuy.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(orderRecordMasterBuy.EntryOrderUUID,orderRecordMasterBuy.OrderSupplementals.patternId, orderRecordMasterBuy.EntryOrder.Instrument.FullName.Split(' ')[0],Time[0]);
+						///register - Enhanced registration with direction and entry price for RF exit monitoring
+						string direction = order.OrderAction == OrderAction.Buy ? "long" : "short";
+						orderRecordMasterBuy.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(
+							orderRecordMasterBuy.EntryOrderUUID,
+							orderRecordMasterBuy.OrderSupplementals.patternId, 
+							orderRecordMasterBuy.EntryOrder.Instrument.FullName.Split(' ')[0],
+							Time[0],
+							order.AverageFillPrice, // Entry price for RF monitoring
+							direction,              // Direction for RF monitoring
+							null                   // Original forecast (not available here)
+						);
 						
 						
 					}

@@ -298,7 +298,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 				        // 2. DIVERGENCE CHECK (prioritize over max loss for earlier exits)
    			bool divergenceViolation = false;
+			bool rfExitViolation = false;
 			double divergenceScore = 0;
+			double rfExitScore = 0;
+			
+			// Check standard divergence
     		if(curvesService.divergenceScores.ContainsKey(simStop.EntryOrderUUID))
 			{
 		        double dynamicDivergenceThreshold = (DivergenceThreshold);
@@ -306,21 +310,41 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		        simStop.OrderRecordMasterLite.OrderSupplementals.divergence = divergenceScore;
 				divergenceViolation = DivergenceSignalThresholds && divergenceScore > dynamicDivergenceThreshold && simStop.OrderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW == true;
 			}
-	        if (divergenceViolation && DivergenceSignalThresholds && currentProfit < -softProfitTarget)
+			
+			// NEW: Check RF exit scores
+			if(curvesService.rfExitScores.ContainsKey(simStop.EntryOrderUUID))
+			{
+				rfExitScore = curvesService.rfExitScores[simStop.EntryOrderUUID];
+				rfExitViolation = rfExitScore >= 1.0; // RF says exit (1.0 = exit, 0.0 = continue)
+			}
+	        // Check for exit conditions: standard divergence OR RF exit signal
+	        if ((divergenceViolation && DivergenceSignalThresholds && currentProfit < -softProfitTarget) || rfExitViolation)
 	        {
 	            try {
-	                Print($"[DIVERGENCE EXIT] {simStop.EntryOrderUUID}: DIV={divergenceScore:F3}, Profit=${currentProfit:F2}");
+	                string exitReason = "";
+	                signalExitAction exitAction;
+	                
+	                if (rfExitViolation)
+	                {
+	                    exitReason = $"RF EXIT: Score={rfExitScore:F1}, Reason={CurvesV2Service.CurrentRFExitReason}";
+	                    exitAction = isLong ? signalExitAction.DIV_L : signalExitAction.DIV_S; // Use same action for now
+	                    Print($"[RF EXIT] {simStop.EntryOrderUUID}: {exitReason}, Profit=${currentProfit:F2}");
+	                }
+	                else
+	                {
+	                    exitReason = $"DIVERGENCE EXIT: DIV={divergenceScore:F3}";
+	                    exitAction = isLong ? signalExitAction.DIV_L : signalExitAction.DIV_S;
+	                    Print($"[DIVERGENCE EXIT] {simStop.EntryOrderUUID}: {exitReason}, Profit=${currentProfit:F2}");
+	                }
+	                
+	                simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = exitAction;
 	                
 	                if (isLong)
 	                {
-	                    simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_L;
-	               
 	                    ExitLong(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
 	                }
 	                else
 	                {
-	                    simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.DIV_S;
-	                    
 	                    ExitShort(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
 	                }
 	                
@@ -329,7 +353,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	                return action;
 	            }
 	            catch (Exception ex) {
-	                Print($"Divergence catch : {ex}");
+	                Print($"Exit condition catch : {ex}");
 	            }
 	        }
 	
@@ -400,6 +424,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					// 6. EXECUTE EXIT ACTIONS
 					if (thisSignalExitAction == signalExitAction.TBPL || thisSignalExitAction == signalExitAction.TBPS || thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS)
 					{
+						
 						DateTime xMinutesSpacedGoal = StrategyLastScaleInTime.AddMinutes(entriesPerDirectionSpacingTime);
 						if(canScaleIn && Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0)
 							   
