@@ -838,7 +838,50 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										// Enhanced wasGoodExit logic - consider exit reason, not just profit
 										bool wasGoodExit = DetermineExitQuality(profit, orderRecordMaster.OrderSupplementals.thisSignalExitAction, orderRecordMaster.OrderSupplementals.divergence);
 										
-										
+										// NEW: Send position closure data to RF service for annotation
+										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
+										{
+											try 
+											{
+												// Get bars from entry point backwards for annotation context (10 bars before entry)
+												var closingBars = new List<BarDataPacket>();
+												int entryBar = orderRecordMaster.EntryBar;
+												int barsToCollect = 10;
+												
+												// Calculate how many bars back from entry we can safely go
+												int maxBarsBack = Math.Min(barsToCollect, entryBar);
+												
+												for (int i = 0; i < maxBarsBack; i++)
+												{
+													int barIndex = entryBar - i; // Go backwards from entry
+													if (barIndex >= 0 && barIndex < CurrentBars[0])
+													{
+														closingBars.Add(new BarDataPacket
+														{
+															Timestamp = Time[barIndex],
+															Open = Open[barIndex],
+															High = High[barIndex],
+															Low = Low[barIndex],
+															Close = Close[barIndex],
+															Volume = Volume[barIndex],
+															Timeframe = "1m"
+														});
+													}
+												}
+												
+												// Send to RF service (fire-and-forget)
+												curvesService.SendPositionClosed(
+													orderRecordMaster.OrderSupplementals.patternId,
+													closingBars,
+													profit,
+													true // isWin = true for profit > 0
+												);
+											}
+											catch (Exception ex) 
+											{
+												Print($"[ANNOTATION] Error sending win closure data for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+											}
+										}
 										
 										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, true, orderRecordMaster.OrderSupplementals.divergence);
 
@@ -913,6 +956,52 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									{
 										
 										bool wasGoodExit = DetermineExitQuality(profit, orderRecordMaster.OrderSupplementals.thisSignalExitAction, orderRecordMaster.OrderSupplementals.divergence);
+										
+										// NEW: Send position closure data to RF service for annotation (break-even trade)
+										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
+										{
+											try 
+											{
+												// Get bars from entry point backwards for annotation context (10 bars before entry)
+												var closingBars = new List<BarDataPacket>();
+												int entryBar = orderRecordMaster.EntryBar;
+												int barsToCollect = 10;
+												
+												// Calculate how many bars back from entry we can safely go
+												int maxBarsBack = Math.Min(barsToCollect, entryBar);
+												
+												for (int i = 0; i < maxBarsBack; i++)
+												{
+													int barIndex = entryBar - i; // Go backwards from entry
+													if (barIndex >= 0 && barIndex < CurrentBars[0])
+													{
+														closingBars.Add(new BarDataPacket
+														{
+															Timestamp = Time[barIndex],
+															Open = Open[barIndex],
+															High = High[barIndex],
+															Low = Low[barIndex],
+															Close = Close[barIndex],
+															Volume = Volume[barIndex],
+															Timeframe = "1m"
+														});
+													}
+												}
+												
+												// Send to RF service (fire-and-forget)
+												curvesService.SendPositionClosed(
+													orderRecordMaster.OrderSupplementals.patternId,
+													closingBars,
+													profit,
+													false // isWin = false for break-even (no real win)
+												);
+											}
+											catch (Exception ex) 
+											{
+												Print($"[ANNOTATION] Error sending break-even closure data for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+											}
+										}
+										
 										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, false, orderRecordMaster.OrderSupplementals.divergence);
 
 										// ADDED: Record pattern performance for break-even trades
@@ -955,6 +1044,56 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									{
 
 										bool wasGoodExit = DetermineExitQuality(profit, orderRecordMaster.OrderSupplementals.thisSignalExitAction, orderRecordMaster.OrderSupplementals.divergence);
+										if(orderRecordMaster.OrderSupplementals.thisSignalExitAction == signalExitAction.MLL ||  orderRecordMaster.OrderSupplementals.thisSignalExitAction == signalExitAction.MLS)
+										{
+											// NEW: Send position closure data to RF service for annotation (LOSS - HIGH PRIORITY)
+											if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
+											{
+												try 
+												{
+													// Get bars from entry point backwards for annotation context (10 bars before entry)
+													var closingBars = new List<BarDataPacket>();
+													int entryBar = orderRecordMaster.EntryBar;
+													int barsToCollect = 10;
+													
+													// Calculate how many bars back from entry we can safely go
+													int maxBarsBack = Math.Min(barsToCollect, entryBar);
+													
+													for (int i = 0; i < maxBarsBack; i++)
+													{
+														int barIndex = entryBar - i; // Go backwards from entry
+														if (barIndex >= 0 && barIndex < CurrentBars[0])
+														{
+															closingBars.Add(new BarDataPacket
+															{
+																Timestamp = Time[barIndex],
+																Open = Open[barIndex],
+																High = High[barIndex],
+																Low = Low[barIndex],
+																Close = Close[barIndex],
+																Volume = Volume[barIndex],
+																Timeframe = "1m"
+															});
+														}
+													}
+													
+													// Send to RF service (fire-and-forget) - LOSSES ARE HIGH PRIORITY FOR ANNOTATION
+													curvesService.SendPositionClosed(
+														orderRecordMaster.OrderSupplementals.patternId,
+														closingBars,
+														profit,
+														false // isWin = false for loss
+													);
+													
+													Print($"[ANNOTATION] LOSS flagged for annotation: {orderRecordMaster.OrderSupplementals.patternId} (${profit:F2})");
+												}
+												catch (Exception ex) 
+												{
+													Print($"[ANNOTATION] Error sending loss closure data for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
+												}
+											}
+										}
+										
 										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, wasGoodExit, orderRecordMaster.OrderSupplementals.divergence);
 
 										// ADDED: Record pattern performance for losing trades

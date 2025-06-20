@@ -53,6 +53,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	[Gui.CategoryOrder("Entry Types", 15)]
 	public partial class MainStrategy : Strategy
 	{
+		// Instance tracking for debugging Strategy Analyzer issues
+		private static readonly HashSet<int> ActiveInstances = new HashSet<int>();
+		private static readonly object InstanceLock = new object();
+		
 		[XmlIgnore]
 		public CurvesV2Service curvesService;
 		
@@ -320,7 +324,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		private Dictionary<vwapStop,OrderRecordMasterLite > vwapStopMapping = new Dictionary<vwapStop,OrderRecordMasterLite>();
 		private Dictionary<string, double> patternIdProfits = new Dictionary<string, double>();
 
-
 		
 		protected List<simulatedEntry> MasterSimulatedEntries;
 		protected List<simulatedStop> MasterSimulatedStops;
@@ -336,7 +339,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		protected Dictionary<string,double> regimeTracker = new Dictionary<string,double>();
 
 
-	
+		// Signal persistence tracking for RF validation
+		[XmlIgnore]
+		public Dictionary<int, double> signalHistory = new Dictionary<int, double>();
+		public const int SIGNAL_CONFIRMATION_BARS = 3; // Reduced from 5 to 3 for more trading opportunities
+		public int currentBarIndex = 0;
 		Queue<simulatedEntry> MastersimulatedEntryToDelete = new Queue<simulatedEntry>();
 		Queue<simulatedStop> MastersimulatedStopToDelete = new Queue<simulatedStop>();
 		//Queue<PatternObject> OrderFlowPatternsToDelete = new Queue<PatternObject>();
@@ -387,7 +394,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public MyStrategyControlPane myStrategyControlPane;
 	
 		// DEBUG PRINT WRAPPER - SET TO TRUE TO ENABLE FREEZE DEBUGGING
-		private static bool ENABLE_FREEZE_DEBUG = true;
+		private static bool ENABLE_FREEZE_DEBUG = false;
 		private static DateTime lastDebugPrint = DateTime.MinValue;
 		
 		protected void DebugFreezePrint(string message, [System.Runtime.CompilerServices.CallerFilePath] string fileName = "", [System.Runtime.CompilerServices.CallerLineNumber] int lineNumber = 0)
@@ -411,6 +418,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 			if (State == State.SetDefaults)
 			{
+				// Track instance creation for debugging Strategy Analyzer issues
+				
 				
 				Description									= @"Management of order handling and responses to entry signals, logic for exits";
 				Name										= "OrganizedStrategy_MainStrategy";
@@ -434,7 +443,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            RealtimeErrorHandling = RealtimeErrorHandling.IgnoreAllErrors; // Ignore all errors to prevent strategy from terminating
 				IsUnmanaged = false; // Switch to unmanaged mode
 				
-		
+				lock(InstanceLock)
+				{
+					ActiveInstances.Add(this.GetHashCode());
+					Print($"[INSTANCE-{Name}] Created: {this.GetHashCode()}, Total Active: {ActiveInstances.Count}");
+				}
 				
 				DivergenceThreshold = 0.4;
 				
@@ -444,7 +457,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				strategyName = Name;
 				
 				
-				IsInstantiatedOnEachOptimizationIteration	= true;
+				IsInstantiatedOnEachOptimizationIteration	= false; // FIXED: Prevent excessive instance creation
 		
 				
 				//////////ORDER FLOW///////////
@@ -514,7 +527,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				microContractTakeProfit  = 150;
 				
 				OrderBookVolumeThreshold = 10000;
-				useAsyncProcessing = false; // Default to synchronous for reliability
+				useAsyncProcessing = false; // DISABLED - Causes instance leaks in Strategy Analyzer
 				
 				ZScoreThreshold = 0.5;                                    // Allow patterns 0.5 std dev better than average
 				ReliabilityPenaltyEnabled = true;                         // Enable reliability penalties
@@ -558,7 +571,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			}
 			else if (State == State.DataLoaded)
 			{			
-
+				// Skip heavy initialization for Strategy Analyzer test instances
+				if (IsInStrategyAnalyzer && Account == null)
+				{
+					Print($"[SKIP] Test instance {this.GetHashCode()} - skipping heavy initialization");
+					return;
+				}
 				
 			    TradingHours tradingHours = Bars.TradingHours; // Get trading hours from the instrument
 	 
@@ -651,146 +669,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				}
 				
 				
-				Print("Initializing CurvesV2 connection (async)...");
-				try 
-				{ 
-					Print("Initializing CurvesAPI");
-	
-					
-					var config = ConfigManager.Instance.CurvesV2Config; 
-					
-					// Set synchronous mode in config
-					config.EnableSyncMode = UseDirectSync;
-					Print($"Setting CurvesV2 sync mode to {UseDirectSync}");
-					
-				curvesService = new CurvesV2Service(config, logger: msg => Print(msg));
-				curvesService.useRemoteService = UseRemoteServiceParameter;
-				// Pass reference to MasterSimulatedStops for accurate position tracking
-				curvesService.SetMasterSimulatedStops(MasterSimulatedStops);
 				
-				// Set initial state based on historical mode - use State.Historical for both analyzer and historical
-				curvesService.SetStrategyState(State == State.Historical); // true if historical mode (including analyzer)
-				
-				// In your NinjaTrader strategy initialization:
-				CurvesV2Service.SetFallbackDivergenceThreshold(6.0); // Custom threshold for legacy mode
-				// Use a simple GUID instead of the previous GenerateSignalId method
-				
-				
-				Print("CurvesV2Service Initialized (async connection pending).");
-					
-					// Establish connection after initialization
-					if (UseDirectSync)
-					{
-						Print("Attempting to establish connection immediately...");
-						
-						// Create a task to connect with a timeout
-						var connectTask = Task.Run(async () => {
-							try 
-							{
-								// Connect to the WebSocket first
-								bool wsConnected = await curvesService.ConnectWebSocketAsync();
-								
-								if (wsConnected)
-								{
-									Print("WebSocket connection established successfully");
-									//LoadMEConfig();
-									return true;
-								}
-	
-								// If WebSocket fails, try the health check
-								bool healthy = await curvesService.CheckHealth();
-								return healthy;
-							}
-							catch (Exception ex)
-							{
-								Print($"Connection check failed: {ex.Message}");
-								return false;
-							}
-						});
-						
-						// Set a reasonable timeout for connection
-						bool connected = false;
-						try
-						{
-							// CONDITIONAL CONNECTION: Only block during Historical mode
-							if (State == State.Historical)
-							{
-								// Historical Mode: Very fast connection (should return immediately)
-								if (connectTask.Wait(10)) // Very short timeout since we skip connections in historical mode
-								{
-									// Only access .Result in Historical mode where blocking is acceptable
-									connected = connectTask.Result;
-									if (connected)
-									{
-										Print("Historical mode initialization complete");
-									}
-									else
-									{
-										Print("Historical mode initialization failed - continuing anyway");
-										connected = true; // Force success in historical mode
-									}
-								}
-								else
-								{
-									Print("Historical mode timeout - continuing anyway");
-									connected = true; // Force success in historical mode
-								}
-							}
-							else
-							{
-								// Real-time Mode: Fire-and-forget connection
-								Print("Connection in progress - continuing initialization [REAL-TIME]");
-								connectTask.ContinueWith(t => {
-									try
-									{
-										// FIXED: Remove blocking .Result call - Use .NET Framework compatible check
-										if (t.Status == TaskStatus.RanToCompletion)
-										{
-											Print("Background connection established [REAL-TIME]");
-										}
-										else
-										{
-											Print("Background connection failed [REAL-TIME]");
-										}
-									}
-									catch (Exception ex)
-									{
-										Print($"Background connection error [REAL-TIME]: {ex.Message}");
-									}
-								}, TaskContinuationOptions.None);
-							}
-						}
-						catch (Exception ex)
-						{
-							Print($"Error during connection: {ex.Message}");
-						}
-						
-						// In historical mode, continue even without connection
-						if (!connected && State == State.Historical)
-						{
-							// Check if WebSocket is actually connected despite health check failure
-							bool wsConnected = curvesService?.IsWebSocketConnected() ?? false;
-							
-							if (wsConnected)
-							{
-								Print("WebSocket is connected - proceeding with historical mode");
-								connected = true;
-							}
-							else
-							{
-								Print("WARNING: Starting historical mode with no server connection - using local data only");
-							}
-						}
-					}
-				}
-				catch (Exception ex)
-				{   
-					Print($"ERROR initializing CurvesV2Service: {ex.Message}");
-					curvesService = null; 
-				}
 				
 				}
-								else if (State == State.Realtime)
+				else if (State == State.Realtime)
 			    {
 					isRealTime = true;
 					MasterSimulatedStops.Clear();
@@ -803,12 +685,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					}		
 					dailyProfit = 0;
 
-					// Set service to real-time mode for async operations
-					if (curvesService != null)
-					{
+					//Set service to real-time mode for async operations
+					 if (curvesService != null)
+					 {
 						curvesService.SetStrategyState(false); // false = real-time mode
 						Print("CurvesService set to Real-time mode (async behavior)");
-					}
+					 }
 					
 					
 				}
@@ -817,12 +699,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					///threads
 					/// threading
 					
-					// Set service to historical mode for sync operations  
-					if (curvesService != null)
-					{
+					//  Set service to historical mode for sync operations  
+					 if (curvesService != null)
+					 {
 						curvesService.SetStrategyState(true); // true = historical mode
 						Print("CurvesService set to Historical mode (sync behavior)");
-					}
+					 }
 
 				
 				}
@@ -832,19 +714,53 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				   // Check if termination logic has already run for this instance
 				   if (isTerminationLogicRun)
 				   {
-					   Print($"State.Terminated: Termination logic already executed for instance {this.GetHashCode()}. Skipping.");
 					   return; 
 				   }
 				   isTerminationLogicRun = true; // Set the flag
-				   Print($"State.Terminated: Executing termination logic for instance {this.GetHashCode()}.");
+				   
+				   // Track instance termination
+				   lock(InstanceLock)
+				   {
+					   ActiveInstances.Remove(this.GetHashCode());
+					   // Only log for instances that had meaningful initialization
+					   if (!IsInStrategyAnalyzer || Account != null)
+					   {
+						   Print($"[INSTANCE] Terminated: {this.GetHashCode()}, Remaining Active: {ActiveInstances.Count}");
+					   }
+				   }
 				
-					/// threads
-					Print("State == State.Terminated");
+					// Only print detailed cleanup for non-test instances
+					bool isTestInstance = IsInStrategyAnalyzer && Account == null;
+					if (!isTestInstance)
+					{
+						Print($"State.Terminated: Executing termination logic for instance {this.GetHashCode()}.");
+						Print("State == State.Terminated");
+					}
 					if(useAsyncProcessing)
 					{
 						StopOrderObjectStatsThread();
 					}
 					
+					// Break circular references to prevent memory leaks
+					try {
+						if (myStrategyControlPane != null)
+						{
+							myStrategyControlPane.AssociatedStrategy = null;
+							myStrategyControlPane = null;
+						}
+						
+						// Clear collections
+						MasterSimulatedEntries?.Clear();
+						MasterSimulatedStops?.Clear();
+						OrderActionResultList?.Clear();
+						signalQueue?.Clear();
+						Print("Collections and references cleared successfully");
+					} catch (Exception ex) {
+						Print($"Error clearing collections: {ex.Message}");
+					}
+					
+					if (!isTestInstance)
+					{
 						Print("----------PATTERNS BEGIN---------");
 						foreach(var kvp in patternIdProfits)
 						{
@@ -854,8 +770,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							Print($"pattern {pattern} - ${profit}");
 						}
 						Print("----------PATTERNS END---------");
-					// 1. Reset static data in CurvesV2Service
-					Print("1. Resetting all static data in CurvesV2Service");
+						// 1. Reset static data in CurvesV2Service
+						Print("1. Resetting all static data in CurvesV2Service");
+					}
 					CurvesV2Service.ResetStaticData();
 					
 					// 2. Properly dispose of the CurvesV2Service instance
@@ -875,7 +792,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							curvesService = null;
 						}
 					}
-					else
+					else if (!isTestInstance)
 					{
 						Print("1. No active CurvesV2Service instance to dispose for instance {this.GetHashCode()}");
 					}
@@ -922,15 +839,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		DebugFreezePrint("Checking BarsRequiredToTrade");
 		// TEMPORARY: Reduced bars requirement for faster backtesting
-		// Allow Series0 to be 1 bar short to handle synchronization issues
-		if (CurrentBars[1] < Math.Min(BarsRequiredToTrade*2, 40) || CurrentBars[0] < (BarsRequiredToTrade - 1) )
+		// Allow Series0 to be 2 bars short to handle synchronization issues
+		if (CurrentBars[1] < Math.Min(BarsRequiredToTrade*2, 40) || CurrentBars[0] < (BarsRequiredToTrade - 2) )
 		{
 		    DebugPrint(debugSection.OnBarUpdate, "start 3");
 			
 			// Show progress for both data series
 			double series0Progress = Math.Round((((double)CurrentBars[0]/BarsRequiredToTrade)*100),1);
 			double series1Progress = Math.Round((((double)CurrentBars[1]/(BarsRequiredToTrade*12))*100),1);
-			Print($"Loading: Series0={series0Progress}% ({CurrentBars[0]}/{BarsRequiredToTrade}), Series1={series1Progress}% ({CurrentBars[1]}/{BarsRequiredToTrade*12})");
+			//Print($"Loading: Series0={series0Progress}% ({CurrentBars[0]}/{BarsRequiredToTrade}), Series1={series1Progress}% ({CurrentBars[1]}/{BarsRequiredToTrade*12})");
 		    return;
 		}
 		 msg = "OnBarUpdate start 2.1";
@@ -1075,6 +992,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							if(simStop.OrderRecordMasterLite.OrderSupplementals.forceExit == true)
 							{
 								DebugFreezePrint("Processing forceExit");
+								
+								// Safety check: Ensure exit action is set
+								if (simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction == signalExitAction.NULL)
+								{
+									// Set a default exit action if none was set
+									simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.MLL; // Default to max loss
+									simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = "Force exit (default)";
+									Print($"[FORCE-EXIT] Setting default exit action for {simStop.EntryOrderUUID}");
+								}
+								
 								int instrumentSeriesIndex = simStop.instrumentSeriesIndex;
 					            var action = simStop.OrderRecordMasterLite.EntryOrder.OrderAction == OrderAction.Buy ? OrderAction.Sell : OrderAction.BuyToCover;
 					            // Execute the force exit order
@@ -1193,7 +1120,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				                action.accountEntryQuantity, 
 				                action.OA, 
 				                action.signalPackageParam, 
-				                action.appendSignal, 
+				                "SCALE IN", 
 				                action.thisBar, 
 				                action.orderType, 
 				                action.builtSignal
@@ -1982,7 +1909,73 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			return instrumentCode;
 		}
 		
-		
+		// Signal persistence validation - check if last N signals are all same direction
+		public bool ValidateSignalPersistence(double currentScore, out string direction)
+		{
+			direction = "";
+			
+			if (Math.Abs(currentScore) < 0.1) return false; // Need meaningful signal
+			
+			// Update current bar index and store current signal
+			currentBarIndex = CurrentBars[0];
+			signalHistory[currentBarIndex] = currentScore;
+			
+			// Clean up old signal history (keep only last 50 bars to prevent memory leaks)
+			var keysToRemove = signalHistory.Keys.Where(k => k < currentBarIndex - 50).ToList();
+			foreach (var key in keysToRemove)
+			{
+				signalHistory.Remove(key);
+			}
+			
+			// Get the last SIGNAL_CONFIRMATION_BARS signals including current
+			var recentSignals = new List<double>();
+			for (int i = 0; i < SIGNAL_CONFIRMATION_BARS; i++)
+			{
+				int barIndex = currentBarIndex - i;
+				if (signalHistory.ContainsKey(barIndex))
+				{
+					recentSignals.Add(signalHistory[barIndex]);
+				}
+			}
+			
+			// Relaxed requirement: Need at least 2 signals instead of full SIGNAL_CONFIRMATION_BARS
+			if (recentSignals.Count < Math.Min(2, SIGNAL_CONFIRMATION_BARS))
+			{
+				//Print($"[PERSISTENCE] Not enough signals: {recentSignals.Count}/{SIGNAL_CONFIRMATION_BARS}");
+				return false;
+			}
+			
+			// Check for directional bias with relaxed threshold
+			int bullCount = recentSignals.Count(s => s > 0.1); // Positive signals above noise
+			int bearCount = recentSignals.Count(s => s < -0.1); // Negative signals below noise
+			double totalSignals = recentSignals.Count;
+			
+			// More lenient threshold: 51% instead of 67%
+			const double BIAS_THRESHOLD = 0.51;
+			double bullBias = bullCount / totalSignals;
+			double bearBias = bearCount / totalSignals;
+			
+			// Also check signal strength - average of recent signals
+			double avgSignalStrength = recentSignals.Average();
+			
+			if (bullBias >= BIAS_THRESHOLD && avgSignalStrength > 0.2)
+			{
+				direction = "BULL";
+				//Print($"[PERSISTENCE] ✅ BULL BIAS: {bullCount}/{recentSignals.Count} signals ({bullBias:P0}) avg={avgSignalStrength:F2}");
+				return true;
+			}
+			else if (bearBias >= BIAS_THRESHOLD && avgSignalStrength < -0.2)
+			{
+				direction = "BEAR";
+				//Print($"[PERSISTENCE] ✅ BEAR BIAS: {bearCount}/{recentSignals.Count} signals ({bearBias:P0}) avg={avgSignalStrength:F2}");
+				return true;
+			}
+			else
+			{
+				//Print($"[PERSISTENCE] ❌ NO CLEAR BIAS: Bull {bullCount}/{recentSignals.Count}, Bear {bearCount}/{recentSignals.Count}, avg={avgSignalStrength:F2}");
+				return false;
+			}
+		}
 			
 
 ///Properties	
@@ -2297,8 +2290,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public int entriesPerDirectionSpacing
 		{ get; set; }
 		
-	
-	
+		[NinjaScriptProperty]
+		[Range(0.1, 1.0)]
+		[Display(Name="Signal Persistence Threshold", Order=19, GroupName="Strategy Level Params")]
+		public double SignalPersistenceThreshold
+		{ get; set; } = 0.51;
+		
+		[NinjaScriptProperty]
+		[Range(0.1, 2.0)]
+		[Display(Name="Signal Strength Threshold", Order=20, GroupName="Strategy Level Params")]
+		public double SignalStrengthThreshold
+		{ get; set; } = 0.2;
 		
 	#endregion
 	

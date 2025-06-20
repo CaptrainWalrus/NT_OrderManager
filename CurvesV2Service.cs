@@ -246,6 +246,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			// NEW: Dynamic risk management modifiers
 			public double stopModifier { get; set; }    // Percentage of max tolerance for stop loss (0.45 = 45%)
 			public double pullbackModifier { get; set; } // Percentage for pullback exits (0.20 = 20%)
+			
+			// Enhanced RF outputs for position sizing and risk management
+			public int posSize { get; set; } = 1;    // Position size multiplier (1.55x = 155% of default)
+			public double risk { get; set; } = 50.0;      // Risk amount in dollars ($55)
+			public double target { get; set; } = 100.0;   // Target amount in dollars ($160)
+			public double pullback { get; set; } = 15.0;  // Pullback percentage (15% = 0.15 as decimal)
 		}
 		
 		// Add a new property to get Signal Pool URL
@@ -261,6 +267,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public static double CurrentRawScore { get; private set; }
         public static double CurrentStopModifier { get; private set; }
         public static double CurrentPullbackModifier { get; private set; }
+		
+		// Enhanced RF outputs for position sizing and risk management
+		public static int CurrentPosSize { get; private set; } = 1;
+		public static double CurrentRisk { get; private set; } = 50.0;
+		public static double CurrentTarget { get; private set; } = 100.0;
+		public static double CurrentPullback { get; private set; } = 15.0;
 		public static string CurrentPatternType { get; private set; }
         public static string PatternName { get; private set; }
         public static DateTime LastSignalTimestamp { get; private set; }
@@ -1102,15 +1114,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 		}
 
-		// NEW: Synchronous version that blocks and returns score immediately for BuildNewSignal
-		public double CheckSignalsSync(bool useRemoteService, DateTime dt, string instrument, double? minRawScore = null, double? effectiveScoreRequirement = null)
+		// NEW: Synchronous version that blocks and returns enhanced signal data for BuildNewSignal
+		public (double score, int posSize, double risk, double target, double pullback) CheckSignalsSync(bool useRemoteService, DateTime dt, string instrument, double? minRawScore = null, double? effectiveScoreRequirement = null)
 		{
 		    if (IsDisposed() || string.IsNullOrEmpty(instrument) || client == null)
-		        return 0;
+		        return (0, 0, 0, 0, 0);
 			
 			// Check concurrent request limit
 			if (concurrentRequests >= MAX_CONCURRENT_REQUESTS)
-				return 0;
+				return (0, 0, 0, 0, 0);
 
 			try
 			{
@@ -1122,100 +1134,188 @@ namespace NinjaTrader.NinjaScript.Strategies
 				if (minRawScore.HasValue)
 					endpoint += $"&minScore={minRawScore.Value}";
 				
-				//Log($"[SYNC-SIGNALS] Requesting: {endpoint}");
+				if (IsHistoricalMode())
+				{
+					//Log($"[SYNC-SIGNALS] Requesting: {endpoint}");
+				}
 				
 				// Synchronous HTTP request with timeout
-				using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+				using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) // Increased from 2 to 5 seconds
 				{
-					var response = client.GetAsync(endpoint, timeoutCts.Token).ConfigureAwait(false).GetAwaiter().GetResult();
-					
-					if (response.IsSuccessStatusCode)
+					try
 					{
-						string responseText = response.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
-						var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
+						var response = client.GetAsync(endpoint, timeoutCts.Token).ConfigureAwait(false).GetAwaiter().GetResult();
 						
-						if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0)
+						if (response.IsSuccessStatusCode)
 						{
-							//Log($"[SYNC-SIGNALS] Found {responseText}");
+							string responseText = response.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+							var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
 							
-							// Find the best signal by effective score
-							SignalPoolSignal bestSignal = null;
-							double bestScore = 0;
-							
-							foreach (var signal in signalPoolResponse.signals)
+							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0)
 							{
-								// Skip purchased signals
-								if (signal.isPurchased) continue;
 								
-								// Use effective score or raw score, whichever is higher
-								double signalScore = Math.Max(signal.effectiveScore, signal.rawScore);
 								
-								// Apply minimum score filter
-								if (effectiveScoreRequirement.HasValue && signalScore < effectiveScoreRequirement.Value)
-									continue;
+								// Find the best signal by effective score
+								SignalPoolSignal bestSignal = null;
+								double bestScore = 0;
 								
-								if (Math.Abs(signalScore) > Math.Abs(bestScore))
+								foreach (var signal in signalPoolResponse.signals)
 								{
-									bestScore = signalScore;
-									bestSignal = signal;
+									// Skip purchased signals
+									if (signal.isPurchased) continue;
+									
+									// Use effective score or raw score, whichever is higher
+									double signalScore = Math.Max(signal.effectiveScore, signal.rawScore);
+									
+									// Apply minimum score filter
+									if (effectiveScoreRequirement.HasValue && signalScore < effectiveScoreRequirement.Value)
+										continue;
+									
+									if (Math.Abs(signalScore) > Math.Abs(bestScore))
+									{
+										bestScore = signalScore;
+										bestSignal = signal;
+									}
 								}
-							}
-							
-							if (bestSignal != null)
-							{
-								// Update static properties with best signal
-								CurrentPatternType = bestSignal.patternType;
-								CurrentSubtype = bestSignal.subtype;
-								CurrentPatternId = bestSignal.patternId;
-								CurrentOppositionStrength = bestSignal.oppositionStrength;
-								CurrentConfluenceScore = bestSignal.confluenceScore;
-								CurrentEffectiveScore = bestSignal.effectiveScore;
-								CurrentRawScore = bestSignal.rawScore;
-								CurrentStopModifier = bestSignal.stopModifier;
-								CurrentPullbackModifier = bestSignal.pullbackModifier;
-								LastSignalTimestamp = DateTime.UtcNow;
-								CurrentContextId = "signal-" + DateTime.Now.Ticks;
 								
-								// Determine direction and return signed score
-								bool isBull = bestSignal.type == "bull" || 
-											 (bestSignal.direction?.ToLower() == "long") || 
-											 (bestSignal.type?.ToLower().Contains("bull") == true);
-								
-								double finalScore = Math.Max(bestSignal.effectiveScore, bestSignal.rawScore);
-								
-								if (isBull)
+								if (bestSignal != null)
 								{
-									CurrentBullStrength = finalScore;
-									CurrentBearStrength = 0;
-									//Log($"[SYNC-SIGNALS] BULL signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
-									return finalScore; // Positive for bull
-								}
-								else
-								{
-									CurrentBullStrength = 0;
-									CurrentBearStrength = finalScore;
-									//Log($"[SYNC-SIGNALS] BEAR signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
-									return -finalScore; // Negative for bear
-								}
-							}
-						}
+									Log($"[SYNC-SIGNALS] Found {responseText}");
+									// Update static properties with best signal
+									CurrentPatternType = bestSignal.patternType;
+									CurrentSubtype = bestSignal.subtype;
+									CurrentPatternId = bestSignal.patternId;
+									CurrentOppositionStrength = bestSignal.oppositionStrength;
+									CurrentConfluenceScore = bestSignal.confluenceScore;
+									CurrentEffectiveScore = bestSignal.effectiveScore;
+									CurrentRawScore = bestSignal.rawScore;
+									CurrentStopModifier = bestSignal.stopModifier;
+									CurrentPullbackModifier = bestSignal.pullbackModifier;
+									// Enhanced RF outputs
+									CurrentPosSize = bestSignal.posSize;
+									CurrentRisk = bestSignal.risk;
+									CurrentTarget = bestSignal.target;
+									CurrentPullback = bestSignal.pullback;
+									LastSignalTimestamp = DateTime.UtcNow;
+									CurrentContextId = "signal-" + DateTime.Now.Ticks;
+									
+									// Determine direction and return signed score
+									bool isBull = bestSignal.type == "bull" || (bestSignal.type == "neutral" && bestSignal.direction == "long");
+									bool isBear = bestSignal.type == "bear" || (bestSignal.type == "neutral" && bestSignal.direction == "short");
+									
+									double finalScore = Math.Max(bestSignal.effectiveScore, bestSignal.rawScore);
+									
+									// Handle RF neutral signals based on direction
+									if (bestSignal.type == "neutral" && bestSignal.patternType == "RF_FALLBACK")
+									{
+										// For RF neutral signals, use the direction field
+										if (bestSignal.direction == "long" || bestSignal.direction == "BUY")
+										{
+											CurrentBullStrength = 0.5; // Default score for neutral RF signals
+											CurrentBearStrength = 0;
+											if (IsHistoricalMode())
+											{
+												Log($"[SYNC-SIGNALS] RF NEUTRAL BULL signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+											}
+											return (0.5, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Positive for bullish
+										}
+										else if (bestSignal.direction == "short" || bestSignal.direction == "SELL")
+										{
+											CurrentBullStrength = 0;
+											CurrentBearStrength = 0.5; // Default score for neutral RF signals
+											if (IsHistoricalMode())
+											{
+												Log($"[SYNC-SIGNALS] RF NEUTRAL BEAR signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+											}
+											return (-0.5, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Negative for bearish
+										}
+										else
+										{
+											// True neutral - no direction
+											if (IsHistoricalMode())
+											{
+												Log($"[SYNC-SIGNALS] RF NEUTRAL signal with no direction: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+											}
+											return (0, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback);
+										}
+									}
+									else if (isBull)
+									{
+										CurrentBullStrength = finalScore;
+										CurrentBearStrength = 0;
 						
-						// No valid signals found
-						//Log($"[SYNC-SIGNALS] No valid signals found for {instrument}");
-						ResetCurrentSignalProperties();
-						return 0;
+										//Log($"[SYNC-SIGNALS] BULL signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										return (finalScore, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Positive for bull
+									}
+									else if (isBear)
+									{
+										CurrentBullStrength = 0;
+										CurrentBearStrength = finalScore;
+							
+										//Log($"[SYNC-SIGNALS] BEAR signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										return (-finalScore, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Negative for bear
+									}
+									else
+									{
+										// Unknown signal type
+										if (IsHistoricalMode())
+										{
+											Log($"[SYNC-SIGNALS] Unknown signal type: {bestSignal.type}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										}
+										return (0, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback);
+									}
+								}
+							}
+							
+							// No valid signals found
+							if (IsHistoricalMode() && signalPoolResponse?.signals?.Count > 0)
+							{
+								Log($"[SYNC-SIGNALS] No valid signals after filtering. Total signals: {signalPoolResponse.signals.Count}, minScore filter: {effectiveScoreRequirement}");
+							}
+							ResetCurrentSignalProperties();
+							return (0, 0, 0, 0, 0);
+						}
+						else
+						{
+							if (IsHistoricalMode())
+							{
+								string errorContent = response.Content?.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult() ?? "No content";
+								Log($"[SYNC-SIGNALS] HTTP error: {response.StatusCode}, Content: {errorContent}");
+							}
+							return (0, 0, 0, 0, 0);
+						}
 					}
-					else
+					catch (TaskCanceledException)
 					{
-						//Log($"[SYNC-SIGNALS] HTTP error: {response.StatusCode}");
-						return 0;
+						// Timeout occurred - this is normal in historical mode when service is unavailable
+						// Don't log this repeatedly to avoid spam
+						return (0, 0, 0, 0, 0);
 					}
 				}
 			}
+			catch (TaskCanceledException)
+			{
+				// Timeout - expected in historical mode, don't log
+				return (0, 0, 0, 0, 0);
+			}
+			catch (HttpRequestException httpEx)
+			{
+				// Network error - log only once per session
+				if (ErrorCounter < 1)
+				{
+					Log($"[SYNC-SIGNALS] Network error (first occurrence): {httpEx.Message}");
+					ErrorCounter++;
+				}
+				return (0, 0, 0, 0, 0);
+			}
 			catch (Exception ex)
 			{
-				Log($"[SYNC-SIGNALS] Error: {ex.Message}");
-				return 0;
+				// Only log unexpected errors
+				if (!ex.Message.Contains("task was canceled"))
+				{
+					Log($"[SYNC-SIGNALS] Error: {ex.Message}");
+				}
+				return (0, 0, 0, 0, 0);
 			}
 		}
 		
@@ -1233,6 +1333,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			CurrentRawScore = 0;
 			CurrentStopModifier = 0;
 			CurrentPullbackModifier = 0;
+			CurrentPosSize = 1;
+			CurrentRisk = 50.0;
+			CurrentTarget = 100.0;
+			CurrentPullback = 15.0;
 		}
 
 		
@@ -1270,7 +1374,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                         
                         // Send synchronously via HTTP with very short timeout
                         string jsonPayload = JsonConvert.SerializeObject(barData);
-						//Log($"SendBarSync {jsonPayload}");
+						if (IsHistoricalMode() && DateTime.Now.Second % 10 == 0) // Log every ~10 seconds
+						{
+							//Log($"[HISTORICAL] SendBarSync: {instrument} @ {timestamp:yyyy-MM-dd HH:mm:ss}");
+						}
                         using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
                         {
                             try
@@ -2221,12 +2328,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                             Log($"[REALTIME-ASYNC] SendMatchingConfig starting background call for {instrument}");
                             await SendMatchingConfigAsync(instrument, config);
                             Log($"[REALTIME-ASYNC] SendMatchingConfig completed background call for {instrument}");
-            }
-            catch (Exception ex)
-            {
-                            Log($"[REALTIME-ASYNC] SendMatchingConfig background call failed for {instrument}: {ex.Message}");
-                        }
-                    });
+			            }
+			            catch (Exception ex)
+			            {
+	                        Log($"[REALTIME-ASYNC] SendMatchingConfig background call failed for {instrument}: {ex.Message}");
+	                    }
+	                 });
                     
                     // Return success immediately (fire-and-forget)
                     return true;
@@ -2752,7 +2859,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // 1. Standard divergence check (existing)
                     updateTasks.Add(CheckDivergenceAsync(simStop.EntryOrderUUID, currentPrice));
                     
-                    // 2. NEW: RF divergence exit check
+                    // 2. NEW: RF divergence exit check - RE-ENABLED
                     updateTasks.Add(CheckRFDivergenceExitAsync(simStop.EntryOrderUUID, currentPrice));
                 }
             }
@@ -3084,6 +3191,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (IsDisposed()) return 0;
             
+            // Check if this position is blacklisted (failed RF registration)
+            lock (rfBlacklistLock)
+            {
+                if (rfExitBlacklist.Contains(entrySignalId))
+                {
+                    return 0; // Silently return 0 for blacklisted positions
+                }
+            }
+            
             // Use entrySignalId directly since we have separate dictionary
             
             try
@@ -3152,7 +3268,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                     else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                     {
-                        Log($"[RF-EXIT] Position {entrySignalId} not found in RF service - may not be registered for RF exit monitoring");
+                        // Add to blacklist to prevent repeated checks
+                        lock (rfBlacklistLock)
+                        {
+                            if (!rfExitBlacklist.Contains(entrySignalId))
+                            {
+                                rfExitBlacklist.Add(entrySignalId);
+                                Log($"[RF-EXIT] Position {entrySignalId} not found in RF service - blacklisted to prevent repeated checks");
+                            }
+                        }
                         return 0;
                     }
                     else
@@ -3299,6 +3423,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     
                     if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound)
                     {
+                        // Remove from blacklist when successfully deregistered
+                        lock (rfBlacklistLock)
+                        {
+                            rfExitBlacklist.Remove(entrySignalId);
+                        }
                         // Success or not found (already deregistered) are both OK
                         return true;
                     }
@@ -3317,12 +3446,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // NEW: Static properties to track current RF exit signals (similar to existing divergence properties)
-        public static double CurrentRFExitScore { get; private set; } = 0;
-        public static bool CurrentRFShouldExit { get; private set; } = false;
-        public static string CurrentRFExitReason { get; private set; } = "";
-        public static double CurrentRFConfidenceChange { get; private set; } = 0;
-        public static DateTime LastRFExitUpdate { get; private set; } = DateTime.MinValue;
+        		// NEW: Static properties to track current RF exit signals (similar to existing divergence properties)
+		public static double CurrentRFExitScore { get; private set; } = 0;
+		public static bool CurrentRFShouldExit { get; private set; } = false;
+		public static string CurrentRFExitReason { get; private set; } = "";
+		public static double CurrentRFConfidenceChange { get; private set; } = 0;
+		public static DateTime LastRFExitUpdate { get; private set; } = DateTime.MinValue;
+		
+		// Track positions that failed RF registration to avoid repeated checks
+		private readonly HashSet<string> rfExitBlacklist = new HashSet<string>();
+		private readonly object rfBlacklistLock = new object();
 
         // NEW: Convenience method to get both divergence scores for a position
         public DivergenceScores GetAllDivergenceScores(string entrySignalId, double currentPrice = 0.0)
@@ -3417,6 +3550,113 @@ namespace NinjaTrader.NinjaScript.Strategies
             public override string ToString()
             {
                 return $"Standard: {StandardDivergence:F1}, RF: {RFExitScore}, Action: {ExitReason}";
+            }
+        }
+
+        // NEW: Send position closure data to RF service for annotation
+        public async Task<bool> SendPositionClosedAsync(string patternID, List<BarDataPacket> closingBars, double profit, bool isWin)
+        {
+            if (IsDisposed()) return false;
+
+            try
+            {
+                // Validate required parameters
+                if (string.IsNullOrEmpty(patternID))
+                {
+                    Log("[ERROR] SendPositionClosed: patternID is required");
+                    return false;
+                }
+
+                // Create the request payload
+                var positionClosedRequest = new
+                {
+                    patternID = patternID,
+                    closingBars = closingBars?.Select(bar => new
+                    {
+                        timestamp = DateTimeToUnixMs(bar.Timestamp),  // Convert DateTime to Unix ms
+                        open = bar.Open,
+                        high = bar.High,
+                        low = bar.Low,
+                        close = bar.Close,
+                        volume = bar.Volume,
+                        timeframe = bar.Timeframe
+                    }).ToArray() ?? new object[0],
+                    profit = profit,
+                    isWin = isWin,
+                    strategyId = sessionID,  // Consistent with other functions
+                    sessionID = sessionID,   // Keep both for compatibility
+                    closedAt = DateTime.UtcNow.ToString("o")
+                };
+
+                // Convert to JSON
+                string jsonPayload = JsonConvert.SerializeObject(positionClosedRequest);
+                StringContent content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                // Send to RF service
+                string rfServiceUrl = "http://localhost:3009";
+                string endpoint = $"{rfServiceUrl}/api/position-closed";
+                
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                {
+                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string responseText = await response.Content.ReadAsStringAsync();
+                        Log($"[ANNOTATION] Successfully sent position closure data for {patternID} ({(isWin ? "WIN" : "LOSS")}: ${profit:F2})");
+                        return true;
+                    }
+                    else
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync();
+                        Log($"[ANNOTATION] Failed to send position closure (HTTP {response.StatusCode}): {errorContent}");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[ANNOTATION] Error sending position closure: {ex.Message}");
+                return false;
+            }
+        }
+
+        // NEW: Synchronous wrapper for SendPositionClosedAsync
+        public bool SendPositionClosed(string patternID, List<BarDataPacket> closingBars, double profit, bool isWin)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
+                if (IsHistoricalMode())
+                {
+                    // BACKTESTING: Use synchronous calls for sequential processing
+                    var result = SendPositionClosedAsync(patternID, closingBars, profit, isWin).ConfigureAwait(false).GetAwaiter().GetResult();
+                    return result;
+                }
+                else
+                {
+                    // REAL-TIME: Use fire-and-forget to prevent freezes
+                    Task.Run(async () => {
+                        try
+                        {
+                            await SendPositionClosedAsync(patternID, closingBars, profit, isWin);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[ANNOTATION] Background position closure send failed for {patternID}: {ex.Message}");
+                        }
+                    });
+                    
+                    // Return success immediately (fire-and-forget)
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[ANNOTATION] Error in SendPositionClosed: {ex.Message}");
+                return false;
             }
         }
     }

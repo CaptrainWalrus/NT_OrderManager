@@ -29,15 +29,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
     {
 		private List<OrderRecordMasterLite> openOrders = new List<OrderRecordMasterLite>();
 
-      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string appendSignal,int thisBar,OrderType orderType,patternFunctionResponse builtSignal)
+      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string overWriteSignal,int thisBar,OrderType orderType,patternFunctionResponse builtSignal)
 		{	 
 		
 		string subTypeParam = builtSignal.patternSubType;
 		string patternIdString = builtSignal.patternId;
-		double stopModifier = builtSignal.stopModifier;
-		double pullbackModifier = builtSignal.pullbackModifier;
+		double recMaxLoss = builtSignal.recStop;
+		int recQty = builtSignal.recQty;
+		double recPullback = builtSignal.recPullback;
+		double recTarget = builtSignal.recTarget;
 		string tryCatchSection = "Begin Order Management Lite "+OA+" "+signalPackageParam.SignalReturnAction;
-	
+	 	Print($" EntryLimitFunctionLite recMaxLoss {recMaxLoss} recTarget {recTarget}");
 		try
 		{
 		//Print(tryCatchSection);
@@ -83,8 +85,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						sourceSignalPackage = signalPackageParam,
 						patternSubtype = subTypeParam,
 						patternId = patternIdString,
-						pullbackModifier = pullbackModifier,
-						stopModifier = stopModifier,
+						pullbackModifier = 1,
+						stopModifier = 1,
 			
 					};
 					tryCatchSection = "Section 3c Order Management Lite ";
@@ -93,12 +95,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						OrderStatsEntryPrice = signalPackageParam.price,
 						OrderStatsExitPrice = 0,
 						OrderStatsProfit = 0,
-						OrderStatsHardProfitTarget = 0,/// Profit is scalable so dont let to overscale
+						OrderStatsHardProfitTarget = recTarget != 0 && recTarget < microContractTakeProfit ? recTarget : microContractTakeProfit,/// Profit is scalable so dont let to overscale
 						OrderStatsAllTimeHighProfit = 0,
 						OrderStatsAllTimeLowProfit = 0,
-						OrderStatspullBackThreshold = SoftTakeProfit*(pullbackModifier > 0 ? pullbackModifier : 1),
-						OrderStatspullBackPct = pullBackPct,
-						OrderMaxLoss = microContractStoploss*(stopModifier > 0 ? stopModifier : 1),/// loss is scalable so dont let to overscale
+						OrderStatspullBackThreshold = recPullback > softTakeProfitMult ? recPullback : softTakeProfitMult,
+						OrderStatspullBackPct =  pullBackPct,
+						OrderMaxLoss = recMaxLoss != 0 && recMaxLoss < microContractStoploss ? recMaxLoss : microContractStoploss,/// loss is scalable so dont let to overscale
 					};
 					tryCatchSection = "Section 3d Order Management Lite ";
 					
@@ -123,7 +125,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						 EntryOrderUUID = entryUUID,
 						 ExitOrderUUID = exitUUID,
 						 EntryOrderAction = signalPackageParam.SignalReturnAction.Sentiment == signalReturnActionType.Bullish ? OrderAction.Buy : OrderAction.SellShort,
-						 quantity = accountEntryQuantity,
+						 quantity = recQty > 0 ? recQty : accountEntryQuantity,
 						 isEnterReady = true,
 						 EntryBar = thisBar,
 						 EntrySignalReturnAction =  new signalReturnAction(signalPackageParam.SignalReturnAction.SignalName,signalReturnActionType.Bullish), // Use the SignalId directly,
@@ -143,7 +145,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						 EntryOrderUUID = entryUUID,
 						 ExitOrderUUID = exitUUID,
 						 EntryOrderAction = signalPackageParam.SignalReturnAction.Sentiment == signalReturnActionType.Bullish ? OrderAction.Buy : OrderAction.SellShort,
-						 quantity = accountEntryQuantity,
+						 quantity = recQty > 0 ? recQty : accountEntryQuantity,
 						 isExitReady = false,
 						 OrderRecordMasterLite = orderRecordMasterLite,
 						 instrumentSeriesIndex = signalPackageParam.instrumentSeriesIndex,

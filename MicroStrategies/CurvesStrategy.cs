@@ -36,13 +36,25 @@ public partial class CurvesStrategy : MainStrategy
 	private bool terminatedStatePrinted = false;
 	
 	private bool historicalBarsSent = false;
+	
+
+	
+	
+	// Strategy-wide cooldown for regime protection
+	[XmlIgnore]
+	private bool isInCooldown = false;
+	[XmlIgnore]
+	private DateTime cooldownStartTime = DateTime.MinValue;
+	[XmlIgnore]
+	private double cooldownExitPrice = 0.0;
+	private const int COOLDOWN_MINUTES = 15;
+	private const double COOLDOWN_PRICE_THRESHOLD = 0.5; // Points from exit price
 	// Restore NinjaScript Properties
 
 	
 	
 	public bool UseRemoteService = false;
 	
-	public DenoiseReversalIndicator DenoiseIndicator;
  
 	// Note: Price history no longer needed - ME service maintains its own 200-bar buffer
 	// private List<double> priceHistory = new List<double>(); // REMOVED - not needed
@@ -115,10 +127,55 @@ public partial class CurvesStrategy : MainStrategy
 		else if (State == State.DataLoaded) 
 		{   
 			Print("CurvesStrategy.OnStateChange: Handling State.DataLoaded");
-			// Initialize the service asynchronously
+			
+			// Initialize CurvesV2Service
+			try
+			{
+				Print("Initializing CurvesV2Service...");
+				
+				// Create configuration for CurvesV2Service
+				var config = new NinjaTrader.NinjaScript.Strategies.OrganizedStrategy.CurvesV2Config();
+				config.UseRemoteServer = UseRemoteServiceParameter;
+				config.EnableSyncMode = UseDirectSync;
+				
+				// Initialize the service
+				curvesService = new CurvesV2Service(config, msg => Print(msg));
+				
+				// Generate a unique session ID for this strategy instance
+				curvesService.sessionID = Guid.NewGuid().ToString();
+				
+				// Set strategy state for conditional sync/async behavior
+				curvesService.SetStrategyState(State == State.Historical);
+				
+				// Load matching engine configuration
+				LoadMEConfig();
+				
+				// Pass MasterSimulatedStops reference to service
+				curvesService.SetMasterSimulatedStops(MasterSimulatedStops);
+				
+				Print("CurvesV2Service initialized successfully.");
+				
+				// Optional: Connect WebSocket if not using HTTP-only mode
+				if (!UseDirectSync && State != State.Historical)
+				{
+					Task.Run(async () => {
+						try {
+							bool connected = await curvesService.ConnectWebSocketAsync();
+							Print($"CurvesV2Service WebSocket connected: {connected}");
+						}
+						catch (Exception ex) {
+							Print($"WebSocket connection optional - continuing with HTTP: {ex.Message}");
+						}
+					});
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"Error initializing CurvesV2Service: {ex.Message}");
+				curvesService = null;
+			}
+			
 			//AddChartIndicator(DenoiseIndicator);
-		
-
 		}
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
@@ -142,8 +199,28 @@ public partial class CurvesStrategy : MainStrategy
 		{
 			if(terminatedStatePrinted==false)
 			{
-				Print($"CurvesStrategy.OnStateChange: State.Terminated entered for instance {this.GetHashCode()}. Running cleanup if needed.");
+				// Only log for non-test instances
+				bool isTestInstance = IsInStrategyAnalyzer && Account == null;
+				if (!isTestInstance)
+				{
+					Print($"CurvesStrategy.OnStateChange: State.Terminated entered for instance {this.GetHashCode()}. Running cleanup if needed.");
+					Print($"[TERMINATION-DEBUG] Error count: {curvesService?.ErrorCounter ?? -1}");
+					Print($"[TERMINATION-DEBUG] Time: {Time[0]}");
+					Print($"[TERMINATION-DEBUG] Strategy state: {State}");
+				}
 				terminatedStatePrinted = true;
+				
+				// 1. Dispose CurvesV2Service
+				if (curvesService != null)
+				{
+					Print("1. Disposing CurvesV2Service...");
+					curvesService.Dispose();
+					curvesService = null;
+				}
+				
+				// 2. Reset static data
+				Print("2. Resetting all static data in CurvesV2Service");
+				CurvesV2Service.ResetStaticData();
 				
 				// 3. (Removed WebSocket handling since it's in the service dispose method)
 				
@@ -153,8 +230,6 @@ public partial class CurvesStrategy : MainStrategy
 				CurrentBearStrength = 0;
 				
 				// 5. (Removed ProcessQueue setting since we're now using fire-and-forget)
-				
-				
 				
 				Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
 				
@@ -176,7 +251,7 @@ public partial class CurvesStrategy : MainStrategy
 		DebugFreezePrint("CurvesStrategy OnBarUpdate START");
 		base.OnBarUpdate(); 
 		DebugFreezePrint("Base OnBarUpdate completed");
-		
+		//Print($"base.OnBarUpdate() done {Time[0]}");
 		try
 		{
 			DebugFreezePrint("Service availability check");
@@ -260,6 +335,9 @@ public partial class CurvesStrategy : MainStrategy
 		
 			
 			
+			// Check for cooldown activation on every bar
+			CheckAndActivateCooldown();
+			
 			// Log connection status periodically
 			CurvesV2Service.CurrentContextId = null;
 			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
@@ -289,7 +367,7 @@ public partial class CurvesStrategy : MainStrategy
 				    );
 				    DebugFreezePrint("SendBarFireAndForget completed");
 				}
-				else
+				else if (State == State.Historical || IsInStrategyAnalyzer)
 				{
 				    // Backtest (Strategy Analyzer) or Historical (pre-realtime): sync/blocking
 				    bool barSent = curvesService.SendBarSync(
@@ -303,37 +381,13 @@ public partial class CurvesStrategy : MainStrategy
 				        State == State.Historical ? "backtest" : "1m"
 				    );
 				    DebugFreezePrint("SendBarSync completed");
+				    
+				   
 				}
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
 				double currentPrice = Close[0];  // Use the current bar's close price
 			    curvesService.UpdateAllDivergenceScoresAsync(currentPrice);
 
-				/*// Get orange line data from ME service (no price data needed - ME already has it)
-			    if (curvesService != null &&BarsInProgress == 0)
-			    {
-			        // Request existing orange line data from ME service (no price data sent)
-			        curvesService.GetOrangeLineData("MGC", UseRemoteService);
-			        
-			        // Update the indicator's values from the service
-			        if (DenoiseIndicator != null)
-			        {
-			            DenoiseIndicator.lastDenoisedAvg = CurvesV2Service.CurrentOrangeLine;
-			            DenoiseIndicator.lastStdDev = CurvesV2Service.CurrentOrangeLineDeviation;
-			            DenoiseIndicator.lastSignal = CurvesV2Service.CurrentOrangeLineSignal;
-			            DenoiseIndicator.lastConfidence = CurvesV2Service.CurrentOrangeLineConfidence;
-			            
-						
-			            // Debug: Compare current price to orange line
-			            double priceDiff = Close[0] - CurvesV2Service.CurrentOrangeLine;
-			            if (CurvesV2Service.CurrentOrangeLineConfidence > 0.1) // Only log if significant difference
-			            {
-							Draw.Dot(this,$"{CurrentBars[0]}",true,0,CurvesV2Service.CurrentOrangeLine,Brushes.Gray);
-			                Print($"[ORANGE-LINE] Updated {Time[0]}: Line={CurvesV2Service.CurrentOrangeLine:F2}, Deviation={CurvesV2Service.CurrentOrangeLineDeviation:F2}, Signal={CurvesV2Service.CurrentOrangeLineSignal}, Confidence={CurvesV2Service.CurrentOrangeLineConfidence:P1}");
-
-							
-			            }
-			        }
-			    }*/
 					
 			}
 			
@@ -352,18 +406,36 @@ public partial class CurvesStrategy : MainStrategy
 	protected override patternFunctionResponse BuildNewSignal()
 	{
 		DebugFreezePrint("CurvesStrategy BuildNewSignal START");
-		//NinjaTrader.Code.Output.Process($"[CURVES] BuildNewSignal CALLED - BarsInProgress: {BarsInProgress}, Time: {Time[0]}", PrintTo.OutputTab1);
-		//Print("[BuildNewSignal] CurvesStrategy");
-		string msg = "A";
+		
 		patternFunctionResponse thisSignal = new patternFunctionResponse();
 		thisSignal.newSignal = FunctionResponses.NoAction;
 	    thisSignal.patternSubType = "none";
 		thisSignal.patternId = "";
+		
 		try{
+			// Early safety checks
+			if (curvesService == null)
+			{
+				DebugFreezePrint("BuildNewSignal: curvesService null - returning NoAction");
+				return thisSignal;
+			}
+			
+			if (curvesService.ErrorCounter > 10)
+			{
+				DebugFreezePrint($"BuildNewSignal: Error counter exceeded {curvesService.ErrorCounter} - returning NoAction");
+				return thisSignal;
+			}
+			
+			// Check cooldown status first - regime protection
+			CheckCooldownExit(); // Update cooldown status
+			if (isInCooldown)
+			{
+				DebugFreezePrint("BuildNewSignal: In cooldown - blocking all entries");
+				return thisSignal; // Block all trading during cooldown
+			}
+			
 		DebugFreezePrint("BuildNewSignal validation checks");
 		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
-	 
-		msg = "A2 ";
 	    if(CurrentBars[0] < BarsRequiredToTrade)
 	    {
 	        return thisSignal;
@@ -372,7 +444,6 @@ public partial class CurvesStrategy : MainStrategy
 	    {
 	        return thisSignal;
 	    }
-	    msg = "B";
 	    DebugFreezePrint("BuildNewSignal position calculations");
 	    // Calculate total positions and working orders
 	    int totalPositions = getAllcustomPositionsCombined();
@@ -385,9 +456,10 @@ public partial class CurvesStrategy : MainStrategy
 	    if (totalPositions >= accountMaxQuantity )
 	    {
 	        Print($"*** SAFETY HALT - Position limit reached: positions={totalPositions},  max={accountMaxQuantity}");
-	        return thisSignal;
+	        
 	    }
 	   
+		
 	    // Regular position check with throttle timing
 	    //if (totalPositions < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 		if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
@@ -400,72 +472,70 @@ public partial class CurvesStrategy : MainStrategy
 				string instrumentCode = GetInstrumentCode();
 				
 				DebugFreezePrint("About to call CheckSignalsSync (NEW SYNCHRONOUS VERSION)");
-				// NEW: Use synchronous version that blocks and returns score immediately
-				double score = curvesService.CheckSignalsSync(UseRemoteService, Time[0], instrumentCode, OutlierScoreRequirement, effectiveScoreRequirement);
+				// NEW: Use synchronous version that returns enhanced signal data
+				var (score, posSize, risk, target, pullback) = curvesService.CheckSignalsSync(UseRemoteService, Time[0], instrumentCode, OutlierScoreRequirement, effectiveScoreRequirement);
+				if(score!=0) Print($"[BuildNewSignal] score={score}, posSize={posSize}, risk={risk}, target={target}, pullback{pullback}");
 				DebugFreezePrint("CheckSignalsSync completed");
 				
-			        if (CurvesV2Service.SignalsAreFresh || score != 0) // Accept fresh signals OR immediate non-zero scores
+				// Store signal in history for persistence validation using CurrentBars[0]
+				currentBarIndex = CurrentBars[0];
+				signalHistory[currentBarIndex] = score;
+				
+				// Clean up old signals (keep only last 10 bars for safety)
+				var keysToRemove = signalHistory.Keys.Where(k => k < currentBarIndex - 10).ToList();
+				foreach (var key in keysToRemove)
+				{
+					signalHistory.Remove(key);
+				}
+				
+			        if (CurvesV2Service.SignalsAreFresh && score != 0) // Accept fresh signals OR immediate non-zero scores
 			        {
-			        	DebugFreezePrint("Fresh signals found - evaluating");
-			      
-						msg = "D";
-			            // Enhanced logging to debug signal values
-			            Print($"[DEBUG] Signal details: Score={score:F2} PatternType={CurvesV2Service.CurrentPatternType}, PatternId={CurvesV2Service.CurrentPatternId}");
-				           
+			        	
 						
-							if(score > 0)
-							{
-								Print($"[{Time[0]}] LONG SIGNAL FROM CURVESV2: Score={score:F4} [subtype] {CurvesV2Service.CurrentSubtype} ");
-
-								
+						if(score > 0)
+						{
 							
-				            		// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-						            if (score > OutlierScoreRequirement && IsRising(EMA3) && IsRising(VWAP1))
-						            {
-										DebugFreezePrint("LONG signal generated");
-										Print($"[LONG] Score={score:F4}, RawScore={CurvesV2Service.CurrentRawScore:F4}");
-										
-										
-							                ThrottleAll = Times[0][0];
-							                thisSignal.newSignal = FunctionResponses.EnterLong;
-											thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
-											thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-											thisSignal.stopModifier = CurvesV2Service.CurrentStopModifier;
-											thisSignal.pullbackModifier = CurvesV2Service.CurrentPullbackModifier;
-											return thisSignal;
-									}
-									
-								
-				            }
-							else if(score < 0)
-							{
-								
-								Print($"[{Time[0]}] SHORT SIGNAL FROM CURVESV2: Score={score:F4} [subtype] {CurvesV2Service.CurrentSubtype}");
-
-								
-			
-						            if (Math.Abs(score) > OutlierScoreRequirement && IsFalling(EMA3)  && IsFalling(VWAP1))
-						            {
-										DebugFreezePrint("SHORT signal generated");
-										Print($"[SHORT] Score={score:F4}, RawScore={CurvesV2Service.CurrentRawScore:F4}");
-																		
-										ThrottleAll = Times[0][0];
-							            thisSignal.newSignal = FunctionResponses.EnterShort;
-										thisSignal.patternSubType = CurvesV2Service.CurrentSubtype;
-										thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-										thisSignal.stopModifier = CurvesV2Service.CurrentStopModifier;
-										thisSignal.pullbackModifier = CurvesV2Service.CurrentPullbackModifier;
-										return thisSignal;
-									}
-									
 							
+			            	// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
+				            if (score > OutlierScoreRequirement)
+				            {
+								DebugFreezePrint("LONG signal generated with persistence");
+								Print($"[LONG] Score={score:F4} [PERSISTENT]");
+								
+					                ThrottleAll = Times[0][0];
+					                thisSignal.newSignal = FunctionResponses.EnterLong;
+									thisSignal.patternSubType = CurvesV2Service.CurrentSubtype + "_PERSISTENT";
+									thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+									thisSignal.recStop = risk;       // Use RF risk value (dollars)
+									thisSignal.recTarget = target;
+									thisSignal.recPullback = (100-pullback)/100; // Use RF pullback percentage eg 15 .. .15 >> 0.85
+									thisSignal.recQty = posSize;     // Use RF position size multiplier
+									return thisSignal;
 							}
-						
-							else
-							{
-								//Print($"[DEBUG] SKIP: Bull={currentBullStrength:F2}% , Bear={currentBearStrength:F2}% |||| [confluenceScore] {CurvesV2Service.CurrentConfluenceScore} , [oppositionStrength] {CurvesV2Service.CurrentOppositionStrength} [effectiveScore] {CurvesV2Service.CurrentEffectiveScore:F2}, [rawScore] {CurvesV2Service.CurrentRawScore:F2}");
-		
+			            }
+						else if(score < 0)
+						{
+							
+				            if (Math.Abs(score) > OutlierScoreRequirement)
+				            {
+								DebugFreezePrint("SHORT signal generated with persistence");
+								Print($"[SHORT] Score={score:F4} [PERSISTENT]");
+														
+								ThrottleAll = Times[0][0];
+					            thisSignal.newSignal = FunctionResponses.EnterShort;
+								thisSignal.patternSubType = CurvesV2Service.CurrentSubtype + "_PERSISTENT";
+								thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
+								thisSignal.recStop = risk;       // Use RF risk value (dollars)
+								thisSignal.recPullback = pullback; // Use RF pullback percentage
+								thisSignal.recTarget = target;
+								thisSignal.recQty = posSize;     // Use RF position size multiplier
+								return thisSignal;
 							}
+						}
+						else
+						{
+							//Print($"[PERSISTENCE] Signal direction mismatch: score={score:F2}, persistence={persistenceDirection}");
+						}
 			        	
 					}
 				
@@ -479,8 +549,18 @@ public partial class CurvesStrategy : MainStrategy
 		catch (Exception ex)
 		{
 			DebugFreezePrint($"ERROR in CurvesStrategy BuildNewSignal: {ex.Message}");
-			NinjaTrader.Code.Output.Process($"Error in BuildNewSignal: {ex.Message} + {msg}", PrintTo.OutputTab1); 
-			 return thisSignal;
+			Print($"[CRITICAL] BuildNewSignal Exception: {ex.Message}");
+			Print($"[CRITICAL] Stack trace: {ex.StackTrace}");
+			
+			// Increment error counter to prevent cascading failures
+			if (curvesService != null)
+			{
+				curvesService.ErrorCounter++;
+				Print($"[ERROR-COUNTER] Incremented to {curvesService.ErrorCounter}");
+			}
+			
+			// Return safe signal to prevent strategy termination
+			return thisSignal;
 		}
 	    
 	}
@@ -510,6 +590,87 @@ public partial class CurvesStrategy : MainStrategy
 			instrumentCode = "UNKNOWN"; // Or handle appropriately
 		}
 		return instrumentCode;
+	}
+
+	
+
+			// Add simple debug logging for backtesting
+		private void BacktestLog(string message)
+		{
+			if (State == State.Historical || IsInStrategyAnalyzer)
+			{
+				Print($"[BACKTEST] {message}");
+			}
+		}
+		
+		// Strategy-wide cooldown management for regime protection
+		private void CheckAndActivateCooldown()
+		{
+			if (isInCooldown) return; // Already in cooldown
+		
+		// Method 1: Single position max loss
+		double currentDrawdown = Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency, Close[0]);
+		double positionLoss = Math.Abs(currentDrawdown);
+		
+		if (positionLoss > microContractStoploss * 3) // 3x normal stop
+		{
+			ActivateCooldown($"Single position max loss: ${positionLoss:F2}");
+			return;
+		}
+		
+		// Method 2: Daily cumulative loss
+		double dailyLoss = Math.Abs(dailyProfit); // Use your existing daily P&L tracking
+		if (dailyLoss > dailyProfitMaxLoss * 0.8) // 80% of daily max loss
+		{
+			ActivateCooldown($"Daily loss approaching limit: ${dailyLoss:F2}");
+			return;
+		}
+		
+		// Method 3: Consecutive losing trades (if you track this)
+		// Example: if (consecutiveLosses >= 3) { ActivateCooldown("3 consecutive losses"); }
+	}
+	
+	private void ActivateCooldown(string reason)
+	{
+		isInCooldown = true;
+		cooldownStartTime = Time[0];
+		cooldownExitPrice = Close[0];
+		
+		Print($"[COOLDOWN] 🚨 ACTIVATED: {reason}");
+		Print($"[COOLDOWN] Start time: {cooldownStartTime}");
+		Print($"[COOLDOWN] Exit price: {cooldownExitPrice:F2}");
+		Print($"[COOLDOWN] Will exit when: 15+ minutes OR price moves 0.5+ points");
+	}
+	
+	private bool CheckCooldownExit()
+	{
+		if (!isInCooldown) return false;
+		
+		// Check time-based exit (15 minutes)
+		TimeSpan elapsed = Time[0] - cooldownStartTime;
+		bool timeExit = elapsed.TotalMinutes >= COOLDOWN_MINUTES;
+		
+		// Check price-based exit (0.5+ point move)
+		double priceMove = Math.Abs(Close[0] - cooldownExitPrice);
+		bool priceExit = priceMove >= COOLDOWN_PRICE_THRESHOLD;
+		
+		if (timeExit || priceExit)
+		{
+			string exitReason = timeExit ? $"Time elapsed ({elapsed.TotalMinutes:F1} min)" : $"Price moved ({priceMove:F2} points)";
+			Print($"[COOLDOWN] ✅ EXITED: {exitReason}");
+			Print($"[COOLDOWN] Resume trading - regime may have shifted");
+			
+			isInCooldown = false;
+			return true;
+		}
+		
+		// Still in cooldown
+		if (CurrentBars[0] % 10 == 0) // Log every 10 bars
+		{
+			Print($"[COOLDOWN] ⏳ Still active: {elapsed.TotalMinutes:F1} min, price move {priceMove:F2}");
+		}
+		
+		return false;
 	}
 
 	// Hybrid synchronous wrapper for SendHistoricalBarsAsync
@@ -606,6 +767,7 @@ public partial class CurvesStrategy : MainStrategy
 	// Override LoadMEConfig for backtesting-specific configuration
 	protected override void LoadMEConfig()
 	{
+		Print("LoadMEConfig BEGIN");
 		try
 		{
 			if (curvesService == null)
@@ -636,10 +798,10 @@ public partial class CurvesStrategy : MainStrategy
 			
 			// Get instrument code
 			string instrumentCode = GetInstrumentCode();
-			
+			Print($"LoadMEConfig sending configSent");
 			// Send configuration synchronously
 			bool configSent = curvesService.SendMatchingConfig(instrumentCode, backtestConfig);
-			
+			Print($"LoadMEConfig configSent {configSent}");
 			if (configSent)
 			{
 				Print($"[CONFIG] Backtesting matching configuration sent successfully for {instrumentCode}");

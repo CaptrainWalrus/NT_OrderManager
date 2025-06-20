@@ -525,7 +525,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			subTypeMisMatch_L,
 			subTypeMisMatch_S,
 			DIV_L,
-			DIV_S
+			DIV_S,
+			rfExitViolation_S,
+			rfExitViolation_L
 		
 		}
 		
@@ -817,8 +819,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public FunctionResponses newSignal { get; set; }
 			public string patternSubType { get; set; }
 			public string patternId { get; set; }
-			public double stopModifier { get; set; }
-			public double pullbackModifier { get; set; }
+			public double recStop { get; set; }
+			public double recTarget { get; set; }
+			public double recPullback { get; set; }
+			public int recQty { get; set; } 
 			
 		}
 		

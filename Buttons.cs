@@ -79,8 +79,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						thisSignal.newSignal = FunctionResponses.NoAction;
 					    thisSignal.patternSubType = "noneManual";
 						thisSignal.patternId = "";
-						thisSignal.stopModifier = 1;
-						thisSignal.pullbackModifier = 1;
+						thisSignal.recStop = 1;
+						thisSignal.recPullback = 1;
 					
 							if (GetMarketPositionByIndex(BarsInProgress) == isThisMarketPosition)
                         	{ 
