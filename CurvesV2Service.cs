@@ -1180,7 +1180,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 								
 								if (bestSignal != null)
 								{
-									Log($"[SYNC-SIGNALS] Found {responseText}");
+									//Log($"[SYNC-SIGNALS] Found {responseText}");
 									// Update static properties with best signal
 									CurrentPatternType = bestSignal.patternType;
 									CurrentSubtype = bestSignal.subtype;

@@ -497,7 +497,7 @@ public partial class CurvesStrategy : MainStrategy
 							
 							
 			            	// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-				            if (score > OutlierScoreRequirement)
+				            if (score > OutlierScoreRequirement && IsRising(EMA3))
 				            {
 								DebugFreezePrint("LONG signal generated with persistence");
 								Print($"[LONG] Score={score:F4} [PERSISTENT]");
@@ -516,7 +516,7 @@ public partial class CurvesStrategy : MainStrategy
 						else if(score < 0)
 						{
 							
-				            if (Math.Abs(score) > OutlierScoreRequirement)
+				            if (Math.Abs(score) > OutlierScoreRequirement && IsFalling(EMA3))
 				            {
 								DebugFreezePrint("SHORT signal generated with persistence");
 								Print($"[SHORT] Score={score:F4} [PERSISTENT]");
