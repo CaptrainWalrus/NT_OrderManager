@@ -37,8 +37,10 @@ public partial class CurvesStrategy : MainStrategy
 	
 	private bool historicalBarsSent = false;
 	
-
-	
+	// NEW: Collection to store historical bars for remote service backfill
+	[XmlIgnore]
+	private List<object> historicalBars = new List<object>();
+	private const int MAX_HISTORICAL_BARS = 200; // Keep last 200 bars for backfill
 	
 	// Strategy-wide cooldown for regime protection
 	[XmlIgnore]
@@ -55,7 +57,7 @@ public partial class CurvesStrategy : MainStrategy
 	
 	public bool UseRemoteService = false;
 	
- 
+ 	public bool backfillSuccess = false;
 	// Note: Price history no longer needed - ME service maintains its own 200-bar buffer
 	// private List<double> priceHistory = new List<double>(); // REMOVED - not needed
 	// private const int MAX_PRICE_HISTORY = 200; // REMOVED - ME service handles this
@@ -135,7 +137,8 @@ public partial class CurvesStrategy : MainStrategy
 				
 				// Create configuration for CurvesV2Service
 				var config = new NinjaTrader.NinjaScript.Strategies.OrganizedStrategy.CurvesV2Config();
-				config.UseRemoteServer = UseRemoteServiceParameter;
+				// Force local services for backtesting to avoid remote timeouts
+				config.UseRemoteServer = UseRemoteServiceParameter && State != State.Historical;
 				config.EnableSyncMode = UseDirectSync;
 				
 				// Initialize the service
@@ -180,10 +183,11 @@ public partial class CurvesStrategy : MainStrategy
 		// *** Restore Historical block structure ***
 		else if (State == State.Historical)
 		{
-			UseRemoteService = UseRemoteServiceParameter;
+			// Force local services for backtesting to avoid remote timeouts
+			UseRemoteService = false;
 			
 			
-			Print($"CurvesStrategy.OnStateChange: State.Historical UseRemoteService {UseRemoteService}");
+			Print($"CurvesStrategy.OnStateChange: State.Historical UseRemoteService {UseRemoteService} (forced local for backtesting)");
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
 		else if (State == State.Realtime)
@@ -192,6 +196,37 @@ public partial class CurvesStrategy : MainStrategy
 			UseRemoteService = UseRemoteServiceParameter;
 			
 			Print($"CurvesStrategy.OnStateChange: State.Realtime UseRemoteService {UseRemoteService}");
+			
+			// Backfill remote service with historical data
+			if(UseRemoteService == true && historicalBars.Count > 0)
+			{
+				Print($"[BACKFILL] Starting backfill with {historicalBars.Count} historical bars...");
+				
+				// Use fire-and-forget for backfill to avoid blocking OnStateChange
+				Task.Run(async () => {
+					try
+					{
+						backfillSuccess = await curvesService.BackfillRemoteServiceAsync(historicalBars, Instrument.MasterInstrument.Name);
+						
+						if (backfillSuccess)
+						{
+							Print("✅ Remote service backfilled successfully - ready for real-time trading");
+						}
+						else
+						{
+							Print("❌ Remote service backfill failed - may need to wait for real-time buffer");
+						}
+					}
+					catch (Exception ex)
+					{
+						Print($"[BACKFILL] Error during backfill: {ex.Message}");
+					}
+				});
+			}
+			else if (UseRemoteService == true)
+			{
+				Print("[BACKFILL] ⚠️ No historical bars available for backfill - remote service will need to wait for real-time data");
+			}
 			// Custom logic (bar iteration, etc.) remains commented out
 		}
 		// *** Restore Terminated block structure ***
@@ -241,6 +276,7 @@ public partial class CurvesStrategy : MainStrategy
 	////////////////////////////
 	protected override void OnBarUpdate()
 	{
+		
 		// KILL SWITCH: Check for abort file
 		if (System.IO.File.Exists(@"C:\temp\kill_backtest.txt"))
 		{
@@ -278,64 +314,39 @@ public partial class CurvesStrategy : MainStrategy
 			    //Print("Heartbeat, now truly fire-and-forget");
 			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
 			   // Print("Heartbeat call returned - strategy continues");
-			    if(State == State.Realtime) Print($" Last Heartbeat : {curvesService.lastHeartbeat}, Current Time == {Time[0]}");
+			    //if(State == State.Realtime) Print($" Last Heartbeat : {curvesService.lastHeartbeat}, Current Time == {Time[0]}");
 			}
 			DebugFreezePrint("Heartbeat completed");
-						
-			bool isConnected = curvesService.IsConnected;
+			
+			/// NEW: Collect historical bars for potential backfill (do this for all bars)
+			if (BarsInProgress == 0 && IsFirstTickOfBar && State == State.Historical)
+			{
+				
+				var barData = new
+				{
+					timestamp = Time[0],
+					open = Open[0],
+					high = High[0],
+					low = Low[0],
+					close = Close[0],
+					volume = Volume[0]
+				};
+				
+				historicalBars.Add(barData);
+				
+				// Keep only the last MAX_HISTORICAL_BARS bars
+				if (historicalBars.Count > MAX_HISTORICAL_BARS)
+				{
+					historicalBars.RemoveAt(0); // Remove oldest bar
+				}
+			}
+			
+			bool enoughData = UseRemoteService == true ? backfillSuccess : true;
+			bool isConnected = curvesService.IsConnected && enoughData;
+			
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
-			// Only send historical bars once, when we have enough data
-		    if (UseRemoteService == false && BarsInProgress == 0 && sendHistoricalBars && !historicalBarsSent && CurrentBar >= 1) // Wait for 50000 bars
-		    {
-		    	DebugFreezePrint("Historical bars processing START");
-		        // Prepare historical bars
-		        var historicalBars = new List<object>();
-		        
-		        // Collect the last 1500 bars (reverse order for chronological sequence)
-		       // for (int i = 50000; i >= 0; i--)
-		        //{
-		            historicalBars.Add(new
-		            {
-		                timestamp = Time[0],
-		                open = Open[0],
-		                high = High[0],
-		                low = Low[0],
-		                close = Close[0],
-		                volume = Volume[0]
-		            });
-		        //}
-		        
-		        Print($"Starting synchronous send of {historicalBars.Count} historical bars to IBI Analysis Tool...");
-		        
-		        // Use synchronous wrapper instead of Task.Run to prevent concurrent processing
-		        try
-		        {
-		        	DebugFreezePrint("About to call SendHistoricalBarsSync");
-		            bool success = SendHistoricalBarsSync(historicalBars, Instrument.MasterInstrument.Name);
-		            DebugFreezePrint("SendHistoricalBarsSync completed");
-		            
-		            if (success)
-		            {
-		                Print("Historical bars sent successfully to IBI Analysis Tool!");
-		                historicalBarsSent = true;
-		            }
-		            else
-		            {
-		                Print("Failed to send historical bars to IBI Analysis Tool");
-		            }
-		        }
-		        catch (Exception ex)
-		        {
-		            Print($"Error sending historical bars: {ex.Message}");
-		        }
-		        DebugFreezePrint("Historical bars processing COMPLETE");
-		        
-		        return; // Skip normal processing this bar
-		    }
-		
 			
 			
-			// Check for cooldown activation on every bar
 			CheckAndActivateCooldown();
 			
 			// Log connection status periodically
@@ -365,7 +376,7 @@ public partial class CurvesStrategy : MainStrategy
 				        Volume[0],
 				        State == State.Historical ? "backtest" : "1m"
 				    );
-				    DebugFreezePrint("SendBarFireAndForget completed");
+				    Print($"{Time[0]} SendBarFireAndForget completed");
 				}
 				else if (State == State.Historical || IsInStrategyAnalyzer)
 				{
@@ -405,7 +416,7 @@ public partial class CurvesStrategy : MainStrategy
 	// Fix BuildNewSignal to actually return entry signals
 	protected override patternFunctionResponse BuildNewSignal()
 	{
-		DebugFreezePrint("CurvesStrategy BuildNewSignal START");
+		//Print("CurvesStrategy BuildNewSignal START");
 		
 		patternFunctionResponse thisSignal = new patternFunctionResponse();
 		thisSignal.newSignal = FunctionResponses.NoAction;
@@ -416,13 +427,13 @@ public partial class CurvesStrategy : MainStrategy
 			// Early safety checks
 			if (curvesService == null)
 			{
-				DebugFreezePrint("BuildNewSignal: curvesService null - returning NoAction");
+				//Print("BuildNewSignal: curvesService null - returning NoAction");
 				return thisSignal;
 			}
 			
 			if (curvesService.ErrorCounter > 10)
 			{
-				DebugFreezePrint($"BuildNewSignal: Error counter exceeded {curvesService.ErrorCounter} - returning NoAction");
+				//Print($"BuildNewSignal: Error counter exceeded {curvesService.ErrorCounter} - returning NoAction");
 				return thisSignal;
 			}
 			
@@ -430,21 +441,23 @@ public partial class CurvesStrategy : MainStrategy
 			CheckCooldownExit(); // Update cooldown status
 			if (isInCooldown)
 			{
-				DebugFreezePrint("BuildNewSignal: In cooldown - blocking all entries");
+				//Print("BuildNewSignal: In cooldown - blocking all entries");
 				return thisSignal; // Block all trading during cooldown
 			}
 			
-		DebugFreezePrint("BuildNewSignal validation checks");
+		//Print($"BuildNewSignal validation checks BarsInProgress={BarsInProgress}");
 		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
 	    if(CurrentBars[0] < BarsRequiredToTrade)
 	    {
+			//Print($"{CurrentBars[0]} < {BarsRequiredToTrade}");
 	        return thisSignal;
 	    }
 	    if(BarsInProgress != 0)
 	    {
+			//Print($"BarsInProgress !+ {BarsInProgress}");
 	        return thisSignal;
 	    }
-	    DebugFreezePrint("BuildNewSignal position calculations");
+	    //Print("BuildNewSignal position calculations");
 	    // Calculate total positions and working orders
 	    int totalPositions = getAllcustomPositionsCombined();
 	    // Check if we have room for more positions
@@ -455,17 +468,22 @@ public partial class CurvesStrategy : MainStrategy
 	    // Critical safety limit - don't allow more than the max quantity
 	    if (totalPositions >= accountMaxQuantity )
 	    {
-	        Print($"*** SAFETY HALT - Position limit reached: positions={totalPositions},  max={accountMaxQuantity}");
+	       // Print($"*** SAFETY HALT - Position limit reached: positions={totalPositions},  max={accountMaxQuantity}");
 	        
 	    }
 	   
+		if(!curvesService.IsConnected)
+		{
+			//Print($"curvesService.IsConnected {curvesService.IsConnected}");
+			return thisSignal;
+		}
 		
 	    // Regular position check with throttle timing
 	    //if (totalPositions < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 		if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 
 	    {      // Get current signal values
-	    	    DebugFreezePrint("BuildNewSignal signal evaluation START");
+	    	  //Print("BuildNewSignal signal evaluation START");
 	            double currentBullStrength = CurvesV2Service.CurrentBullStrength;
 	            double currentBearStrength = CurvesV2Service.CurrentBearStrength;
              
@@ -473,8 +491,9 @@ public partial class CurvesStrategy : MainStrategy
 				
 				DebugFreezePrint("About to call CheckSignalsSync (NEW SYNCHRONOUS VERSION)");
 				// NEW: Use synchronous version that returns enhanced signal data
+				
 				var (score, posSize, risk, target, pullback) = curvesService.CheckSignalsSync(UseRemoteService, Time[0], instrumentCode, OutlierScoreRequirement, effectiveScoreRequirement);
-				if(score!=0) Print($"[BuildNewSignal] score={score}, posSize={posSize}, risk={risk}, target={target}, pullback{pullback}");
+				Print($"[BuildNewSignal] {Time[0]}, score={score}, posSize={posSize}, risk={risk}, target={target}, pullback{pullback} >>>> CurvesV2Service.SignalsAreFresh {CurvesV2Service.SignalsAreFresh}");
 				DebugFreezePrint("CheckSignalsSync completed");
 				
 				// Store signal in history for persistence validation using CurrentBars[0]
@@ -488,8 +507,7 @@ public partial class CurvesStrategy : MainStrategy
 					signalHistory.Remove(key);
 				}
 				
-			        if (CurvesV2Service.SignalsAreFresh && score != 0) // Accept fresh signals OR immediate non-zero scores
-			        {
+			       
 			        	
 						
 						if(score > 0)
@@ -497,7 +515,7 @@ public partial class CurvesStrategy : MainStrategy
 							
 							
 			            	// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-				            if (score > OutlierScoreRequirement && IsRising(EMA3))
+				            if (score > OutlierScoreRequirement)// && EMA3[0] > VWAP1[0] && IsRising(EMA3))
 				            {
 								DebugFreezePrint("LONG signal generated with persistence");
 								Print($"[LONG] Score={score:F4} [PERSISTENT]");
@@ -509,14 +527,14 @@ public partial class CurvesStrategy : MainStrategy
 									thisSignal.recStop = risk;       // Use RF risk value (dollars)
 									thisSignal.recTarget = target;
 									thisSignal.recPullback = (100-pullback)/100; // Use RF pullback percentage eg 15 .. .15 >> 0.85
-									thisSignal.recQty = posSize;     // Use RF position size multiplier
+									thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
 									return thisSignal;
 							}
 			            }
 						else if(score < 0)
 						{
 							
-				            if (Math.Abs(score) > OutlierScoreRequirement && IsFalling(EMA3))
+				            if (Math.Abs(score) > OutlierScoreRequirement)// && EMA3[0] < VWAP1[0] && IsFalling(EMA3))
 				            {
 								DebugFreezePrint("SHORT signal generated with persistence");
 								Print($"[SHORT] Score={score:F4} [PERSISTENT]");
@@ -528,7 +546,7 @@ public partial class CurvesStrategy : MainStrategy
 								thisSignal.recStop = risk;       // Use RF risk value (dollars)
 								thisSignal.recPullback = pullback; // Use RF pullback percentage
 								thisSignal.recTarget = target;
-								thisSignal.recQty = posSize;     // Use RF position size multiplier
+								thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
 								return thisSignal;
 							}
 						}
@@ -537,7 +555,7 @@ public partial class CurvesStrategy : MainStrategy
 							//Print($"[PERSISTENCE] Signal direction mismatch: score={score:F2}, persistence={persistenceDirection}");
 						}
 			        	
-					}
+					
 				
 		        
 		        
@@ -606,6 +624,9 @@ public partial class CurvesStrategy : MainStrategy
 		// Strategy-wide cooldown management for regime protection
 		private void CheckAndActivateCooldown()
 		{
+			// Skip cooldown logic during backtesting to avoid false triggers
+			if (State == State.Historical || IsInStrategyAnalyzer) return;
+			
 			if (isInCooldown) return; // Already in cooldown
 		
 		// Method 1: Single position max loss

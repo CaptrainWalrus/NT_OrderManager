@@ -904,7 +904,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												// Fire and forget - don't block trading
 												_ = Task.Run(async () => {
 													try {
-														await curvesService.RecordPatternPerformanceAsync(performanceRecord);
+														await curvesService.RecordPatternPerformanceAsync(performanceRecord,UseRemoteServiceParameter);
 													} catch (Exception ex) {
 														Print($"[PATTERN] Error recording win for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
 													}
@@ -1023,7 +1023,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												// Fire and forget - don't block trading
 												_ = Task.Run(async () => {
 													try {
-														await curvesService.RecordPatternPerformanceAsync(performanceRecord);
+														await curvesService.RecordPatternPerformanceAsync(performanceRecord,UseRemoteServiceParameter);
 													} catch (Exception ex) {
 														Print($"[PATTERN] Error recording break-even for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
 													}
@@ -1115,7 +1115,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												// Fire and forget - don't block trading
 												_ = Task.Run(async () => {
 													try {
-														await curvesService.RecordPatternPerformanceAsync(performanceRecord);
+														await curvesService.RecordPatternPerformanceAsync(performanceRecord,UseRemoteServiceParameter);
 													} catch (Exception ex) {
 														Print($"[PATTERN] Error recording loss for {orderRecordMaster.OrderSupplementals.patternId}: {ex.Message}");
 													}

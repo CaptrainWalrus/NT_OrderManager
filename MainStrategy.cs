@@ -399,7 +399,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		protected void DebugFreezePrint(string message, [System.Runtime.CompilerServices.CallerFilePath] string fileName = "", [System.Runtime.CompilerServices.CallerLineNumber] int lineNumber = 0)
 		{
-			if (ENABLE_FREEZE_DEBUG && !IsInStrategyAnalyzer && State == State.Realtime)
+			if (ENABLE_FREEZE_DEBUG)// && !IsInStrategyAnalyzer && State == State.Realtime)
 			{
 				string fileNameOnly = System.IO.Path.GetFileName(fileName);
 				var now = DateTime.Now;
@@ -840,14 +840,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		DebugFreezePrint("Checking BarsRequiredToTrade");
 		// TEMPORARY: Reduced bars requirement for faster backtesting
 		// Allow Series0 to be 2 bars short to handle synchronization issues
-		if (CurrentBars[1] < Math.Min(BarsRequiredToTrade*2, 40) || CurrentBars[0] < (BarsRequiredToTrade - 2) )
+		if (CurrentBars[0] < BarsRequiredToTrade)
 		{
 		    DebugPrint(debugSection.OnBarUpdate, "start 3");
 			
 			// Show progress for both data series
-			double series0Progress = Math.Round((((double)CurrentBars[0]/BarsRequiredToTrade)*100),1);
-			double series1Progress = Math.Round((((double)CurrentBars[1]/(BarsRequiredToTrade*12))*100),1);
-			//Print($"Loading: Series0={series0Progress}% ({CurrentBars[0]}/{BarsRequiredToTrade}), Series1={series1Progress}% ({CurrentBars[1]}/{BarsRequiredToTrade*12})");
+			double series0Progress = Math.Round((((double)CurrentBars[0]/BarsRequiredToTrade)*100),1);	double series1Progress = Math.Round((((double)CurrentBars[1]/(BarsRequiredToTrade*12))*100),1);
+			Print($"Loading: Series0={series0Progress}% ({CurrentBars[0]}/{BarsRequiredToTrade}");
 		    return;
 		}
 		 msg = "OnBarUpdate start 2.1";
@@ -1320,12 +1319,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			
 			//Print($"[DEBUG] About to check entry signals - BarsInProgress: {BarsInProgress}");				
 			
-			///get entry signals
-   			
+			///get entry signals - ONLY ON PRIMARY SERIES (BarsInProgress = 0)
+			if(BarsInProgress != 0 || !IsFirstTickOfBar)
+			{
+				return; // Skip signal generation on secondary series
+			}
+			
 			//FunctionResponses newSignal = BuildNewSignal();
 			msg = "about BuildNewSignal";
 			DebugFreezePrint("About to call BuildNewSignal");
 			//Print($"[MAIN] About to call BuildNewSignal - BarsInProgress: {BarsInProgress}, Time: {Time[0]}");
+			
 			
 			patternFunctionResponse builtSignal = BuildNewSignal(); 
 			FunctionResponses newSignal = builtSignal.newSignal;
@@ -1876,7 +1880,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				// Send configuration asynchronously - fire and forget
 				Task.Run(async () => {
 					try {
-						bool configSent = await curvesService.SendMatchingConfigAsync(instrumentCode, defaultConfig);
+						bool configSent = await curvesService.SendMatchingConfigAsync(instrumentCode, defaultConfig,UseRemoteServiceParameter);
 						if (configSent)
 						{
 							Print($"[CONFIG] Default matching configuration sent successfully for {instrumentCode}");

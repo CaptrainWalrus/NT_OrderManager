@@ -313,11 +313,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public Dictionary<string,double> thompsonScores = new Dictionary<string,double>();
         
         // Orange Line data caching
-        public static double CurrentOrangeLine { get; private set; } = double.NaN;
-        public static double CurrentOrangeLineDeviation { get; private set; } = double.NaN;
-        public static string CurrentOrangeLineSignal { get; private set; } = "NONE";
-        public static double CurrentOrangeLineConfidence { get; private set; } = 0.0;
-        public static DateTime LastOrangeLineUpdate { get; private set; } = DateTime.MinValue;
+  
 		
 		// Add cache for async divergence requests to prevent duplicate HTTP calls
 		private readonly Dictionary<string, Task<double>> pendingDivergenceRequests = new Dictionary<string, Task<double>>();
@@ -409,7 +405,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             client = new HttpClient(handler);
             client.DefaultRequestHeaders.Accept.Clear();
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            client.Timeout = TimeSpan.FromSeconds(10); // Default timeout
+            client.Timeout = TimeSpan.FromSeconds(120); // Extended timeout for backfill operations
             client.DefaultRequestHeaders.ConnectionClose = false; // Keep connections alive
             
             // Initialize visualization client
@@ -559,7 +555,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 // Build endpoint URLs for all services
                 string miUrl = useRemoteService ? "https://curves-market-ingestion.onrender.com" : baseUrl;
-                string meUrl = getMeServiceUrl();
+                string meUrl = useRemoteService ? "https://matching-engine-service.onrender.com" : baseUrl;;
                 string spUrl = useRemoteService ? "https://curves-signal-pool-service.onrender.com" : signalPoolUrl;
 
                 var heartbeatTasks = new List<Task<bool>>();
@@ -607,7 +603,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // Synchronous heartbeat method
         // FIRE-AND-FORGET VERSION: SendHeartbeat - Non-blocking heartbeat
-        public bool SendHeartbeat(bool useRemoteService = false)
+        public bool SendHeartbeat(bool useRemoteService)
         {
             if (IsDisposed()) return false;
             
@@ -644,7 +640,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Combined method to check and send heartbeat if needed - FIRE AND FORGET VERSION
-        public bool CheckAndSendHeartbeat(bool useRemoteService = false)
+        public bool CheckAndSendHeartbeat(bool useRemoteService)
         {
             if (!ShouldSendHeartbeat()) return true; // No heartbeat needed
             
@@ -930,6 +926,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                         {
                             // Fire and forget with timeout
                             var response = await client.PostAsync(endpoint, content, cts.Token);
+							string rsp = response.ToString();
+							Log($"rsp = {rsp}");
                             response.Dispose(); // Important: dispose the response to free the connection
                         }
                     }
@@ -1025,7 +1023,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
 							{
-								//Log($" Request Success {responseText}");
+								Log($" Request Success {responseText}");
 								// Quick categorization without complex LINQ
 								double bullScore = 0, bearScore = 0;
 								var firstSignal = signalPoolResponse.signals[0];
@@ -1051,12 +1049,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 								CurrentSubtype = firstSignal.subtype;
 								CurrentPatternId = firstSignal.patternId;
 							
-								CurrentOppositionStrength = signalPoolResponse.signals.Max(s => s.oppositionStrength);
-								CurrentConfluenceScore = signalPoolResponse.signals.Max(s => s.confluenceScore);
-								CurrentEffectiveScore = signalPoolResponse.signals.Max(s => s.effectiveScore);
-								CurrentStopModifier = signalPoolResponse.signals.Max(s => s.stopModifier);
-                                CurrentPullbackModifier = signalPoolResponse.signals.Max(s => s.pullbackModifier);
-                                CurrentRawScore = signalPoolResponse.signals.Max(s => s.rawScore);
+								// Safely get max values with default of 0 if no signals
+								CurrentOppositionStrength = signalPoolResponse.signals.Any() ? signalPoolResponse.signals.Max(s => s.oppositionStrength) : 0;
+								CurrentConfluenceScore = signalPoolResponse.signals.Any() ? signalPoolResponse.signals.Max(s => s.confluenceScore) : 0;
+								CurrentEffectiveScore = signalPoolResponse.signals.Any() ? signalPoolResponse.signals.Max(s => s.effectiveScore) : 0;
+								CurrentStopModifier = signalPoolResponse.signals.Any() ? signalPoolResponse.signals.Max(s => s.stopModifier) : 0;
+                                CurrentPullbackModifier = signalPoolResponse.signals.Any() ? signalPoolResponse.signals.Max(s => s.pullbackModifier) : 0;
+                                CurrentRawScore = signalPoolResponse.signals.Any() ? signalPoolResponse.signals.Max(s => s.rawScore) : 0;
                                 
 								LastSignalTimestamp = DateTime.UtcNow;
 								CurrentContextId = "signal-" + DateTime.Now.Ticks;
@@ -1117,13 +1116,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// NEW: Synchronous version that blocks and returns enhanced signal data for BuildNewSignal
 		public (double score, int posSize, double risk, double target, double pullback) CheckSignalsSync(bool useRemoteService, DateTime dt, string instrument, double? minRawScore = null, double? effectiveScoreRequirement = null)
 		{
+		
 		    if (IsDisposed() || string.IsNullOrEmpty(instrument) || client == null)
+			{
 		        return (0, 0, 0, 0, 0);
-			
+			}
 			// Check concurrent request limit
 			if (concurrentRequests >= MAX_CONCURRENT_REQUESTS)
+			{
+				
 				return (0, 0, 0, 0, 0);
-
+			}
 			try
 			{
 				// Build endpoint with better filtering
@@ -1133,12 +1136,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				// Add minimum score filter if provided
 				if (minRawScore.HasValue)
 					endpoint += $"&minScore={minRawScore.Value}";
-				
-				if (IsHistoricalMode())
-				{
-					//Log($"[SYNC-SIGNALS] Requesting: {endpoint}");
-				}
-				
+			
 				// Synchronous HTTP request with timeout
 				using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5))) // Increased from 2 to 5 seconds
 				{
@@ -1148,9 +1146,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 						if (response.IsSuccessStatusCode)
 						{
+							LastSignalTimestamp = DateTime.UtcNow;
 							string responseText = response.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
 							var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
-							
+							Log($"signalPoolResponse responseText {responseText}");
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0)
 							{
 								
@@ -1161,6 +1160,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 								
 								foreach (var signal in signalPoolResponse.signals)
 								{
+								
 									// Skip purchased signals
 									if (signal.isPurchased) continue;
 									
@@ -1169,8 +1169,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 									
 									// Apply minimum score filter
 									if (effectiveScoreRequirement.HasValue && signalScore < effectiveScoreRequirement.Value)
+									{
+										
 										continue;
-									
+									}
 									if (Math.Abs(signalScore) > Math.Abs(bestScore))
 									{
 										bestScore = signalScore;
@@ -1180,7 +1182,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 								
 								if (bestSignal != null)
 								{
-									//Log($"[SYNC-SIGNALS] Found {responseText}");
 									// Update static properties with best signal
 									CurrentPatternType = bestSignal.patternType;
 									CurrentSubtype = bestSignal.subtype;
@@ -1208,6 +1209,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 									// Handle RF neutral signals based on direction
 									if (bestSignal.type == "neutral" && bestSignal.patternType == "RF_FALLBACK")
 									{
+										
 										// For RF neutral signals, use the direction field
 										if (bestSignal.direction == "long" || bestSignal.direction == "BUY")
 										{
@@ -1217,6 +1219,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 											{
 												Log($"[SYNC-SIGNALS] RF NEUTRAL BULL signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 											}
+										
 											return (0.5, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Positive for bullish
 										}
 										else if (bestSignal.direction == "short" || bestSignal.direction == "SELL")
@@ -1227,6 +1230,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 											{
 												Log($"[SYNC-SIGNALS] RF NEUTRAL BEAR signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 											}
+										
 											return (-0.5, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Negative for bearish
 										}
 										else
@@ -1236,6 +1240,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 											{
 												Log($"[SYNC-SIGNALS] RF NEUTRAL signal with no direction: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 											}
+											
 											return (0, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback);
 										}
 									}
@@ -1244,7 +1249,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 										CurrentBullStrength = finalScore;
 										CurrentBearStrength = 0;
 						
-										//Log($"[SYNC-SIGNALS] BULL signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										Log($"[SYNC-SIGNALS] BULL signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 										return (finalScore, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Positive for bull
 									}
 									else if (isBear)
@@ -1252,7 +1257,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 										CurrentBullStrength = 0;
 										CurrentBearStrength = finalScore;
 							
-										//Log($"[SYNC-SIGNALS] BEAR signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										Log($"[SYNC-SIGNALS] BEAR signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 										return (-finalScore, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Negative for bear
 									}
 									else
@@ -1262,15 +1267,25 @@ namespace NinjaTrader.NinjaScript.Strategies
 										{
 											Log($"[SYNC-SIGNALS] Unknown signal type: {bestSignal.type}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 										}
+									
 										return (0, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback);
 									}
 								}
+								else
+								{
+									Log($"[SYNC-SIGNALS] bestSignal IS NULL ********* {responseText}");
+								}
+							}
+							else
+							{
+								//Log($"[FAIL-SYNC-SIGNALS] Requesting: {endpoint}, signalPoolResponse?.success = {signalPoolResponse?.success} && signalPoolResponse.signals?.Count = {signalPoolResponse?.signals?.Count ?? 0}");
+								
 							}
 							
 							// No valid signals found
 							if (IsHistoricalMode() && signalPoolResponse?.signals?.Count > 0)
 							{
-								Log($"[SYNC-SIGNALS] No valid signals after filtering. Total signals: {signalPoolResponse.signals.Count}, minScore filter: {effectiveScoreRequirement}");
+								Log($"[SYNC-SIGNALS] No valid signals after filtering. Total signals: {signalPoolResponse.signals?.Count ?? 0}, minScore filter: {effectiveScoreRequirement}");
 							}
 							ResetCurrentSignalProperties();
 							return (0, 0, 0, 0, 0);
@@ -1574,11 +1589,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             CurrentSubtype = null;
             
             // Reset orange line data
-            CurrentOrangeLine = double.NaN;
-            CurrentOrangeLineDeviation = double.NaN;
-            CurrentOrangeLineSignal = "NONE";
-            CurrentOrangeLineConfidence = 0.0;
-            LastOrangeLineUpdate = DateTime.MinValue;
+   
             
             // NEW: Reset RF exit data
             CurrentRFExitScore = 0;
@@ -1787,288 +1798,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             return null;
         }
 
-        // Orange Line API integration
-        public async Task<bool> UpdateOrangeLineAsync(string instrument, List<double> priceHistory, bool useRemoteService = false)
-        {
-            if (IsDisposed() || string.IsNullOrEmpty(instrument) || priceHistory == null || priceHistory.Count < 10)
-                return false;
+        
 
-            try
-            {
-                // Build request data
-                var requestData = new
-                {
-                    instrument = instrument,
-                    prices = priceHistory.ToArray(),
-                    currentBar = priceHistory.Count
-                };
-
-                string jsonData = JsonConvert.SerializeObject(requestData);
-                var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
-				
-                // Use ME service orange line endpoint
-                
-				string meServiceUrl = getMeServiceUrl();
-				string endpoint =  $"{meServiceUrl}/api/orange-line/analyze";
-                                Log($"UpdateOrangeLineAsync endpoint {endpoint} request {jsonData}");
-                //Log($"[ORANGE-LINE-DEBUG] Sending {priceHistory.Count} prices: [{string.Join(", ", priceHistory.TakeLast(5).Select(p => p.ToString("F2")))}]");
-                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
-                {
-                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
-                    //Log($"UpdateOrangeLineAsync response {response}");
-                    if (response.IsSuccessStatusCode)
-                    {
-                        string responseJson = await response.Content.ReadAsStringAsync();
-                        Log($"[ORANGE-LINE-DEBUG] API Response: {responseJson}");
-                        var result = JsonConvert.DeserializeObject<dynamic>(responseJson);
-                        
-                        // Update static properties
-                        if (result != null)
-                        {
-                            // Extract orange line value
-                            if (result.orangeLine != null && double.TryParse(result.orangeLine.ToString(), out double orangeLine))
-                            {
-                                CurrentOrangeLine = result.orangeLine;
-                            }
-                            
-                            // Extract deviation
-                            if (result.deviation != null)
-                            {
-                                if (double.TryParse(result.deviation.ToString(), out double deviation))
-                                {
-                                    CurrentOrangeLineDeviation = Math.Abs(deviation);
-                                }
-                                else
-                                {
-                                    // Fallback: try to convert directly if it's already a numeric type
-                                    try
-                                    {
-                                        CurrentOrangeLineDeviation = Math.Abs(Convert.ToDouble(result.deviation));
-                                    }
-                                    catch
-                                    {
-                                        Log($"[ORANGE-LINE] Warning: Could not parse deviation value: {result.deviation}");
-                                    }
-                                }
-                            }
-                            
-                            // Extract signal
-                            if (result.signal != null)
-                            {
-                                CurrentOrangeLineSignal = result.signal.ToString();
-                            }
-                            
-                            // Extract confidence
-                            if (result.confidence != null && double.TryParse(result.confidence.ToString(), out double confidence))
-                            {
-                                CurrentOrangeLineConfidence = result.confidence;
-                            }
-                            
-                            LastOrangeLineUpdate = DateTime.Now;
-                            
-                            return true;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!IsDisposed())
-                {
-                    Log($"[ORANGE-LINE] Error updating orange line data: {ex.Message}");
-                }
-            }
-            
-            return false;
-        }
-
-        // Get existing orange line data from ME service (no price data sent)
-        public bool GetOrangeLineData(string instrument, bool useRemoteService = false)
-        {
-            //Log($"[ORANGE-LINE-DEBUG] GetOrangeLineData called for {instrument}, useRemoteService={useRemoteService}");
-            if (IsDisposed()) return false;
-            
-            try
-            {
-                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
-                if (IsHistoricalMode())
-                {
-                    // BACKTESTING: Use synchronous calls for sequential bar processing
-                    var result = GetOrangeLineDataAsync(instrument, useRemoteService).ConfigureAwait(false).GetAwaiter().GetResult();
-                    return result;
-                }
-                else
-                {
-                    // REAL-TIME: Use fire-and-forget to prevent freezes
-                    Task.Run(async () => {
-                        try
-                        {
-                            await GetOrangeLineDataAsync(instrument, useRemoteService);
-                        }
-                        catch (Exception ex)
-                        {
-                            Log($"[ORANGE-LINE] Background data fetch failed: {ex.Message}");
-                        }
-                    });
-                    
-                    // Return success immediately (fire-and-forget)
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"[ORANGE-LINE] Error in GetOrangeLineData: {ex.Message}");
-                return false;
-            }
-        }
-
-        // Get existing orange line data from ME service without sending price data
-        public async Task<bool> GetOrangeLineDataAsync(string instrument, bool useRemoteService = false)
-        {
-            if (IsDisposed())
-                return false;
-
-            try
-            {
-                // Use ME service orange line endpoint to get existing data
-                string meServiceUrl = getMeServiceUrl();
-                string endpoint = $"{meServiceUrl}/api/orange-line/current/{instrument}";
-                
-               // Log($"[ORANGE-LINE-DEBUG] Requesting existing data from {endpoint}");
-                
-                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
-                {
-                    var response = await client.GetAsync(endpoint, timeoutCts.Token);
-                    
-                    if (response.IsSuccessStatusCode)
-                    {
-                        string responseJson = await response.Content.ReadAsStringAsync();
-                       // Log($"[ORANGE-LINE-DEBUG] API Response: {responseJson}");
-                        var result = JsonConvert.DeserializeObject<dynamic>(responseJson);
-                        
-                        // Update static properties with existing data
-                        if (result != null)
-                        {
-                            // Extract orange line value
-                            if (result.orangeLine != null && double.TryParse(result.orangeLine.ToString(), out double orangeLine))
-                            {
-                                CurrentOrangeLine = result.orangeLine;
-                            }
-                            
-                            // Extract deviation
-                            if (result.deviation != null)
-                            {
-                                if (double.TryParse(result.deviation.ToString(), out double deviation))
-                                {
-                                    CurrentOrangeLineDeviation = Math.Abs(deviation);
-                                }
-                                else
-                                {
-                                    try
-                                    {
-                                        CurrentOrangeLineDeviation = Math.Abs(Convert.ToDouble(result.deviation));
-                                    }
-                                    catch
-                                    {
-                                        Log($"[ORANGE-LINE] Warning: Could not parse deviation value: {result.deviation}");
-                                    }
-                                }
-                            }
-                            
-                            // Extract signal (if available)
-                            if (result.signal != null)
-                            {
-                                CurrentOrangeLineSignal = result.signal.ToString();
-                            }
-                            
-                            // Extract confidence (if available)
-                            if (result.confidence != null)
-                            {
-                                if (double.TryParse(result.confidence.ToString(), out double confidence))
-                                {
-                                    CurrentOrangeLineConfidence = confidence;
-                                }
-                                else
-                                {
-                                    try
-                                    {
-                                        CurrentOrangeLineConfidence = Convert.ToDouble(result.confidence);
-                                    }
-                                    catch
-                                    {
-                                        Log($"[ORANGE-LINE] Warning: Could not parse confidence value: {result.confidence}");
-                                        CurrentOrangeLineConfidence = 0.0; // Default fallback
-                                    }
-                                }
-                            }
-                            
-                            LastOrangeLineUpdate = DateTime.Now;
-                            
-                            //Log($"[ORANGE-LINE] Retrieved existing data: Line={CurrentOrangeLine:F2}, Deviation={CurrentOrangeLineDeviation:F2}, Signal={CurrentOrangeLineSignal}, Confidence={CurrentOrangeLineConfidence:P1}");
-                            return true;
-                        }
-                    }
-                    else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                    {
-                        Log($"[ORANGE-LINE] No existing orange line data available for {instrument} - ME service may need time to calculate");
-                        return false;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!IsDisposed())
-                {
-                    Log($"[ORANGE-LINE] Error getting existing orange line data: {ex.Message}");
-                }
-            }
-            
-            return false;
-        }
-
-        // DEPRECATED: Keep for backward compatibility but mark as obsolete
-        [Obsolete("Use GetOrangeLineData instead - ME service already calculates orange line internally")]
-        public bool UpdateOrangeLine(string instrument, List<double> priceHistory, bool useRemoteService = false)
-        {
-            //Log($"[ORANGE-LINE-DEBUG] UpdateOrangeLine called with {priceHistory.Count} prices, useRemoteService={useRemoteService} - DEPRECATED, use GetOrangeLineData instead");
-            if (IsDisposed()) return false;
-            
-            try
-            {
-                // CONDITIONAL LOGIC: Sync for Historical (backtesting), Async for Real-time
-                if (IsHistoricalMode())
-                {
-                    // BACKTESTING: Use synchronous calls for sequential bar processing
-                    var result = UpdateOrangeLineAsync(instrument, priceHistory,useRemoteService).ConfigureAwait(false).GetAwaiter().GetResult();
-                    return result;
-                }
-                else
-                {
-                    // REAL-TIME: Use fire-and-forget to prevent freezes
-                    Task.Run(async () => {
-                        try
-                        {
-                            await UpdateOrangeLineAsync(instrument, priceHistory);
-                        }
-                        catch (Exception ex)
-                        {
-                            Log($"[ORANGE-LINE] Background update failed: {ex.Message}");
-                        }
-                    });
-                    
-                    // Return success immediately (fire-and-forget)
-                    return true;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"[ORANGE-LINE] Error in UpdateOrangeLine: {ex.Message}");
-                return false;
-            }
-        }
-
+        
         // Add a method to submit pattern performance record
-        public async Task<bool> RecordPatternPerformanceAsync(PatternPerformanceRecord record, bool useRemoteService = false)
+        public async Task<bool> RecordPatternPerformanceAsync(PatternPerformanceRecord record, bool useRemoteService)
         {
             if (IsDisposed()) return false;
 
@@ -2234,7 +1968,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Send dynamic matching configuration to MatchingEngine service
-        public async Task<bool> SendMatchingConfigAsync(string instrument, MatchingConfig config,bool useRemoteService = false)
+        public async Task<bool> SendMatchingConfigAsync(string instrument, MatchingConfig config,bool useRemoteService)
         {
             if (IsDisposed()) return false;
 
@@ -2279,7 +2013,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
                 {
                     var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
-                    Log($"UpdateOrangeLineAsync response {response}");
                     
                     if (response.IsSuccessStatusCode)
                     {
@@ -2315,7 +2048,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     // BACKTESTING: Use synchronous calls for sequential bar processing
                     Log($"[HISTORICAL-SYNC] SendMatchingConfig starting sync call for {instrument}");
-                    var result = SendMatchingConfigAsync(instrument, config).ConfigureAwait(false).GetAwaiter().GetResult();
+                    var result = SendMatchingConfigAsync(instrument, config,useRemoteService).ConfigureAwait(false).GetAwaiter().GetResult();
                     Log($"[HISTORICAL-SYNC] SendMatchingConfig completed sync call for {instrument}");
                     return result;
                 }
@@ -2326,7 +2059,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         try
                         {
                             Log($"[REALTIME-ASYNC] SendMatchingConfig starting background call for {instrument}");
-                            await SendMatchingConfigAsync(instrument, config);
+                            await SendMatchingConfigAsync(instrument, config,useRemoteService);
                             Log($"[REALTIME-ASYNC] SendMatchingConfig completed background call for {instrument}");
 			            }
 			            catch (Exception ex)
@@ -2349,17 +2082,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Enhanced registration with entry price and direction for Dynamic Risk Alignment
         public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null)
         {
-            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast);
+            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast,useRemoteService);
         }
 
         // Legacy registration method for compatibility
         public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
         {
-            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, 0.0, "long", null);
+            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, 0.0, "long", null,useRemoteService);
         }
 
         // Core registration method with full Dynamic Risk Alignment data
-        private async Task<bool> RegisterPositionWithDataAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice, string direction, double[] originalForecast,bool useRemoteService = false)
+        private async Task<bool> RegisterPositionWithDataAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice, string direction, double[] originalForecast,bool useRemoteService)
         {
             if (IsDisposed()) return false;
 
@@ -2685,7 +2418,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		    
 		    // Create and cache the request task for Dynamic Risk Alignment with currentPrice
-		    var requestTask = PerformDynamicRiskRequestAsync(entrySignalId, currentPrice);
+		    var requestTask = PerformDynamicRiskRequestAsync(entrySignalId, useRemoteService, currentPrice);
 		    
 		    lock (divergenceLock)
 		    {
@@ -2709,7 +2442,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		// UPDATED: Dynamic Risk Alignment with forecast recalculation and 3-strike rule
 		// Returns binary divergence score from intelligent risk assessment
-		private async Task<double> PerformDynamicRiskRequestAsync(string entrySignalId, double currentPrice = 0.0,bool useRemoteService = false)
+		private async Task<double> PerformDynamicRiskRequestAsync(string entrySignalId,bool useRemoteService, double currentPrice = 0.0)
 		{
 		    try
 		    {
@@ -2886,7 +2619,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Deregister a position when it's closed
-        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool wasGoodExit = false, double finalDivergenceP = 0.0, bool useRemoteService = false)
+        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool useRemoteService, bool wasGoodExit = false, double finalDivergenceP = 0.0)
         {
             if (IsDisposed()) return false;
             
@@ -3051,7 +2784,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     // BACKTESTING: Use synchronous calls for sequential bar processing
                     Log($"[HISTORICAL-SYNC] DeregisterPosition starting sync call for {entrySignalId}");
-                    var result = DeregisterPositionAsync(entrySignalId, wasGoodExit, finalDivergence).ConfigureAwait(false).GetAwaiter().GetResult();
+                    var result = DeregisterPositionAsync(entrySignalId, useRemoteService, wasGoodExit, finalDivergence).ConfigureAwait(false).GetAwaiter().GetResult();
                     Log($"[HISTORICAL-SYNC] DeregisterPosition completed sync call for {entrySignalId}");
                     return result;
                 }
@@ -3074,7 +2807,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         try
                         {
                             Log($"[REALTIME-ASYNC] DeregisterPosition starting background deregistration for {entrySignalId}");
-                            await DeregisterPositionAsync(entrySignalId, wasGoodExit, finalDivergence);
+                            await DeregisterPositionAsync(entrySignalId,useRemoteService,  wasGoodExit, finalDivergence);
                             Log($"[REALTIME-ASYNC] DeregisterPosition completed background deregistration for {entrySignalId}");
             }
             catch (Exception ex)
@@ -3656,6 +3389,205 @@ namespace NinjaTrader.NinjaScript.Strategies
             catch (Exception ex)
             {
                 Log($"[ANNOTATION] Error in SendPositionClosed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // NEW: Send historical bars to remote MI service for quick buffer population
+        public async Task<bool> SendHistoricalBarsForBackfill(List<object> bars, string instrument, bool useRemoteService)
+        {
+            if (IsDisposed() || !useRemoteService) return false;
+
+            try
+            {
+                string baseInstrument = instrument.Split(' ')[0];  // Extract ES, MGC, etc.
+                
+                Log($"[BACKFILL] Starting backfill for {baseInstrument} with {bars.Count} historical bars to remote MI service");
+                
+                // Convert bars to the expected format
+                var barsData = bars.Select(bar => {
+                    dynamic b = bar;
+                    return new {
+                        timestamp = (long)(b.timestamp.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalMilliseconds,
+                        open = (double)b.open,
+                        high = (double)b.high,
+                        low = (double)b.low,
+                        close = (double)b.close,
+                        volume = (int)b.volume
+                    };
+                }).ToList();
+
+                // Create backfill payload
+                var backfillPayload = new
+                {
+                    strategyId = sessionID,
+                    bars = barsData
+                };
+
+                string jsonPayload = JsonConvert.SerializeObject(backfillPayload);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                
+                Log($"[BACKFILL] JSON payload size: {jsonPayload.Length} characters");
+                
+                // Send to remote MI service backfill endpoint
+                string miUrl = "https://curves-market-ingestion.onrender.com";
+                string endpoint = $"{miUrl}/api/ingest/backfill/bars/{baseInstrument}";
+                
+                Log($"[BACKFILL] Sending {bars.Count} bars to {endpoint}");
+                Log($"[BACKFILL] HttpClient timeout: {client.Timeout.TotalSeconds} seconds");
+                Log($"[BACKFILL] Request starting at: {DateTime.Now:HH:mm:ss.fff}");
+                
+                // Step 1: Send backfill request (should respond quickly)
+                using (var initialTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+                {
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    var response = await client.PostAsync(endpoint, content, initialTimeoutCts.Token);
+                    stopwatch.Stop();
+                    Log($"[BACKFILL] Request completed in {stopwatch.ElapsedMilliseconds}ms");
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Log($"[BACKFILL] ❌ FAILED to submit backfill for {baseInstrument}: {response.StatusCode}");
+                        Log($"[BACKFILL] Response: {responseContent}");
+                        return false;
+                    }
+                    
+                    Log($"[BACKFILL] ✅ Backfill request submitted for {baseInstrument}");
+                }
+                
+                // Step 2: Poll MI service to check when processing is complete
+                return await PollBackfillCompletion(miUrl, baseInstrument, bars.Count);
+            }
+            catch (TaskCanceledException tcEx)
+            {
+                Log($"[BACKFILL] Request cancelled at: {DateTime.Now:HH:mm:ss.fff}");
+                if (tcEx.CancellationToken.IsCancellationRequested)
+                {
+                    Log($"[BACKFILL] Request was cancelled (timeout): {tcEx.Message}");
+                }
+                else
+                {
+                    Log($"[BACKFILL] Request was cancelled (likely network/connectivity): {tcEx.Message}");
+                }
+                return false;
+            }
+            catch (HttpRequestException httpEx)
+            {
+                Log($"[BACKFILL] HTTP request failed: {httpEx.Message}");
+                if (httpEx.InnerException != null)
+                {
+                    Log($"[BACKFILL] Inner exception: {httpEx.InnerException.Message}");
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"[BACKFILL] Unexpected error sending historical bars for {instrument}: {ex.Message}");
+                Log($"[BACKFILL] Exception type: {ex.GetType().Name}");
+                if (ex.InnerException != null)
+                {
+                    Log($"[BACKFILL] Inner exception: {ex.InnerException.Message}");
+                }
+                return false;
+            }
+        }
+
+        // NEW: Poll MI service to check backfill completion status
+        private async Task<bool> PollBackfillCompletion(string miUrl, string instrument, int expectedBarCount)
+        {
+            try
+            {
+                Log($"[BACKFILL-POLL] Monitoring backfill progress for {instrument} (expecting {expectedBarCount} bars)");
+                
+                int pollAttempts = 0;
+                const int maxPollAttempts = 60; // 5 minutes at 5-second intervals
+                const int pollIntervalMs = 5000; // 5 seconds between checks
+                
+                while (pollAttempts < maxPollAttempts)
+                {
+                    try
+                    {
+                        // Check MI buffer status using market-data endpoint with strategy ID
+                        string statusEndpoint = $"{miUrl}/api/ingest/market-data/{instrument}?strategyId={sessionID}";
+                        
+                        using (var pollTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                        {
+                            var statusResponse = await client.GetAsync(statusEndpoint, pollTimeoutCts.Token);
+                            
+                            if (statusResponse.IsSuccessStatusCode)
+                            {
+                                var statusContent = await statusResponse.Content.ReadAsStringAsync();
+                                dynamic statusObj = JsonConvert.DeserializeObject(statusContent);
+                                int currentBarCount = statusObj.barCount;
+                                
+                                Log($"[BACKFILL-POLL] Attempt {pollAttempts + 1}: {currentBarCount}/{expectedBarCount} bars processed");
+                                
+                                // Check if we have enough bars (allow some tolerance)
+                                if (currentBarCount >= expectedBarCount * 0.95) // 95% threshold
+                                {
+                                    Log($"[BACKFILL-POLL] ✅ Backfill complete! {currentBarCount} bars available for {instrument}");
+                                    return true;
+                                }
+                            }
+                            else if (statusResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
+                            {
+                                // Buffer might still be empty - this is normal in early polling attempts
+                                Log($"[BACKFILL-POLL] Attempt {pollAttempts + 1}: Buffer not yet available (still processing...)");
+                            }
+                            else
+                            {
+                                Log($"[BACKFILL-POLL] Attempt {pollAttempts + 1}: Unexpected status {statusResponse.StatusCode}");
+                            }
+                        }
+                    }
+                    catch (Exception pollEx)
+                    {
+                        Log($"[BACKFILL-POLL] Attempt {pollAttempts + 1}: Error checking status - {pollEx.Message}");
+                    }
+                    
+                    pollAttempts++;
+                    
+                    // Wait before next poll (unless this was the last attempt)
+                    if (pollAttempts < maxPollAttempts)
+                    {
+                        await Task.Delay(pollIntervalMs);
+                    }
+                }
+                
+                Log($"[BACKFILL-POLL] ❌ Timeout after {maxPollAttempts} attempts (5 minutes). Backfill may still be processing.");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"[BACKFILL-POLL] Error during polling: {ex.Message}");
+                return false;
+            }
+        }
+
+        // NEW: Method to trigger backfill when switching to remote mode
+        public async Task<bool> BackfillRemoteServiceAsync(List<object> historicalBars, string instrument)
+        {
+            if (IsDisposed() || historicalBars == null || historicalBars.Count == 0)
+            {
+                Log("[BACKFILL] No historical bars available for backfill");
+                return false;
+            }
+
+            Log($"[BACKFILL] 🚀 Starting remote service backfill for {instrument} with {historicalBars.Count} bars");
+            
+            // Send historical bars to remote MI service
+            bool backfillSuccess = await SendHistoricalBarsForBackfill(historicalBars, instrument, true);
+            
+            if (backfillSuccess)
+            {
+                Log($"[BACKFILL] ✅ Remote service backfill completed successfully for {instrument}");
+                Log($"[BACKFILL] Remote MI service should now have sufficient buffer to start pattern matching");
+                return true;
+            }
+            else
+            {
+                Log($"[BACKFILL] ❌ Remote service backfill failed for {instrument}");
                 return false;
             }
         }
