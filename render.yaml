@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: nt-pushcut-approval
+    env: python
+    rootDir: pushcut-server            # <── tells Render to cd into this folder
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    plan: starter                      # Free tier is fine
+    healthCheckPath: /health
+    autoDeploy: true 
+
+    
