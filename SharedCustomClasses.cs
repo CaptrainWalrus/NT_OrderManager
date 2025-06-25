@@ -822,6 +822,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public double recStop { get; set; }
 			public double recTarget { get; set; }
 			public double recPullback { get; set; }
+			public double signalScore { get; set; }
 			public int recQty { get; set; } 
 			
 		}

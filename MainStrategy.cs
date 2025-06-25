@@ -1115,17 +1115,44 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				        {
 				            var action = OrderActionResultList[i];
 				            
-				            EntryLimitFunctionLite(
-				                action.accountEntryQuantity, 
-				                action.OA, 
-				                action.signalPackageParam, 
-				                "SCALE IN", 
-				                action.thisBar, 
-				                action.orderType, 
-				                action.builtSignal
-				            );
-				            BackBrush = Brushes.DarkBlue;
-				            Print($"[SCALE-IN] Executed entry for action {i+1}/{OrderActionResultList.Count()}");
+				            // Use approval-gated entry during real-time, direct entry in historical
+				            if (isRealTime && EnablePushcutApproval)
+				            {
+				                Task.Run(async () => {
+				                    bool approved = await EntryLimitFunctionLiteWithApproval(
+				                        action.accountEntryQuantity, 
+				                        action.OA, 
+				                        action.signalPackageParam, 
+				                        "SCALE IN", 
+				                        action.thisBar, 
+				                        action.orderType, 
+				                        action.builtSignal
+				                    );
+				                    if (approved)
+				                    {
+				                        BackBrush = Brushes.DarkBlue;
+				                        Print($"[SCALE-IN] Approved and executed entry for action {i+1}/{OrderActionResultList.Count()}");
+				                    }
+				                    else
+				                    {
+				                        Print($"[PUSHCUT] Scale-in trade rejected for action {i+1}");
+				                    }
+				                });
+				            }
+				            else
+				            {
+				                EntryLimitFunctionLite(
+				                    action.accountEntryQuantity, 
+				                    action.OA, 
+				                    action.signalPackageParam, 
+				                    "SCALE IN", 
+				                    action.thisBar, 
+				                    action.orderType, 
+				                    action.builtSignal
+				                );
+				                BackBrush = Brushes.DarkBlue;
+				                Print($"[SCALE-IN] Executed entry for action {i+1}/{OrderActionResultList.Count()}");
+				            }
 							break;
 				        }
 						OrderActionResultList.Clear();
@@ -1469,14 +1496,36 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
 					                            	{ 
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM LONG");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
+														// Use approval-gated entry during real-time, direct entry in historical
+														if (isRealTime && EnablePushcutApproval)
+														{
+															Task.Run(async () => {
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																if (!approved) Print("[PUSHCUT] Long trade from long position rejected");
+															});
+														}
+														else
+														{
+															EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														}
 						                                return;
 															
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM FLAT");
-						                                EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
+														// Use approval-gated entry during real-time, direct entry in historical
+														if (isRealTime && EnablePushcutApproval)
+														{
+															Task.Run(async () => {
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																if (!approved) Print("[PUSHCUT] Long trade from flat position rejected");
+															});
+														}
+														else
+														{
+															EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														}
 						                                return;
 													}
 													else
@@ -1497,13 +1546,35 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                                if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
 					                           		{  
 														if (isRealTime) Print(Time[0] + " ENTER SHORT FROM SHORT");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
+														// Use approval-gated entry during real-time, direct entry in historical
+														if (isRealTime && EnablePushcutApproval)
+														{
+															Task.Run(async () => {
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																if (!approved) Print("[PUSHCUT] Short trade from short position rejected");
+															});
+														}
+														else
+														{
+															EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														}
 						                                return;
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER SHORTFROM FLAT");
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal); 
+														// Use approval-gated entry during real-time, direct entry in historical
+														if (isRealTime && EnablePushcutApproval)
+														{
+															Task.Run(async () => {
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																if (!approved) Print("[PUSHCUT] Short trade from flat position rejected");
+															});
+														}
+														else
+														{
+															EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														}
 						                                return;
 						                               
 													}

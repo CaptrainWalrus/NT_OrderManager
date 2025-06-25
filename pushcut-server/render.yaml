@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: nt-pushcut-approval
+    env: python
+    plan: starter  # Free tier
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+    healthCheckPath: /health 

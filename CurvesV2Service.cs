@@ -926,8 +926,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         {
                             // Fire and forget with timeout
                             var response = await client.PostAsync(endpoint, content, cts.Token);
-							string rsp = response.ToString();
-							Log($"rsp = {rsp}");
+							
                             response.Dispose(); // Important: dispose the response to free the connection
                         }
                     }
@@ -1023,7 +1022,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0) 
 							{
-								Log($" Request Success {responseText}");
+								
 								// Quick categorization without complex LINQ
 								double bullScore = 0, bearScore = 0;
 								var firstSignal = signalPoolResponse.signals[0];
@@ -1149,7 +1148,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							LastSignalTimestamp = DateTime.UtcNow;
 							string responseText = response.Content.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult();
 							var signalPoolResponse = JsonConvert.DeserializeObject<SignalPoolResponse>(responseText);
-							Log($"signalPoolResponse responseText {responseText}");
+
 							if (signalPoolResponse?.success == true && signalPoolResponse.signals?.Count > 0)
 							{
 								

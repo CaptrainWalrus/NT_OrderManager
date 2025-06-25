@@ -429,7 +429,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 						//canScaleIn = false;
 						string instrumentCode = GetInstrumentCode();
-					Print($"OBT CheckSignalsSync {simStop.EntryOrderUUID}"); 
+
 						var (RFscore, posSize, risk, target, pullback) = curvesService.CheckSignalsSync(
 						    UseRemoteServiceParameter, 
 						    Time[0], 

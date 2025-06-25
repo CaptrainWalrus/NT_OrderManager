@@ -58,6 +58,7 @@ public partial class CurvesStrategy : MainStrategy
 	public bool UseRemoteService = false;
 	
  	public bool backfillSuccess = false;
+	private bool backfillCompleted = false; // NEW: Prevent multiple backfill attempts
 	// Note: Price history no longer needed - ME service maintains its own 200-bar buffer
 	// private List<double> priceHistory = new List<double>(); // REMOVED - not needed
 	// private const int MAX_PRICE_HISTORY = 200; // REMOVED - ME service handles this
@@ -146,6 +147,7 @@ public partial class CurvesStrategy : MainStrategy
 				
 				// Generate a unique session ID for this strategy instance
 				curvesService.sessionID = Guid.NewGuid().ToString();
+				Print($"[SESSION-DEBUG] Generated session ID: {curvesService.sessionID} for instrument: {Instrument?.MasterInstrument?.Name ?? "UNKNOWN"}");
 				
 				// Set strategy state for conditional sync/async behavior
 				curvesService.SetStrategyState(State == State.Historical);
@@ -174,7 +176,8 @@ public partial class CurvesStrategy : MainStrategy
 			}
 			catch (Exception ex)
 			{
-				Print($"Error initializing CurvesV2Service: {ex.Message}");
+				Print($"[INIT-ERROR] Error initializing CurvesV2Service for {Instrument?.MasterInstrument?.Name ?? "UNKNOWN"}: {ex.Message}");
+				Print($"[INIT-ERROR] Stack trace: {ex.StackTrace}");
 				curvesService = null;
 			}
 			
@@ -197,10 +200,11 @@ public partial class CurvesStrategy : MainStrategy
 			
 			Print($"CurvesStrategy.OnStateChange: State.Realtime UseRemoteService {UseRemoteService}");
 			
-			// Backfill remote service with historical data
-			if(UseRemoteService == true && historicalBars.Count > 0)
+			// Backfill remote service with historical data (ONLY ONCE)
+			if(UseRemoteService == true && historicalBars.Count > 0 && !backfillCompleted)
 			{
 				Print($"[BACKFILL] Starting backfill with {historicalBars.Count} historical bars...");
+				
 				
 				// Use fire-and-forget for backfill to avoid blocking OnStateChange
 				Task.Run(async () => {
@@ -216,10 +220,14 @@ public partial class CurvesStrategy : MainStrategy
 						{
 							Print("❌ Remote service backfill failed - may need to wait for real-time buffer");
 						}
+						
+						// Mark as completed regardless of success/failure to prevent loops
+						backfillCompleted = true;
 					}
 					catch (Exception ex)
 					{
 						Print($"[BACKFILL] Error during backfill: {ex.Message}");
+						backfillSuccess = false; // Ensure failure is recorded
 					}
 				});
 			}
@@ -341,6 +349,8 @@ public partial class CurvesStrategy : MainStrategy
 				}
 			}
 			
+			// For remote service: if backfill was attempted, allow trading whether it succeeded or failed
+			// This prevents infinite blocking when backfill fails but remote service gets real-time data
 			bool enoughData = UseRemoteService == true ? backfillSuccess : true;
 			bool isConnected = curvesService.IsConnected && enoughData;
 			
@@ -515,7 +525,7 @@ public partial class CurvesStrategy : MainStrategy
 							
 							
 			            	// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-				            if (score > OutlierScoreRequirement)// && EMA3[0] > VWAP1[0] && IsRising(EMA3))
+				            if (score > OutlierScoreRequirement && EMA3[0] > VWAP1[0] && IsRising(EMA3))
 				            {
 								DebugFreezePrint("LONG signal generated with persistence");
 								Print($"[LONG] Score={score:F4} [PERSISTENT]");
@@ -528,13 +538,14 @@ public partial class CurvesStrategy : MainStrategy
 									thisSignal.recTarget = target;
 									thisSignal.recPullback = (100-pullback)/100; // Use RF pullback percentage eg 15 .. .15 >> 0.85
 									thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
+									thisSignal.signalScore = score;
 									return thisSignal;
 							}
 			            }
 						else if(score < 0)
 						{
 							
-				            if (Math.Abs(score) > OutlierScoreRequirement)// && EMA3[0] < VWAP1[0] && IsFalling(EMA3))
+				            if (Math.Abs(score) > OutlierScoreRequirement && EMA3[0] < VWAP1[0] && IsFalling(EMA3))
 				            {
 								DebugFreezePrint("SHORT signal generated with persistence");
 								Print($"[SHORT] Score={score:F4} [PERSISTENT]");
@@ -547,6 +558,7 @@ public partial class CurvesStrategy : MainStrategy
 								thisSignal.recPullback = pullback; // Use RF pullback percentage
 								thisSignal.recTarget = target;
 								thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
+								thisSignal.signalScore = score;
 								return thisSignal;
 							}
 						}
