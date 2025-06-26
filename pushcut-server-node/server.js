@@ -2,9 +2,11 @@ const express = require('express');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 const fs = require('fs');
 const path = require('path');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 app.use(express.json());
 
@@ -87,6 +89,25 @@ app.post('/trade-notification', async (req, res) => {
         tradeStats.lastUpdate = new Date().toISOString();
         
         console.log(`✅ Trade ${tradeId} created with chart: ${chartFilename}`);
+        
+        // Build full URLs for Discord
+        const fullChartUrl = `${req.protocol}://${req.get('host')}/chart/${chartFilename}`;
+        const approveUrl = `${req.protocol}://${req.get('host')}/approve/${tradeId}`;
+        const rejectUrl  = `${req.protocol}://${req.get('host')}/reject/${tradeId}`;
+
+        // Fire-and-forget Discord webhook (non-blocking)
+        sendDiscordNotification({
+          id: tradeId,
+          instrument,
+          direction,
+          entryPrice,
+          stopLoss,
+          takeProfit,
+          confidence,
+          fullChartUrl,
+          approveUrl,
+          rejectUrl
+        });
         
         res.json({
             success: true,
@@ -396,4 +417,53 @@ setInterval(() => {
         tradeStats.rejectedToday++;
         tradeStats.lastUpdate = new Date().toISOString();
     }
-}, 60000); 
+}, 60000);
+
+async function sendDiscordNotification(trade) {
+  try {
+    if (!DISCORD_WEBHOOK_URL) {
+      console.log('ℹ️  DISCORD_WEBHOOK_URL not set – skipping Discord notification');
+      return;
+    }
+
+    const embedColor = trade.direction === 'LONG' ? 0x00ff00 : 0xff0000;
+
+    const payload = {
+      content: `🚨 **New Trade Pending**` ,
+      embeds: [
+        {
+          title: `${trade.instrument} ${trade.direction} @ ${trade.entryPrice}`,
+          color: embedColor,
+          fields: [
+            { name: 'Stop Loss', value: `${trade.stopLoss}`, inline: true },
+            { name: 'Take Profit', value: `${trade.takeProfit}`, inline: true },
+            { name: 'Confidence', value: `${Math.round(trade.confidence * 100)}%`, inline: true }
+          ],
+          image: { url: trade.fullChartUrl },
+          footer: { text: `Trade ID: ${trade.id}` }
+        }
+      ],
+      components: [
+        {
+          type: 1,
+          components: [
+            { type: 2, style: 5, label: '✔ Approve', url: trade.approveUrl },
+            { type: 2, style: 5, label: '✖ Reject',  url: trade.rejectUrl },
+            { type: 2, style: 5, label: '📈 View Chart', url: trade.fullChartUrl }
+          ]
+        }
+      ]
+    };
+
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      timeout: 5000
+    });
+
+    console.log('💬 Discord notification sent');
+  } catch (err) {
+    console.error('❌ Discord notification failed:', err.message);
+  }
+} 
