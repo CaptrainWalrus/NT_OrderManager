@@ -132,7 +132,14 @@ async function approveRejectTrade(url, action) {
 }
 
 // Check if user has already chosen to monitor (store preference)
-let shouldPrompt = Keychain.get("trading_monitor_prompt") !== "false";
+let shouldPrompt = true;
+try {
+    shouldPrompt = Keychain.get("trading_monitor_prompt") !== "false";
+} catch (error) {
+    // Key doesn't exist yet, so we should prompt
+    console.log("🔧 First time running - will prompt for preferences");
+    shouldPrompt = true;
+}
 
 if (shouldPrompt) {
     let alert = new Alert();
@@ -147,7 +154,12 @@ if (shouldPrompt) {
     if (startMonitoring === 0 || startMonitoring === 1) {
         if (startMonitoring === 1) {
             // Don't ask again
-            Keychain.set("trading_monitor_prompt", "false");
+            try {
+                Keychain.set("trading_monitor_prompt", "false");
+                console.log("✅ Preference saved - won't ask again");
+            } catch (error) {
+                console.log("⚠️ Could not save preference:", error.message);
+            }
         }
         await startLiveMonitoring();
     } else {
