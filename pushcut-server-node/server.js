@@ -441,6 +441,7 @@ async function sendDiscordNotification(trade) {
         {
           title: `${trade.instrument} ${trade.direction} @ ${trade.entryPrice}`,
           color: embedColor,
+          description: `[✔ Approve](${trade.approveUrl})   |   [✖ Reject](${trade.rejectUrl})   |   [📈 View Chart](${trade.fullChartUrl})`,
           fields: [
             { name: 'Stop Loss', value: `${trade.stopLoss}`, inline: true },
             { name: 'Take Profit', value: `${trade.takeProfit}`, inline: true },
