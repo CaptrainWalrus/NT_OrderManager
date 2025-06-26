@@ -15,8 +15,9 @@ async function loadAndRunScript() {
         console.log("✅ Script loaded successfully");
         console.log("🚀 Executing script...");
         
-        // Execute the script
-        eval(scriptCode);
+        // Wrap the script in an async function to handle top-level awaits
+        let wrappedScript = `(async () => {\n${scriptCode}\n})()`;
+        await eval(wrappedScript);
         
     } catch (error) {
         console.error("❌ Error loading script:", error.message);
