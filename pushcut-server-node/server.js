@@ -2,14 +2,8 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
-const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
+const { createCanvas } = require('canvas');
 const { v4: uuidv4 } = require('uuid');
-const { Chart, Title, Tooltip, Legend, LineElement, PointElement, TimeScale, LinearScale, Filler } = require('chart.js');
-const dateFnsAdapter = require('chartjs-adapter-date-fns');
-const { de } = require('date-fns/locale');
-
-// Correct, explicit registration for Chart.js v3 components
-Chart.register(Title, Tooltip, Legend, LineElement, PointElement, TimeScale, LinearScale, Filler, dateFnsAdapter);
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -22,21 +16,6 @@ const TRADE_TIMEOUT_MINUTES = 5;
 const PUSHCUT_URL = "https://api.pushcut.io/8a_iGKpg-bNQDqFVFQAON/notifications/Trade%20Approval";
 const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 const CHART_DIR = path.join(__dirname, 'charts');
-
-// Correct way to register date adapter for Chart.js v3 with this library
-const chartCallback = (ChartJS) => {
-    ChartJS.register(require('chartjs-adapter-date-fns'));
-};
-
-// --- Chart Setup with v4 plugin registration ---
-const chartJSNodeCanvas = new ChartJSNodeCanvas({
-    width: 800,
-    height: 600,
-    backgroundColour: '#1a1a1a',
-    plugins: {
-        requireLegacy: ['chartjs-chart-financial']
-    }
-});
 
 app.use(express.json());
 
@@ -167,98 +146,193 @@ async function generateChart(tradeId, tradeData) {
     
     const { bars, signal, instrument } = tradeData;
     
-    // Prepare candlestick data in the format required by chartjs-chart-financial
-    const candlestickData = bars.map((bar, index) => ({
-        x: index + 1,
-        o: bar.open,
-        h: bar.high,
-        l: bar.low,
-        c: bar.close
-    }));
+    // Prepare candlestick data for Plotly
+    const dates = bars.map((_, index) => `Bar ${index + 1}`);
+    const open = bars.map(bar => bar.open);
+    const high = bars.map(bar => bar.high);
+    const low = bars.map(bar => bar.low);
+    const close = bars.map(bar => bar.close);
 
-    const configuration = {
+    // Create Plotly candlestick chart
+    const trace = {
+        x: dates,
+        close: close,
+        decreasing: {line: {color: '#FF4444'}},
+        high: high,
+        increasing: {line: {color: '#00AA00'}}, 
+        line: {color: 'rgba(31,119,180,1)'},
+        low: low,
+        open: open,
         type: 'candlestick',
-        data: {
-            datasets: [{
-                label: 'Price Action',
-                data: candlestickData,
-                borderColor: {
-                    up: '#00FF00',      // Green for bullish candles
-                    down: '#FF0000',    // Red for bearish candles
-                    unchanged: '#999999' // Gray for doji
-                },
-                backgroundColor: {
-                    up: 'rgba(0, 255, 0, 0.1)',
-                    down: 'rgba(255, 0, 0, 0.1)',
-                    unchanged: 'rgba(153, 153, 153, 0.1)'
-                },
-                borderWidth: 2,
-            }]
+        name: 'Price Action',
+        xaxis: 'x',
+        yaxis: 'y'
+    };
+
+    const layout = {
+        title: {
+            text: `${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`,
+            font: { color: '#FFFFFF', size: 16 }
         },
-        options: {
-            responsive: false,
-            animation: false,
-            scales: {
-                y: {
-                    beginAtZero: false,
-                    border: {
-                        display: true,
-                        color: 'rgba(255, 255, 255, 0.2)'
-                    },
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#FFFFFF',
-                        callback: function(value) {
-                            return '$' + value.toFixed(2);
-                        }
-                    }
-                },
-                x: {
-                    type: 'linear',
-                    position: 'bottom',
-                    border: {
-                        display: true,
-                        color: 'rgba(255, 255, 255, 0.2)'
-                    },
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#FFFFFF',
-                        callback: function(value) {
-                            return `Bar ${Math.floor(value)}`;
-                        }
-                    }
-                }
-            },
-            plugins: {
-                title: {
-                    display: true,
-                    text: `${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`,
-                    color: '#FFFFFF',
-                    font: {
-                        family: 'Arial, sans-serif',
-                        size: 16
-                    },
-                    padding: 20
-                },
-                legend: {
-                    display: true,
-                    labels: {
-                        color: '#FFFFFF',
-                        font: {
-                            family: 'Arial, sans-serif'
-                        }
-                    }
-                }
-            }
+        dragmode: 'zoom',
+        margin: { r: 10, t: 25, b: 40, l: 60 },
+        showlegend: false,
+        width: 800,
+        height: 600,
+        paper_bgcolor: '#1a1a1a',
+        plot_bgcolor: '#1a1a1a',
+        xaxis: {
+            autorange: true,
+            domain: [0, 1],
+            range: ['2017-01-03 12:00', '2017-02-15 12:00'],
+            rangeslider: { range: ['2017-01-03 12:00', '2017-02-15 12:00'] },
+            title: 'Date',
+            type: 'category',
+            color: '#FFFFFF',
+            gridcolor: 'rgba(255,255,255,0.1)'
+        },
+        yaxis: {
+            autorange: true,
+            domain: [0, 1],
+            range: [Math.min(...low) * 0.99, Math.max(...high) * 1.01],
+            type: 'linear',
+            title: 'Price ($)',
+            color: '#FFFFFF',
+            gridcolor: 'rgba(255,255,255,0.1)',
+            tickformat: '$,.2f'
         }
     };
 
+    const figure = { data: [trace], layout: layout };
+
     try {
-        const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration);
+        // Use canvas to render the chart
+        const canvas = createCanvas(800, 600);
+        const ctx = canvas.getContext('2d');
+        
+        // Draw background
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(0, 0, 800, 600);
+        
+        // Draw title
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '16px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`, 400, 30);
+        
+        // Calculate chart area
+        const chartTop = 60;
+        const chartBottom = 550;
+        const chartLeft = 60;
+        const chartRight = 740;
+        const chartWidth = chartRight - chartLeft;
+        const chartHeight = chartBottom - chartTop;
+        
+        // Find price range
+        const minPrice = Math.min(...low);
+        const maxPrice = Math.max(...high);
+        const priceRange = maxPrice - minPrice;
+        const priceMargin = priceRange * 0.05;
+        const scaledMinPrice = minPrice - priceMargin;
+        const scaledMaxPrice = maxPrice + priceMargin;
+        const scaledPriceRange = scaledMaxPrice - scaledMinPrice;
+        
+        // Draw grid lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
+        
+        // Horizontal grid lines (price levels)
+        for (let i = 0; i <= 5; i++) {
+            const y = chartTop + (i / 5) * chartHeight;
+            ctx.beginPath();
+            ctx.moveTo(chartLeft, y);
+            ctx.lineTo(chartRight, y);
+            ctx.stroke();
+            
+            // Price labels
+            const price = scaledMaxPrice - (i / 5) * scaledPriceRange;
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText(`$${price.toFixed(2)}`, chartLeft - 5, y + 4);
+        }
+        
+        // Vertical grid lines
+        for (let i = 0; i < bars.length; i++) {
+            const x = chartLeft + (i / (bars.length - 1)) * chartWidth;
+            ctx.beginPath();
+            ctx.moveTo(x, chartTop);
+            ctx.lineTo(x, chartBottom);
+            ctx.stroke();
+        }
+        
+        ctx.setLineDash([]);
+        
+        // Draw candlesticks
+        const candleWidth = chartWidth / bars.length * 0.7;
+        
+        for (let i = 0; i < bars.length; i++) {
+            const bar = bars[i];
+            const x = chartLeft + (i / (bars.length - 1)) * chartWidth;
+            
+            // Scale prices to chart coordinates
+            const openY = chartBottom - ((bar.open - scaledMinPrice) / scaledPriceRange) * chartHeight;
+            const closeY = chartBottom - ((bar.close - scaledMinPrice) / scaledPriceRange) * chartHeight;
+            const highY = chartBottom - ((bar.high - scaledMinPrice) / scaledPriceRange) * chartHeight;
+            const lowY = chartBottom - ((bar.low - scaledMinPrice) / scaledPriceRange) * chartHeight;
+            
+            // Determine candle color
+            const isUp = bar.close > bar.open;
+            ctx.strokeStyle = isUp ? '#00AA00' : '#FF4444';
+            ctx.fillStyle = isUp ? '#00AA00' : '#FF4444';
+            ctx.lineWidth = 2;
+            
+            // Draw high-low line
+            ctx.beginPath();
+            ctx.moveTo(x, highY);
+            ctx.lineTo(x, lowY);
+            ctx.stroke();
+            
+            // Draw open-close rectangle
+            const rectHeight = Math.abs(closeY - openY);
+            const rectY = Math.min(openY, closeY);
+            
+            if (isUp) {
+                ctx.strokeRect(x - candleWidth/2, rectY, candleWidth, rectHeight);
+            } else {
+                ctx.fillRect(x - candleWidth/2, rectY, candleWidth, rectHeight);
+            }
+        }
+        
+        // Draw axes
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        
+        // Y-axis
+        ctx.beginPath();
+        ctx.moveTo(chartLeft, chartTop);
+        ctx.lineTo(chartLeft, chartBottom);
+        ctx.stroke();
+        
+        // X-axis
+        ctx.beginPath();
+        ctx.moveTo(chartLeft, chartBottom);
+        ctx.lineTo(chartRight, chartBottom);
+        ctx.stroke();
+        
+        // X-axis labels
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        for (let i = 0; i < bars.length; i += Math.ceil(bars.length / 8)) {
+            const x = chartLeft + (i / (bars.length - 1)) * chartWidth;
+            ctx.fillText(`Bar ${i + 1}`, x, chartBottom + 20);
+        }
+        
+        // Save chart
+        const imageBuffer = canvas.toBuffer('image/png');
         await fs.writeFile(path.join(CHART_DIR, `${tradeId}.png`), imageBuffer);
         console.log(`[CHART] Candlestick chart generated for trade ${tradeId}`);
         
