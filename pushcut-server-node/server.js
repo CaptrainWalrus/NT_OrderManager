@@ -9,6 +9,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
+if (DISCORD_WEBHOOK_URL) {
+    console.log('🔔 Discord webhook ready');
+} else {
+    console.log('ℹ️ Discord webhook disabled (no DISCORD_WEBHOOK_URL env var)');
+}
+
 app.use(express.json());
 
 // Chart configuration with font fallbacks
