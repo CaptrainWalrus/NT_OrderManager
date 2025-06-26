@@ -4,31 +4,13 @@ const fs = require('fs').promises;
 const path = require('path');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 const { v4: uuidv4 } = require('uuid');
-const { Chart } = require('chart.js');
-const {
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    Title,
-    Tooltip,
-    Legend,
-    TimeScale
-} = require('chart.js');
+const { Chart, registerables } = require('chart.js');
 const { de } = require('date-fns/locale');
 const dateFnsAdapter = require('chartjs-adapter-date-fns');
 
-Chart.register(
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    Title,
-    Tooltip,
-    Legend,
-    TimeScale,
-    dateFnsAdapter
-);
+// Register all Chart.js components, including the date adapter
+Chart.register(...registerables);
+// No need to manually register the adapter in Chart.js v3 with this approach
 
 const app = express();
 const PORT = process.env.PORT || 8000;
