@@ -30,10 +30,9 @@ const chartCallback = (ChartJS) => {
 
 // --- Chart Setup ---
 const chartJSNodeCanvas = new ChartJSNodeCanvas({
-    width: 1200,
-    height: 800,
-    backgroundColour: '#1E222D', // Dark theme for charts
-    chartCallback: chartCallback
+    width: 800,
+    height: 600,
+    backgroundColour: '#1E222D'
 });
 
 app.use(express.json());
@@ -131,65 +130,99 @@ async function generateChart(tradeId, tradeData) {
     await fs.mkdir(CHART_DIR, { recursive: true });
     
     const { bars, signal, instrument } = tradeData;
-    const labels = bars.map(b => new Date(b.time));
+    
+    // Simple labels and data
+    const labels = bars.map((_, index) => `Bar ${index + 1}`);
     const closeData = bars.map(b => b.close);
+    const highData = bars.map(b => b.high);
+    const lowData = bars.map(b => b.low);
 
     const configuration = {
         type: 'line',
         data: {
             labels: labels,
             datasets: [{
-                label: 'Price',
+                label: 'Close Price',
                 data: closeData,
-                borderColor: '#5DADE2',
-                backgroundColor: 'rgba(93, 173, 226, 0.1)',
+                borderColor: '#00FF00',
+                backgroundColor: 'rgba(0, 255, 0, 0.1)',
+                borderWidth: 3,
+                pointRadius: 4,
+                pointBackgroundColor: '#00FF00',
+                fill: false,
+            }, {
+                label: 'High Price',
+                data: highData,
+                borderColor: '#FF6B6B',
+                backgroundColor: 'rgba(255, 107, 107, 0.1)',
                 borderWidth: 2,
-                pointRadius: 0,
-                tension: 0.1,
-                fill: true,
-            }],
+                pointRadius: 2,
+                pointBackgroundColor: '#FF6B6B',
+                fill: false,
+            }, {
+                label: 'Low Price',
+                data: lowData,
+                borderColor: '#4ECDC4',
+                backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                borderWidth: 2,
+                pointRadius: 2,
+                pointBackgroundColor: '#4ECDC4',
+                fill: false,
+            }]
         },
         options: {
+            responsive: false,
+            animation: false,
             scales: {
-                x: {
-                    type: 'time',
-                    time: { unit: 'minute', tooltipFormat: 'MMM d, h:mm a', displayFormats: { minute: 'h:mm a' } },
-                    grid: { color: 'rgba(255, 255, 255, 0.2)' },
-                    ticks: { color: 'white' },
-                },
                 y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.2)' },
-                    ticks: { color: 'white', callback: value => `$${value.toFixed(2)}` },
-                },
-            },
-            plugins: {
-                legend: { display: false },
-                title: {
-                    display: true,
-                    text: `${instrument} - ${signal.direction} Signal`,
-                    color: 'white',
-                    font: { size: 24 },
-                    padding: { top: 20, bottom: 20 }
-                },
-                annotation: {
-                    annotations: {
-                        entryLine: {
-                            type: 'line',
-                            yMin: signal.entry_price,
-                            yMax: signal.entry_price,
-                            borderColor: '#F1C40F',
-                            borderWidth: 3,
-                            label: { content: `Entry: ${signal.entry_price.toFixed(2)}`, enabled: true, position: 'start', backgroundColor: '#F1C40F' }
+                    beginAtZero: false,
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    },
+                    ticks: {
+                        color: '#FFFFFF',
+                        callback: function(value) {
+                            return '$' + value.toFixed(2);
                         }
+                    }
+                },
+                x: {
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    },
+                    ticks: {
+                        color: '#FFFFFF'
                     }
                 }
             },
-        },
+            plugins: {
+                title: {
+                    display: true,
+                    text: `${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`,
+                    color: '#FFFFFF',
+                    font: {
+                        size: 20
+                    },
+                    padding: 20
+                },
+                legend: {
+                    display: true,
+                    labels: {
+                        color: '#FFFFFF'
+                    }
+                }
+            }
+        }
     };
 
-    const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration, 'image/png');
-    await fs.writeFile(path.join(CHART_DIR, `${tradeId}.png`), imageBuffer);
-    console.log(`[CHART] Chart generated for trade ${tradeId}`);
+    try {
+        const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration);
+        await fs.writeFile(path.join(CHART_DIR, `${tradeId}.png`), imageBuffer);
+        console.log(`[CHART] Chart generated for trade ${tradeId}`);
+    } catch (error) {
+        console.error(`[CHART] Error generating chart for ${tradeId}:`, error);
+        throw error;
+    }
 }
 
 async function sendPushcutNotification(tradeId, tradeData) {
@@ -202,11 +235,11 @@ async function sendPushcutNotification(tradeId, tradeData) {
         image: chartUrl,
         isTimeSensitive: true,
         actions: [{
-            name: "APPROVE ✅",
+            name: "APPROVE",
             url: `${SERVER_URL}/trade/approve/${tradeId}`,
             urlBackgroundOptions: { "httpMethod": "POST" }
         }, {
-            name: "REJECT ❌",
+            name: "REJECT",
             url: `${SERVER_URL}/trade/reject/${tradeId}`,
             urlBackgroundOptions: { "httpMethod": "POST" }
         }]
