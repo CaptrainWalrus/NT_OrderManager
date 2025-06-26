@@ -15,12 +15,14 @@ using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.SuperDom;
 using NinjaTrader.Gui.Tools;
+using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.Cbi;
 using NinjaTrader.Core.FloatingPoint;
 using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.NinjaScript.DrawingTools;
+using NinjaTrader.Cbi;
 using System.IO;
 using System.Xml.Serialization;
 using System.IO;
@@ -1501,8 +1503,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 														// Use approval-gated entry during real-time, direct entry in historical
 														if (isRealTime && EnablePushcutApproval)
 														{
+															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.Buy, thisSignalPackage, "", builtSignal);
 															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
 																if (!approved) Print("[PUSHCUT] Long trade from long position rejected");
 															});
 														}
@@ -1519,8 +1522,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 														// Use approval-gated entry during real-time, direct entry in historical
 														if (isRealTime && EnablePushcutApproval)
 														{
+															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.Buy, thisSignalPackage, "", builtSignal);
 															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
 																if (!approved) Print("[PUSHCUT] Long trade from flat position rejected");
 															});
 														}
@@ -1551,8 +1555,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 														// Use approval-gated entry during real-time, direct entry in historical
 														if (isRealTime && EnablePushcutApproval)
 														{
+															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", builtSignal);
 															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
 																if (!approved) Print("[PUSHCUT] Short trade from short position rejected");
 															});
 														}
@@ -1568,8 +1573,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 														// Use approval-gated entry during real-time, direct entry in historical
 														if (isRealTime && EnablePushcutApproval)
 														{
+															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", builtSignal);
 															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal);
+																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
 																if (!approved) Print("[PUSHCUT] Short trade from flat position rejected");
 															});
 														}

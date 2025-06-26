@@ -100,7 +100,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             string description, 
             int bar, 
             OrderType orderType, 
-            patternFunctionResponse builtSignal)
+            patternFunctionResponse builtSignal,
+            TradeRequest prebuiltSnapshot = null)
         {
             // Skip approval in historical mode or if disabled
             if (!isRealTime || !pushcutEnabled)
@@ -110,8 +111,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
             try
             {
-                // Step 1: Build trade request
-                var tradeRequest = BuildTradeRequest(quantity, orderAction, signalPackage, description, builtSignal);
+                // Step 1: Build trade request (use snapshot if provided to stay on Ninja thread)
+                var tradeRequest = prebuiltSnapshot ?? BuildTradeRequest(quantity, orderAction, signalPackage, description, builtSignal);
                 
                 Print($"[PUSHCUT] Requesting approval for {orderAction} {quantity} @ {Close[0]:F2}");
 
@@ -348,10 +349,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             string description, 
             int bar, 
             OrderType orderType, 
-            patternFunctionResponse builtSignal)
+            patternFunctionResponse builtSignal,
+            TradeRequest prebuiltSnapshot = null)
         {
             // Request approval (blocking call)
-            bool approved = await RequestTradeApproval(quantity, orderAction, signalPackage, description, bar, orderType, builtSignal);
+            bool approved = await RequestTradeApproval(quantity, orderAction, signalPackage, description, bar, orderType, builtSignal, prebuiltSnapshot);
             
             if (!approved)
             {
@@ -429,5 +431,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         }
 
         #endregion
+
+        // Public wrapper to safely create snapshot from strategy thread
+        public TradeRequest CreateTradeRequestSnapshot(
+            int quantity,
+            OrderAction orderAction,
+            signalPackage signalPackage,
+            string description,
+            patternFunctionResponse builtSignal)
+        {
+            return BuildTradeRequest(quantity, orderAction, signalPackage, description, builtSignal);
+        }
     }
 } 
