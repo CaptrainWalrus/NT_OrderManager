@@ -5,7 +5,8 @@ const SERVER_URL = "https://pushcut-server.onrender.com";
 
 // Widget configuration
 const WIDGET_SIZE = "medium"; // medium gives us more space for charts
-const REFRESH_INTERVAL = 15; // seconds between checks when app is open
+const REFRESH_INTERVAL = 3; // seconds between checks when app is open
+const WIDGET_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes for home screen widget
 
 // Create main widget
 let widget = new ListWidget();
@@ -31,8 +32,22 @@ try {
 // Present widget
 if (config.runsInWidget) {
     Script.setWidget(widget);
+    // Set faster refresh for home screen widget
+    Script.setWidget(widget, WIDGET_REFRESH_INTERVAL);
 } else {
+    // When running in app, show immediately
     widget.presentMedium();
+}
+
+// Set up auto-refresh when running in Scriptable app
+if (!config.runsInWidget) {
+    console.log("🔄 App mode - setting up auto-refresh every 3 seconds");
+    // This will only work when the app is open
+    Timer.schedule(3000, true, async () => {
+        console.log("🔄 Auto-refreshing...");
+        // Re-run the script
+        Script.complete();
+    });
 }
 
 Script.complete();
