@@ -132,14 +132,19 @@ app.post('/trade-notification', async (req, res) => {
 });
 
 // Approve trade
-app.get('/approve/:tradeId', (req, res) => {
+app.get('/approve/:tradeId', async (req, res) => {
     const { tradeId } = req.params;
     console.log(`✅ Trade ${tradeId} APPROVED`);
     
     if (pendingTrade && pendingTrade.id === tradeId) {
+        // Send Discord confirmation before clearing
+        await sendDiscordStatus(pendingTrade, true);
         pendingTrade = null;
         tradeStats.approvedToday++;
         tradeStats.lastUpdate = new Date().toISOString();
+    } else {
+        // Unknown trade but still notify
+        await sendDiscordStatus({ id: tradeId }, true);
     }
     
     res.send(`
@@ -155,14 +160,17 @@ app.get('/approve/:tradeId', (req, res) => {
 });
 
 // Reject trade
-app.get('/reject/:tradeId', (req, res) => {
+app.get('/reject/:tradeId', async (req, res) => {
     const { tradeId } = req.params;
     console.log(`❌ Trade ${tradeId} REJECTED`);
     
     if (pendingTrade && pendingTrade.id === tradeId) {
+        await sendDiscordStatus(pendingTrade, false);
         pendingTrade = null;
         tradeStats.rejectedToday++;
         tradeStats.lastUpdate = new Date().toISOString();
+    } else {
+        await sendDiscordStatus({ id: tradeId }, false);
     }
     
     res.send(`
@@ -442,11 +450,6 @@ async function sendDiscordNotification(trade) {
           title: `${trade.instrument} ${trade.direction} @ ${trade.entryPrice}`,
           color: embedColor,
           description: `[✔ Approve](${trade.approveUrl})   |   [✖ Reject](${trade.rejectUrl})   |   [📈 View Chart](${trade.fullChartUrl})`,
-          fields: [
-            { name: 'Stop Loss', value: `${trade.stopLoss}`, inline: true },
-            { name: 'Take Profit', value: `${trade.takeProfit}`, inline: true },
-            { name: 'Confidence', value: `${Math.round(trade.confidence * 100)}%`, inline: true }
-          ],
           image: { url: trade.fullChartUrl },
           footer: { text: `Trade ID: ${trade.id}` }
         }
@@ -473,5 +476,24 @@ async function sendDiscordNotification(trade) {
     console.log('💬 Discord notification sent');
   } catch (err) {
     console.error('❌ Discord notification failed:', err.message);
+  }
+}
+
+async function sendDiscordStatus(trade, approved) {
+  try {
+    if (!DISCORD_WEBHOOK_URL) return;
+    const color = approved ? 0x00ff00 : 0xff0000;
+    const statusText = approved ? 'APPROVED' : 'REJECTED';
+    const payload = {
+      embeds: [{
+        title: `Trade ${trade.id} ${statusText}`,
+        color,
+        description: approved ? '✅ Order sent to NinjaTrader' : '❌ Order cancelled',
+        footer: { text: new Date().toLocaleString() }
+      }]
+    };
+    await fetch(DISCORD_WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  } catch (err) {
+    console.error('Discord status webhook failed', err.message);
   }
 } 
