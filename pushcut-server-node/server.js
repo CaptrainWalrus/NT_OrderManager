@@ -28,13 +28,13 @@ const chartCallback = (ChartJS) => {
     ChartJS.register(require('chartjs-adapter-date-fns'));
 };
 
-// --- Chart Setup ---
+// --- Chart Setup with v4 plugin registration ---
 const chartJSNodeCanvas = new ChartJSNodeCanvas({
     width: 800,
     height: 600,
     backgroundColour: '#1a1a1a',
     plugins: {
-        modern: ['chartjs-chart-financial']
+        requireLegacy: ['chartjs-chart-financial']
     }
 });
 
@@ -201,6 +201,10 @@ async function generateChart(tradeId, tradeData) {
             scales: {
                 y: {
                     beginAtZero: false,
+                    border: {
+                        display: true,
+                        color: 'rgba(255, 255, 255, 0.2)'
+                    },
                     grid: {
                         color: 'rgba(255, 255, 255, 0.1)'
                     },
@@ -214,6 +218,10 @@ async function generateChart(tradeId, tradeData) {
                 x: {
                     type: 'linear',
                     position: 'bottom',
+                    border: {
+                        display: true,
+                        color: 'rgba(255, 255, 255, 0.2)'
+                    },
                     grid: {
                         color: 'rgba(255, 255, 255, 0.1)'
                     },
