@@ -32,98 +32,134 @@ const chartCallback = (ChartJS) => {
 const chartJSNodeCanvas = new ChartJSNodeCanvas({
     width: 800,
     height: 600,
-    backgroundColour: '#1E222D'
+    backgroundColour: '#1a1a1a',
+    plugins: {
+        modern: ['chartjs-chart-financial']
+    }
 });
 
 app.use(express.json());
 
 // --- API Endpoints ---
 
-// Endpoint for NinjaTrader to request approval
-app.post('/trade/request', async (req, res) => {
-    const tradeData = req.body;
-    const tradeId = uuidv4();
-
-    trades.set(tradeId, {
-        status: 'pending',
-        data: tradeData,
-        timestamp: new Date(),
-        expiresAt: new Date(new Date().getTime() + TRADE_TIMEOUT_MINUTES * 60000),
-    });
-
-    // Asynchronously generate chart and send notification
-    processTradeAsync(tradeId, tradeData).catch(err => {
-        console.error(`[ERROR] Failed to process trade ${tradeId}:`, err);
-        trades.get(tradeId).status = 'error';
-    });
-
-    res.status(202).json({
-        trade_id: tradeId,
-        status: 'pending',
-        chart_url: `${SERVER_URL}/chart/${tradeId}`,
-    });
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Endpoint to check the status of a trade
-app.get('/trade/status/:trade_id', (req, res) => {
-    const { trade_id } = req.params;
-    const trade = trades.get(trade_id);
+// Submit trade for approval
+app.post('/trade/request', async (req, res) => {
+    try {
+        const tradeId = uuidv4();
+        const tradeData = req.body;
 
-    if (!trade) {
+        // Store trade data
+        trades.set(tradeId, {
+            ...tradeData,
+            status: 'pending',
+            timestamp: Date.now()
+        });
+
+        // Set timeout for automatic rejection
+        setTimeout(() => {
+            if (trades.has(tradeId) && trades.get(tradeId).status === 'pending') {
+                trades.set(tradeId, { ...trades.get(tradeId), status: 'rejected', reason: 'timeout' });
+                console.log(`[TIMEOUT] Trade ${tradeId} automatically rejected`);
+            }
+        }, TRADE_TIMEOUT_MINUTES * 60 * 1000);
+
+        // Generate chart and send notification asynchronously
+        processTradeAsync(tradeId, tradeData).catch(error => {
+            console.error(`[ERROR] Failed to process trade ${tradeId}:`, error);
+        });
+
+        res.json({
+            trade_id: tradeId,
+            status: 'pending',
+            chart_url: `${SERVER_URL}/chart/${tradeId}`
+        });
+
+        console.log(`[REQUEST] New trade request ${tradeId} for ${tradeData.instrument}`);
+    } catch (error) {
+        console.error('[ERROR] Trade request failed:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Approve trade
+app.post('/trade/approve/:tradeId', (req, res) => {
+    const { tradeId } = req.params;
+    
+    if (!trades.has(tradeId)) {
         return res.status(404).json({ error: 'Trade not found' });
     }
 
-    if (new Date() > trade.expiresAt && trade.status === 'pending') {
-        trade.status = 'timeout';
-        trade.decision_time = new Date();
+    const trade = trades.get(tradeId);
+    if (trade.status !== 'pending') {
+        return res.status(400).json({ error: `Trade already ${trade.status}` });
     }
 
+    trades.set(tradeId, { ...trade, status: 'approved', approved_at: Date.now() });
+    console.log(`[APPROVED] Trade ${tradeId} approved`);
+    
+    res.json({ success: true, message: 'Trade approved' });
+});
+
+// Reject trade
+app.post('/trade/reject/:tradeId', (req, res) => {
+    const { tradeId } = req.params;
+    
+    if (!trades.has(tradeId)) {
+        return res.status(404).json({ error: 'Trade not found' });
+    }
+
+    const trade = trades.get(tradeId);
+    if (trade.status !== 'pending') {
+        return res.status(400).json({ error: `Trade already ${trade.status}` });
+    }
+
+    trades.set(tradeId, { ...trade, status: 'rejected', rejected_at: Date.now() });
+    console.log(`[REJECTED] Trade ${tradeId} rejected`);
+    
+    res.json({ success: true, message: 'Trade rejected' });
+});
+
+// Get trade status
+app.get('/trade/status/:tradeId', (req, res) => {
+    const { tradeId } = req.params;
+    
+    if (!trades.has(tradeId)) {
+        return res.status(404).json({ error: 'Trade not found' });
+    }
+
+    const trade = trades.get(tradeId);
     res.json({
-        trade_id,
+        trade_id: tradeId,
         status: trade.status,
-        decision_time: trade.decision_time ? trade.decision_time.toISOString() : null,
+        timestamp: trade.timestamp,
+        instrument: trade.instrument,
+        signal: trade.signal
     });
 });
 
-// Endpoints for Pushcut to call
-app.post('/trade/approve/:trade_id', (req, res) => handleApproval(req, res, 'approved'));
-app.post('/trade/reject/:trade_id', (req, res) => handleApproval(req, res, 'rejected'));
-
-// Endpoint to serve the generated chart
-app.get('/chart/:trade_id', async (req, res) => {
-    const { trade_id } = req.params;
-    const chartPath = path.join(CHART_DIR, `${trade_id}.png`);
-
+// Serve chart images
+app.get('/chart/:tradeId', async (req, res) => {
     try {
+        const { tradeId } = req.params;
+        const chartPath = path.join(CHART_DIR, `${tradeId}.png`);
+        
         await fs.access(chartPath);
         res.sendFile(chartPath);
     } catch (error) {
-        res.status(202).json({ message: 'Chart is still generating...' });
+        res.status(404).json({ error: 'Chart not found' });
     }
 });
-
-// Health check for Render
-app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', active_trades: trades.size });
-});
-
 
 // --- Helper Functions ---
 
 async function processTradeAsync(tradeId, tradeData) {
-    await generateChart(tradeId, tradeData);
-    await sendPushcutNotification(tradeId, tradeData);
-}
-
-function handleApproval(req, res, status) {
-    const { trade_id } = req.params;
-    const trade = trades.get(trade_id);
-    if (trade && trade.status === 'pending') {
-        trade.status = status;
-        trade.decision_time = new Date();
-        console.log(`[APPROVAL] Trade ${trade_id} has been ${status}.`);
-    }
-    res.json({ status, trade_id });
+    const chartBase64 = await generateChart(tradeId, tradeData);
+    await sendPushcutNotification(tradeId, tradeData, chartBase64);
 }
 
 async function generateChart(tradeId, tradeData) {
@@ -131,43 +167,32 @@ async function generateChart(tradeId, tradeData) {
     
     const { bars, signal, instrument } = tradeData;
     
-    // Simple labels and data
-    const labels = bars.map((_, index) => `Bar ${index + 1}`);
-    const closeData = bars.map(b => b.close);
-    const highData = bars.map(b => b.high);
-    const lowData = bars.map(b => b.low);
+    // Prepare candlestick data in the format required by chartjs-chart-financial
+    const candlestickData = bars.map((bar, index) => ({
+        x: index + 1,
+        o: bar.open,
+        h: bar.high,
+        l: bar.low,
+        c: bar.close
+    }));
 
     const configuration = {
-        type: 'line',
+        type: 'candlestick',
         data: {
-            labels: labels,
             datasets: [{
-                label: 'Close Price',
-                data: closeData,
-                borderColor: '#00FF00',
-                backgroundColor: 'rgba(0, 255, 0, 0.1)',
-                borderWidth: 3,
-                pointRadius: 4,
-                pointBackgroundColor: '#00FF00',
-                fill: false,
-            }, {
-                label: 'High Price',
-                data: highData,
-                borderColor: '#FF6B6B',
-                backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                label: 'Price Action',
+                data: candlestickData,
+                borderColor: {
+                    up: '#00FF00',      // Green for bullish candles
+                    down: '#FF0000',    // Red for bearish candles
+                    unchanged: '#999999' // Gray for doji
+                },
+                backgroundColor: {
+                    up: 'rgba(0, 255, 0, 0.1)',
+                    down: 'rgba(255, 0, 0, 0.1)',
+                    unchanged: 'rgba(153, 153, 153, 0.1)'
+                },
                 borderWidth: 2,
-                pointRadius: 2,
-                pointBackgroundColor: '#FF6B6B',
-                fill: false,
-            }, {
-                label: 'Low Price',
-                data: lowData,
-                borderColor: '#4ECDC4',
-                backgroundColor: 'rgba(78, 205, 196, 0.1)',
-                borderWidth: 2,
-                pointRadius: 2,
-                pointBackgroundColor: '#4ECDC4',
-                fill: false,
             }]
         },
         options: {
@@ -187,11 +212,16 @@ async function generateChart(tradeId, tradeData) {
                     }
                 },
                 x: {
+                    type: 'linear',
+                    position: 'bottom',
                     grid: {
                         color: 'rgba(255, 255, 255, 0.1)'
                     },
                     ticks: {
-                        color: '#FFFFFF'
+                        color: '#FFFFFF',
+                        callback: function(value) {
+                            return `Bar ${Math.floor(value)}`;
+                        }
                     }
                 }
             },
@@ -201,14 +231,18 @@ async function generateChart(tradeId, tradeData) {
                     text: `${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`,
                     color: '#FFFFFF',
                     font: {
-                        size: 20
+                        family: 'Arial, sans-serif',
+                        size: 16
                     },
                     padding: 20
                 },
                 legend: {
                     display: true,
                     labels: {
-                        color: '#FFFFFF'
+                        color: '#FFFFFF',
+                        font: {
+                            family: 'Arial, sans-serif'
+                        }
                     }
                 }
             }
@@ -218,38 +252,42 @@ async function generateChart(tradeId, tradeData) {
     try {
         const imageBuffer = await chartJSNodeCanvas.renderToBuffer(configuration);
         await fs.writeFile(path.join(CHART_DIR, `${tradeId}.png`), imageBuffer);
-        console.log(`[CHART] Chart generated for trade ${tradeId}`);
+        console.log(`[CHART] Candlestick chart generated for trade ${tradeId}`);
+        
+        // Return base64 encoded image for direct Pushcut delivery
+        return imageBuffer.toString('base64');
     } catch (error) {
         console.error(`[CHART] Error generating chart for ${tradeId}:`, error);
         throw error;
     }
 }
 
-async function sendPushcutNotification(tradeId, tradeData) {
+async function sendPushcutNotification(tradeId, tradeData, chartBase64) {
     const { instrument, signal } = tradeData;
-    const chartUrl = `${SERVER_URL}/chart/${tradeId}`;
     
     const payload = {
         title: `🔥 ${instrument} ${signal.direction}`,
         text: `Entry: $${signal.entry_price.toFixed(2)}\nRisk: $${signal.risk_amount}\nTarget: $${signal.target_amount}`,
-        image: chartUrl,
+        image: `data:image/png;base64,${chartBase64}`,
         isTimeSensitive: true,
         actions: [{
             name: "APPROVE",
             url: `${SERVER_URL}/trade/approve/${tradeId}`,
             urlBackgroundOptions: { "httpMethod": "POST" }
         }, {
-            name: "REJECT",
+            name: "REJECT", 
             url: `${SERVER_URL}/trade/reject/${tradeId}`,
             urlBackgroundOptions: { "httpMethod": "POST" }
         }]
     };
 
     try {
-        await axios.post(PUSHCUT_URL, payload, { timeout: 10000 });
-        console.log(`[PUSHCUT] Notification sent for trade ${tradeId}`);
+        const response = await axios.post(PUSHCUT_URL, payload);
+        console.log(`[PUSHCUT] Notification sent for trade ${tradeId}: ${response.status}`);
+        return response.data;
     } catch (error) {
-        console.error(`[PUSHCUT] Failed to send notification for ${tradeId}:`, error.message);
+        console.error(`[PUSHCUT] Error sending notification for ${tradeId}:`, error.message);
+        throw error;
     }
 }
 
@@ -268,8 +306,9 @@ setInterval(() => {
     if (cleanedCount > 0) console.log(`[CLEANUP] Cleaned up ${cleanedCount} old trades.`);
 }, 30 * 60 * 1000); // Every 30 minutes
 
-
-// --- Server Start ---
+// Start server
 app.listen(PORT, () => {
-    console.log(`Pushcut Approval Service running at http://localhost:${PORT}`);
+    console.log(`🚀 Pushcut Approval Service running on port ${PORT}`);
+    console.log(`📊 Chart directory: ${CHART_DIR}`);
+    console.log(`⏰ Trade timeout: ${TRADE_TIMEOUT_MINUTES} minutes`);
 }); 
