@@ -4,13 +4,12 @@ const fs = require('fs').promises;
 const path = require('path');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 const { v4: uuidv4 } = require('uuid');
-const { Chart, registerables } = require('chart.js');
-const { de } = require('date-fns/locale');
+const { Chart, Title, Tooltip, Legend, LineElement, PointElement, TimeScale, LinearScale, Filler } = require('chart.js');
 const dateFnsAdapter = require('chartjs-adapter-date-fns');
+const { de } = require('date-fns/locale');
 
-// Register all Chart.js components, including the date adapter
-Chart.register(...registerables);
-// No need to manually register the adapter in Chart.js v3 with this approach
+// Correct, explicit registration for Chart.js v3 components
+Chart.register(Title, Tooltip, Legend, LineElement, PointElement, TimeScale, LinearScale, Filler, dateFnsAdapter);
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -24,14 +23,17 @@ const PUSHCUT_URL = "https://api.pushcut.io/8a_iGKpg-bNQDqFVFQAON/notifications/
 const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 const CHART_DIR = path.join(__dirname, 'charts');
 
+// Correct way to register date adapter for Chart.js v3 with this library
+const chartCallback = (ChartJS) => {
+    ChartJS.register(require('chartjs-adapter-date-fns'));
+};
+
 // --- Chart Setup ---
 const chartJSNodeCanvas = new ChartJSNodeCanvas({
     width: 1200,
     height: 800,
     backgroundColour: '#1E222D', // Dark theme for charts
-    plugins: {
-        global: ['chartjs-adapter-date-fns']
-    }
+    chartCallback: chartCallback
 });
 
 app.use(express.json());
