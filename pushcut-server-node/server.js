@@ -205,6 +205,23 @@ app.get('/widget/summary', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// SCRIPTABLE CODE SERVING
+// ═══════════════════════════════════════════════════════════════
+
+// Serve Scriptable scripts directly
+app.get('/scriptable/live-monitor', (req, res) => {
+    console.log('📱 Serving live monitor script');
+    res.set('Content-Type', 'text/plain');
+    res.sendFile(path.join(__dirname, 'scriptable-live-monitor.js'));
+});
+
+app.get('/scriptable/chart-widget', (req, res) => {
+    console.log('📱 Serving chart widget script');
+    res.set('Content-Type', 'text/plain');
+    res.sendFile(path.join(__dirname, 'scriptable-chart-widget.js'));
+});
+
+// ═══════════════════════════════════════════════════════════════
 // CHART SERVING AND GENERATION
 // ═══════════════════════════════════════════════════════════════
 

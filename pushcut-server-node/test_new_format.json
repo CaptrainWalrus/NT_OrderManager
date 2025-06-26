@@ -1,0 +1,18 @@
+{
+  "instrument": "ES",
+  "direction": "LONG",
+  "entryPrice": 5100.25,
+  "stopLoss": 5095.00,
+  "takeProfit": 5110.50,
+  "confidence": 0.85,
+  "bars": [
+    { "time": "09:30", "open": 5090, "high": 5095, "low": 5088, "close": 5092 },
+    { "time": "09:31", "open": 5092, "high": 5098, "low": 5090, "close": 5096 },
+    { "time": "09:32", "open": 5096, "high": 5102, "low": 5094, "close": 5100 },
+    { "time": "09:33", "open": 5100, "high": 5105, "low": 5098, "close": 5103 },
+    { "time": "09:34", "open": 5103, "high": 5108, "low": 5101, "close": 5106 },
+    { "time": "09:35", "open": 5106, "high": 5111, "low": 5104, "close": 5109 },
+    { "time": "09:36", "open": 5109, "high": 5114, "low": 5107, "close": 5112 },
+    { "time": "09:37", "open": 5112, "high": 5117, "low": 5110, "close": 5115 }
+  ]
+} 
