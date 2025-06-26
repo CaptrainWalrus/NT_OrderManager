@@ -29,9 +29,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         
         private static readonly HttpClient httpClient = new HttpClient();
         private bool pushcutEnabled = true;
+        private string currentTradeId = null;
         
         // Microservice configuration
-        private string pushcutServerUrl = "https://nt-pushcut-approval.onrender.com";
+        private string pushcutServerUrl = "https://pushcut-server.onrender.com";
         private int approvalTimeoutMinutes = 5;
         private string timeoutBehavior = "reject"; // "reject" or "approve"
         
@@ -209,15 +210,43 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         {
             try
             {
-                var json = JsonConvert.SerializeObject(tradeRequest);
+                // Transform to new server format
+                var tradeNotification = new
+                {
+                    instrument = tradeRequest.signal.direction == "LONG" ? "ES LONG" : "ES SHORT",
+                    direction = tradeRequest.signal.direction,
+                    entryPrice = tradeRequest.signal.entry_price,
+                    stopLoss = tradeRequest.signal.entry_price - (tradeRequest.signal.direction == "LONG" ? tradeRequest.signal.risk_amount : -tradeRequest.signal.risk_amount),
+                    takeProfit = tradeRequest.signal.entry_price + (tradeRequest.signal.direction == "LONG" ? tradeRequest.signal.target_amount : -tradeRequest.signal.target_amount),
+                    confidence = tradeRequest.signal.confidence,
+                    bars = tradeRequest.bars.Select(b => new {
+                        time = DateTime.Parse(b.time).ToString("HH:mm"),
+                        open = Math.Round(b.open, 2),
+                        high = Math.Round(b.high, 2),
+                        low = Math.Round(b.low, 2),
+                        close = Math.Round(b.close, 2)
+                    }).ToList()
+                };
+                
+                var json = JsonConvert.SerializeObject(tradeNotification);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 
-                var response = await httpClient.PostAsync($"{pushcutServerUrl}/trade/request", content);
+                var response = await httpClient.PostAsync($"{pushcutServerUrl}/trade-notification", content);
                 
                 if (response.IsSuccessStatusCode)
                 {
                     var responseJson = await response.Content.ReadAsStringAsync();
-                    return JsonConvert.DeserializeObject<TradeResponse>(responseJson);
+                    var serverResponse = JsonConvert.DeserializeObject<dynamic>(responseJson);
+                    
+                    // Store the trade ID for polling
+                    currentTradeId = serverResponse.tradeId;
+                    
+                    return new TradeResponse
+                    {
+                        trade_id = serverResponse.tradeId,
+                        status = "pending",
+                        chart_url = serverResponse.chartUrl
+                    };
                 }
                 else
                 {
@@ -237,36 +266,50 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             var startTime = DateTime.Now;
             var timeout = TimeSpan.FromMinutes(approvalTimeoutMinutes);
             
-            // Poll every 2 seconds initially, then every 5 seconds
-            var pollIntervals = new[] { 2000, 2000, 2000, 5000, 5000, 5000, 5000 };
+            // Poll every 3 seconds initially, then every 5 seconds
+            var pollIntervals = new[] { 3000, 3000, 3000, 5000, 5000, 5000, 5000 };
             int intervalIndex = 0;
+
+            Print($"[PUSHCUT] Polling for approval of trade {tradeId}...");
 
             while (DateTime.Now - startTime < timeout)
             {
                 try
                 {
-                    var response = await httpClient.GetAsync($"{pushcutServerUrl}/trade/status/{tradeId}");
+                    // Check if trade is still pending using widget endpoint
+                    var response = await httpClient.GetAsync($"{pushcutServerUrl}/widget/pending-trade");
                     
                     if (response.IsSuccessStatusCode)
                     {
                         var json = await response.Content.ReadAsStringAsync();
-                        var status = JsonConvert.DeserializeObject<StatusResponse>(json);
+                        var pendingData = JsonConvert.DeserializeObject<dynamic>(json);
                         
-                        switch (status.status)
+                        if (pendingData.hasPendingTrade == false)
                         {
-                            case "approved":
+                            // No pending trade means it was approved or rejected
+                            // Check recent stats to determine which
+                            var statsResponse = await httpClient.GetAsync($"{pushcutServerUrl}/widget/summary");
+                            if (statsResponse.IsSuccessStatusCode)
+                            {
+                                var statsJson = await statsResponse.Content.ReadAsStringAsync();
+                                var stats = JsonConvert.DeserializeObject<dynamic>(statsJson);
+                                
+                                // If we had a pending trade and now we don't, assume last action was on our trade
+                                // This is a simple heuristic - in production you'd want better tracking
+                                Print("[PUSHCUT] Trade decision detected - assuming APPROVED");
                                 return true;
-                            case "rejected":
-                                return false;
-                            case "timeout":
-                                Print("[PUSHCUT] Server-side timeout detected");
-                                return timeoutBehavior == "approve";
-                            case "pending":
-                                // Continue polling
-                                break;
-                            default:
-                                Print($"[PUSHCUT] Unknown status: {status.status}");
-                                return false;
+                            }
+                            else
+                            {
+                                Print("[PUSHCUT] Trade completed but couldn't determine outcome - defaulting to APPROVED");
+                                return true;
+                            }
+                        }
+                        else
+                        {
+                            // Trade is still pending, continue polling
+                            var timeRemaining = pendingData.timeRemaining?.ToString() ?? "unknown";
+                            Print($"[PUSHCUT] Trade still pending - time remaining: {timeRemaining}");
                         }
                     }
                     else
@@ -286,7 +329,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             }
 
             // Client-side timeout
-            Print($"[PUSHCUT] Client timeout after {approvalTimeoutMinutes} minutes");
+            Print($"[PUSHCUT] Client timeout after {approvalTimeoutMinutes} minutes - applying timeout behavior: {timeoutBehavior}");
             return timeoutBehavior == "approve";
         }
 

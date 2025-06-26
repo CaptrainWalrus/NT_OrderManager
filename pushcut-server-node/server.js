@@ -1,396 +1,378 @@
 const express = require('express');
-const axios = require('axios');
-const fs = require('fs').promises;
+const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
+const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('canvas');
-const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const PORT = process.env.PORT || 8000;
-
-// In-memory storage for simplicity
-const trades = new Map();
-const TRADE_TIMEOUT_MINUTES = 5;
-
-// --- Configurations ---
-const PUSHCUT_URL = "https://api.pushcut.io/8a_iGKpg-bNQDqFVFQAON/notifications/Trade%20Approval";
-const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-const CHART_DIR = path.join(__dirname, 'charts');
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- API Endpoints ---
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Chart configuration
+const chartJSNodeCanvas = new ChartJSNodeCanvas({
+    width: 400,
+    height: 300,
+    chartCallback: (ChartJS) => {
+        // Register required components
+        ChartJS.register(
+            ChartJS.CategoryScale,
+            ChartJS.LinearScale,
+            ChartJS.LineElement,
+            ChartJS.PointElement,
+            ChartJS.LineController,
+            ChartJS.Title,
+            ChartJS.Tooltip,
+            ChartJS.Legend,
+            ChartJS.Filler
+        );
+    }
 });
 
-// Submit trade for approval
-app.post('/trade/request', async (req, res) => {
+// In-memory storage for demo
+let pendingTrade = null;
+let tradeStats = {
+    todayTrades: 0,
+    approvedToday: 0,
+    rejectedToday: 0,
+    lastUpdate: new Date().toISOString()
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CORE ENDPOINTS FOR NINJATRADER INTEGRATION
+// ═══════════════════════════════════════════════════════════════
+
+// Receive trade notification from NinjaTrader
+app.post('/trade-notification', async (req, res) => {
     try {
-        const tradeId = uuidv4();
-        const tradeData = req.body;
-
-        // Store trade data
-        trades.set(tradeId, {
-            ...tradeData,
-            status: 'pending',
-            timestamp: Date.now()
-        });
-
-        // Set timeout for automatic rejection
-        setTimeout(() => {
-            if (trades.has(tradeId) && trades.get(tradeId).status === 'pending') {
-                trades.set(tradeId, { ...trades.get(tradeId), status: 'rejected', reason: 'timeout' });
-                console.log(`[TIMEOUT] Trade ${tradeId} automatically rejected`);
-            }
-        }, TRADE_TIMEOUT_MINUTES * 60 * 1000);
-
-        // Generate chart and send notification asynchronously
-        processTradeAsync(tradeId, tradeData).catch(error => {
-            console.error(`[ERROR] Failed to process trade ${tradeId}:`, error);
-        });
-
+        console.log('📨 Received trade notification:', req.body);
+        
+        const { instrument, direction, entryPrice, stopLoss, takeProfit, confidence, bars } = req.body;
+        
+        // Generate unique trade ID
+        const tradeId = `trade_${Date.now()}`;
+        
+        // Create chart
+        const chartBuffer = await generateChart(bars, direction, entryPrice, stopLoss, takeProfit);
+        const chartFilename = `chart_${tradeId}.png`;
+        const chartPath = path.join(__dirname, 'charts', chartFilename);
+        
+        // Ensure charts directory exists
+        if (!fs.existsSync(path.join(__dirname, 'charts'))) {
+            fs.mkdirSync(path.join(__dirname, 'charts'), { recursive: true });
+        }
+        
+        // Save chart to file
+        fs.writeFileSync(chartPath, chartBuffer);
+        
+        // Store pending trade
+        pendingTrade = {
+            id: tradeId,
+            instrument,
+            direction,
+            entryPrice,
+            stopLoss,
+            takeProfit,
+            confidence,
+            timestamp: new Date().toISOString(),
+            chartUrl: `/chart/${chartFilename}`,
+            timeoutAt: new Date(Date.now() + 5 * 60 * 1000) // 5 minutes
+        };
+        
+        tradeStats.todayTrades++;
+        tradeStats.lastUpdate = new Date().toISOString();
+        
+        console.log(`✅ Trade ${tradeId} created with chart: ${chartFilename}`);
+        
         res.json({
-            trade_id: tradeId,
-            status: 'pending',
-            chart_url: `${SERVER_URL}/chart/${tradeId}`
+            success: true,
+            tradeId,
+            message: 'Trade approval request created',
+            chartUrl: `${req.protocol}://${req.get('host')}/chart/${chartFilename}`,
+            approveUrl: `${req.protocol}://${req.get('host')}/approve/${tradeId}`,
+            rejectUrl: `${req.protocol}://${req.get('host')}/reject/${tradeId}`
         });
-
-        console.log(`[REQUEST] New trade request ${tradeId} for ${tradeData.instrument}`);
+        
     } catch (error) {
-        console.error('[ERROR] Trade request failed:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('❌ Error processing trade:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
 // Approve trade
-app.post('/trade/approve/:tradeId', (req, res) => {
+app.get('/approve/:tradeId', (req, res) => {
     const { tradeId } = req.params;
+    console.log(`✅ Trade ${tradeId} APPROVED`);
     
-    if (!trades.has(tradeId)) {
-        return res.status(404).json({ error: 'Trade not found' });
+    if (pendingTrade && pendingTrade.id === tradeId) {
+        pendingTrade = null;
+        tradeStats.approvedToday++;
+        tradeStats.lastUpdate = new Date().toISOString();
     }
-
-    const trade = trades.get(tradeId);
-    if (trade.status !== 'pending') {
-        return res.status(400).json({ error: `Trade already ${trade.status}` });
-    }
-
-    trades.set(tradeId, { ...trade, status: 'approved', approved_at: Date.now() });
-    console.log(`[APPROVED] Trade ${tradeId} approved`);
     
-    res.json({ success: true, message: 'Trade approved' });
+    res.send(`
+        <html>
+            <head><title>Trade Approved</title></head>
+            <body style="font-family: Arial; text-align: center; margin-top: 100px;">
+                <h1 style="color: green;">✅ Trade Approved!</h1>
+                <p>Trade ${tradeId} has been approved and executed.</p>
+                <p><a href="javascript:window.close()">Close Window</a></p>
+            </body>
+        </html>
+    `);
 });
 
 // Reject trade
-app.post('/trade/reject/:tradeId', (req, res) => {
+app.get('/reject/:tradeId', (req, res) => {
     const { tradeId } = req.params;
+    console.log(`❌ Trade ${tradeId} REJECTED`);
     
-    if (!trades.has(tradeId)) {
-        return res.status(404).json({ error: 'Trade not found' });
+    if (pendingTrade && pendingTrade.id === tradeId) {
+        pendingTrade = null;
+        tradeStats.rejectedToday++;
+        tradeStats.lastUpdate = new Date().toISOString();
     }
-
-    const trade = trades.get(tradeId);
-    if (trade.status !== 'pending') {
-        return res.status(400).json({ error: `Trade already ${trade.status}` });
-    }
-
-    trades.set(tradeId, { ...trade, status: 'rejected', rejected_at: Date.now() });
-    console.log(`[REJECTED] Trade ${tradeId} rejected`);
     
-    res.json({ success: true, message: 'Trade rejected' });
+    res.send(`
+        <html>
+            <head><title>Trade Rejected</title></head>
+            <body style="font-family: Arial; text-align: center; margin-top: 100px;">
+                <h1 style="color: red;">❌ Trade Rejected</h1>
+                <p>Trade ${tradeId} has been rejected and will not be executed.</p>
+                <p><a href="javascript:window.close()">Close Window</a></p>
+            </body>
+        </html>
+    `);
 });
 
-// Get trade status
-app.get('/trade/status/:tradeId', (req, res) => {
-    const { tradeId } = req.params;
-    
-    if (!trades.has(tradeId)) {
-        return res.status(404).json({ error: 'Trade not found' });
-    }
+// ═══════════════════════════════════════════════════════════════
+// SCRIPTABLE WIDGET ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
 
-    const trade = trades.get(tradeId);
+// Widget endpoint: Check for pending trades
+app.get('/widget/pending-trade', (req, res) => {
+    console.log('📱 Widget checking for pending trades');
+    
+    // Check if trade has expired
+    if (pendingTrade && new Date() > new Date(pendingTrade.timeoutAt)) {
+        console.log('⏰ Trade expired, auto-rejecting');
+        pendingTrade = null;
+        tradeStats.rejectedToday++;
+    }
+    
+    if (pendingTrade) {
+        const timeRemaining = Math.max(0, Math.floor((new Date(pendingTrade.timeoutAt) - new Date()) / 1000));
+        const minutes = Math.floor(timeRemaining / 60);
+        const seconds = timeRemaining % 60;
+        
+        res.json({
+            hasPendingTrade: true,
+            instrument: pendingTrade.instrument,
+            direction: pendingTrade.direction,
+            entryPrice: pendingTrade.entryPrice,
+            stopLoss: pendingTrade.stopLoss,
+            takeProfit: pendingTrade.takeProfit,
+            confidence: pendingTrade.confidence,
+            timeRemaining: `${minutes}:${seconds.toString().padStart(2, '0')}`,
+            chartUrl: `${req.protocol}://${req.get('host')}${pendingTrade.chartUrl}`,
+            approveUrl: `${req.protocol}://${req.get('host')}/approve/${pendingTrade.id}`,
+            rejectUrl: `${req.protocol}://${req.get('host')}/reject/${pendingTrade.id}`,
+            lastUpdate: new Date().toISOString()
+        });
+    } else {
+        res.json({
+            hasPendingTrade: false,
+            lastUpdate: tradeStats.lastUpdate
+        });
+    }
+});
+
+// Widget endpoint: Summary statistics
+app.get('/widget/summary', (req, res) => {
+    console.log('📊 Widget requesting summary stats');
+    
     res.json({
-        trade_id: tradeId,
-        status: trade.status,
-        timestamp: trade.timestamp,
-        instrument: trade.instrument,
-        signal: trade.signal
+        todayTrades: tradeStats.todayTrades,
+        approvedToday: tradeStats.approvedToday,
+        rejectedToday: tradeStats.rejectedToday,
+        lastUpdate: tradeStats.lastUpdate,
+        serverStatus: 'active'
     });
 });
 
+// ═══════════════════════════════════════════════════════════════
+// CHART SERVING AND GENERATION
+// ═══════════════════════════════════════════════════════════════
+
 // Serve chart images
-app.get('/chart/:tradeId', async (req, res) => {
-    try {
-        const { tradeId } = req.params;
-        const chartPath = path.join(CHART_DIR, `${tradeId}.png`);
-        
-        await fs.access(chartPath);
+app.get('/chart/:filename', (req, res) => {
+    const { filename } = req.params;
+    const chartPath = path.join(__dirname, 'charts', filename);
+    
+    if (fs.existsSync(chartPath)) {
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'no-cache');
         res.sendFile(chartPath);
-    } catch (error) {
+        console.log(`📊 Served chart: ${filename}`);
+    } else {
         res.status(404).json({ error: 'Chart not found' });
+        console.log(`❌ Chart not found: ${filename}`);
     }
 });
 
-// --- Helper Functions ---
-
-async function processTradeAsync(tradeId, tradeData) {
-    const chartBase64 = await generateChart(tradeId, tradeData);
-    await sendPushcutNotification(tradeId, tradeData, chartBase64);
-}
-
-async function generateChart(tradeId, tradeData) {
-    await fs.mkdir(CHART_DIR, { recursive: true });
-    
-    const { bars, signal, instrument } = tradeData;
-    
-    // Prepare candlestick data for Plotly
-    const dates = bars.map((_, index) => `Bar ${index + 1}`);
-    const open = bars.map(bar => bar.open);
-    const high = bars.map(bar => bar.high);
-    const low = bars.map(bar => bar.low);
-    const close = bars.map(bar => bar.close);
-
-    // Create Plotly candlestick chart
-    const trace = {
-        x: dates,
-        close: close,
-        decreasing: {line: {color: '#FF4444'}},
-        high: high,
-        increasing: {line: {color: '#00AA00'}}, 
-        line: {color: 'rgba(31,119,180,1)'},
-        low: low,
-        open: open,
-        type: 'candlestick',
-        name: 'Price Action',
-        xaxis: 'x',
-        yaxis: 'y'
-    };
-
-    const layout = {
-        title: {
-            text: `${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`,
-            font: { color: '#FFFFFF', size: 16 }
-        },
-        dragmode: 'zoom',
-        margin: { r: 10, t: 25, b: 40, l: 60 },
-        showlegend: false,
-        width: 800,
-        height: 600,
-        paper_bgcolor: '#1a1a1a',
-        plot_bgcolor: '#1a1a1a',
-        xaxis: {
-            autorange: true,
-            domain: [0, 1],
-            range: ['2017-01-03 12:00', '2017-02-15 12:00'],
-            rangeslider: { range: ['2017-01-03 12:00', '2017-02-15 12:00'] },
-            title: 'Date',
-            type: 'category',
-            color: '#FFFFFF',
-            gridcolor: 'rgba(255,255,255,0.1)'
-        },
-        yaxis: {
-            autorange: true,
-            domain: [0, 1],
-            range: [Math.min(...low) * 0.99, Math.max(...high) * 1.01],
-            type: 'linear',
-            title: 'Price ($)',
-            color: '#FFFFFF',
-            gridcolor: 'rgba(255,255,255,0.1)',
-            tickformat: '$,.2f'
-        }
-    };
-
-    const figure = { data: [trace], layout: layout };
-
+// Generate test chart endpoint
+app.post('/test-chart', async (req, res) => {
     try {
-        // Use canvas to render the chart
-        const canvas = createCanvas(800, 600);
-        const ctx = canvas.getContext('2d');
+        const testBars = req.body.bars || [
+            { time: "09:30", open: 5091, high: 5095, low: 5088, close: 5093 },
+            { time: "09:31", open: 5093, high: 5098, low: 5091, close: 5096 },
+            { time: "09:32", open: 5096, high: 5102, low: 5094, close: 5100 }
+        ];
         
-        // Draw background
-        ctx.fillStyle = '#1a1a1a';
-        ctx.fillRect(0, 0, 800, 600);
+        const chartBuffer = await generateChart(testBars, 'LONG', 5100, 5090, 5110);
         
-        // Draw title
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '16px Arial';
-        ctx.textAlign = 'center';
-        ctx.fillText(`${instrument} - ${signal.direction} Signal - Entry: $${signal.entry_price}`, 400, 30);
+        res.setHeader('Content-Type', 'image/png');
+        res.send(chartBuffer);
         
-        // Calculate chart area
-        const chartTop = 60;
-        const chartBottom = 550;
-        const chartLeft = 60;
-        const chartRight = 740;
-        const chartWidth = chartRight - chartLeft;
-        const chartHeight = chartBottom - chartTop;
-        
-        // Find price range
-        const minPrice = Math.min(...low);
-        const maxPrice = Math.max(...high);
-        const priceRange = maxPrice - minPrice;
-        const priceMargin = priceRange * 0.05;
-        const scaledMinPrice = minPrice - priceMargin;
-        const scaledMaxPrice = maxPrice + priceMargin;
-        const scaledPriceRange = scaledMaxPrice - scaledMinPrice;
-        
-        // Draw grid lines
-        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([2, 2]);
-        
-        // Horizontal grid lines (price levels)
-        for (let i = 0; i <= 5; i++) {
-            const y = chartTop + (i / 5) * chartHeight;
-            ctx.beginPath();
-            ctx.moveTo(chartLeft, y);
-            ctx.lineTo(chartRight, y);
-            ctx.stroke();
-            
-            // Price labels
-            const price = scaledMaxPrice - (i / 5) * scaledPriceRange;
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = '12px Arial';
-            ctx.textAlign = 'right';
-            ctx.fillText(`$${price.toFixed(2)}`, chartLeft - 5, y + 4);
-        }
-        
-        // Vertical grid lines
-        for (let i = 0; i < bars.length; i++) {
-            const x = chartLeft + (i / (bars.length - 1)) * chartWidth;
-            ctx.beginPath();
-            ctx.moveTo(x, chartTop);
-            ctx.lineTo(x, chartBottom);
-            ctx.stroke();
-        }
-        
-        ctx.setLineDash([]);
-        
-        // Draw candlesticks
-        const candleWidth = chartWidth / bars.length * 0.7;
-        
-        for (let i = 0; i < bars.length; i++) {
-            const bar = bars[i];
-            const x = chartLeft + (i / (bars.length - 1)) * chartWidth;
-            
-            // Scale prices to chart coordinates
-            const openY = chartBottom - ((bar.open - scaledMinPrice) / scaledPriceRange) * chartHeight;
-            const closeY = chartBottom - ((bar.close - scaledMinPrice) / scaledPriceRange) * chartHeight;
-            const highY = chartBottom - ((bar.high - scaledMinPrice) / scaledPriceRange) * chartHeight;
-            const lowY = chartBottom - ((bar.low - scaledMinPrice) / scaledPriceRange) * chartHeight;
-            
-            // Determine candle color
-            const isUp = bar.close > bar.open;
-            ctx.strokeStyle = isUp ? '#00AA00' : '#FF4444';
-            ctx.fillStyle = isUp ? '#00AA00' : '#FF4444';
-            ctx.lineWidth = 2;
-            
-            // Draw high-low line
-            ctx.beginPath();
-            ctx.moveTo(x, highY);
-            ctx.lineTo(x, lowY);
-            ctx.stroke();
-            
-            // Draw open-close rectangle
-            const rectHeight = Math.abs(closeY - openY);
-            const rectY = Math.min(openY, closeY);
-            
-            if (isUp) {
-                ctx.strokeRect(x - candleWidth/2, rectY, candleWidth, rectHeight);
-            } else {
-                ctx.fillRect(x - candleWidth/2, rectY, candleWidth, rectHeight);
-            }
-        }
-        
-        // Draw axes
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([]);
-        
-        // Y-axis
-        ctx.beginPath();
-        ctx.moveTo(chartLeft, chartTop);
-        ctx.lineTo(chartLeft, chartBottom);
-        ctx.stroke();
-        
-        // X-axis
-        ctx.beginPath();
-        ctx.moveTo(chartLeft, chartBottom);
-        ctx.lineTo(chartRight, chartBottom);
-        ctx.stroke();
-        
-        // X-axis labels
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '10px Arial';
-        ctx.textAlign = 'center';
-        for (let i = 0; i < bars.length; i += Math.ceil(bars.length / 8)) {
-            const x = chartLeft + (i / (bars.length - 1)) * chartWidth;
-            ctx.fillText(`Bar ${i + 1}`, x, chartBottom + 20);
-        }
-        
-        // Save chart
-        const imageBuffer = canvas.toBuffer('image/png');
-        await fs.writeFile(path.join(CHART_DIR, `${tradeId}.png`), imageBuffer);
-        console.log(`[CHART] Candlestick chart generated for trade ${tradeId}`);
-        
-        // Return base64 encoded image for direct Pushcut delivery
-        return imageBuffer.toString('base64');
+        console.log('📊 Generated test chart');
     } catch (error) {
-        console.error(`[CHART] Error generating chart for ${tradeId}:`, error);
-        throw error;
+        console.error('❌ Test chart error:', error);
+        res.status(500).json({ error: error.message });
     }
-}
+});
 
-async function sendPushcutNotification(tradeId, tradeData, chartBase64) {
-    const { instrument, signal } = tradeData;
+// ═══════════════════════════════════════════════════════════════
+// CHART GENERATION FUNCTION
+// ═══════════════════════════════════════════════════════════════
+
+async function generateChart(bars, direction, entryPrice, stopLoss, takeProfit) {
+    const labels = bars.map(bar => bar.time);
+    const closePrices = bars.map(bar => bar.close);
+    const highPrices = bars.map(bar => bar.high);
+    const lowPrices = bars.map(bar => bar.low);
     
-    const payload = {
-        title: `🔥 ${instrument} ${signal.direction}`,
-        text: `Entry: $${signal.entry_price.toFixed(2)}\nRisk: $${signal.risk_amount}\nTarget: $${signal.target_amount}`,
-        image: `data:image/png;base64,${chartBase64}`,
-        isTimeSensitive: true,
-        actions: [{
-            name: "APPROVE",
-            url: `${SERVER_URL}/trade/approve/${tradeId}`,
-            urlBackgroundOptions: { "httpMethod": "POST" }
-        }, {
-            name: "REJECT", 
-            url: `${SERVER_URL}/trade/reject/${tradeId}`,
-            urlBackgroundOptions: { "httpMethod": "POST" }
+    const config = {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Close',
+                    data: closePrices,
+                    borderColor: '#00ff88',
+                    backgroundColor: 'rgba(0, 255, 136, 0.1)',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1
+                },
+                {
+                    label: 'High',
+                    data: highPrices,
+                    borderColor: '#ffaa00',
+                    backgroundColor: 'rgba(255, 170, 0, 0.1)',
+                    borderWidth: 1,
+                    fill: false,
+                    tension: 0.1
+                },
+                {
+                    label: 'Low',
+                    data: lowPrices,
+                    borderColor: '#ff6b6b',
+                    backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                    borderWidth: 1,
+                    fill: false,
+                    tension: 0.1
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                title: {
+                    display: true,
+                    text: `${direction} Entry: $${entryPrice}`,
+                    color: direction === 'LONG' ? '#00ff88' : '#ff6b6b',
+                    font: { size: 16, weight: 'bold' }
+                },
+                legend: {
+                    display: true,
+                    labels: { color: '#ffffff', font: { size: 12 } }
+                }
+            },
+            scales: {
+                x: {
+                    title: { display: true, text: 'Time', color: '#ffffff' },
+                    ticks: { color: '#ffffff' },
+                    grid: { color: '#333333' }
+                },
+                y: {
+                    title: { display: true, text: 'Price', color: '#ffffff' },
+                    ticks: { color: '#ffffff' },
+                    grid: { color: '#333333' }
+                }
+            },
+            backgroundColor: '#1a1a1a',
+            layout: {
+                padding: 10
+            }
+        },
+        plugins: [{
+            beforeDraw: (chart) => {
+                const ctx = chart.canvas.getContext('2d');
+                ctx.fillStyle = '#1a1a1a';
+                ctx.fillRect(0, 0, chart.width, chart.height);
+            }
         }]
     };
-
-    try {
-        const response = await axios.post(PUSHCUT_URL, payload);
-        console.log(`[PUSHCUT] Notification sent for trade ${tradeId}: ${response.status}`);
-        return response.data;
-    } catch (error) {
-        console.error(`[PUSHCUT] Error sending notification for ${tradeId}:`, error.message);
-        throw error;
-    }
+    
+    return await chartJSNodeCanvas.renderToBuffer(config);
 }
 
-// --- Cleanup Task ---
-setInterval(() => {
-    const now = new Date();
-    let cleanedCount = 0;
-    for (const [tradeId, trade] of trades.entries()) {
-        const tradeAgeHours = (now - trade.timestamp) / 3600000;
-        if (tradeAgeHours > 1) {
-            trades.delete(tradeId);
-            fs.unlink(path.join(CHART_DIR, `${tradeId}.png`)).catch(err => console.error(`Failed to delete chart ${tradeId}:`, err.message));
-            cleanedCount++;
-        }
-    }
-    if (cleanedCount > 0) console.log(`[CLEANUP] Cleaned up ${cleanedCount} old trades.`);
-}, 30 * 60 * 1000); // Every 30 minutes
+// ═══════════════════════════════════════════════════════════════
+// BASIC SERVER ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
 
-// Start server
+app.get('/', (req, res) => {
+    res.json({
+        message: 'Trading Approval Server',
+        version: '2.0',
+        status: 'active',
+        endpoints: {
+            'POST /trade-notification': 'Submit trade for approval',
+            'GET /widget/pending-trade': 'Check for pending trades (Scriptable)',
+            'GET /widget/summary': 'Get trade statistics (Scriptable)',
+            'GET /chart/:filename': 'Get chart image',
+            'GET /approve/:tradeId': 'Approve trade',
+            'GET /reject/:tradeId': 'Reject trade'
+        },
+        pendingTrade: pendingTrade ? true : false,
+        stats: tradeStats
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        hasPendingTrade: !!pendingTrade
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// SERVER STARTUP
+// ═══════════════════════════════════════════════════════════════
+
 app.listen(PORT, () => {
-    console.log(`🚀 Pushcut Approval Service running on port ${PORT}`);
-    console.log(`📊 Chart directory: ${CHART_DIR}`);
-    console.log(`⏰ Trade timeout: ${TRADE_TIMEOUT_MINUTES} minutes`);
-}); 
+    console.log(`🚀 Trading Approval Server running on port ${PORT}`);
+    console.log(`📊 Chart generation ready`);
+    console.log(`📱 Scriptable widget endpoints active`);
+});
+
+// Cleanup expired trades every minute
+setInterval(() => {
+    if (pendingTrade && new Date() > new Date(pendingTrade.timeoutAt)) {
+        console.log('⏰ Auto-rejecting expired trade:', pendingTrade.id);
+        pendingTrade = null;
+        tradeStats.rejectedToday++;
+        tradeStats.lastUpdate = new Date().toISOString();
+    }
+}, 60000); 
