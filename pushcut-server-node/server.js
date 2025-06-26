@@ -2,7 +2,8 @@ const express = require('express');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch');
+// Use dynamic import to support ESM-only node-fetch in CommonJS
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
