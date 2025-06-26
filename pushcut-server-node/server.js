@@ -8,10 +8,11 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Chart configuration
+// Chart configuration with font fallbacks
 const chartJSNodeCanvas = new ChartJSNodeCanvas({
     width: 400,
     height: 300,
+    backgroundColour: '#1a1a1a',
     chartCallback: (ChartJS) => {
         // Register required components
         ChartJS.register(
@@ -25,6 +26,10 @@ const chartJSNodeCanvas = new ChartJSNodeCanvas({
             ChartJS.Legend,
             ChartJS.Filler
         );
+        
+        // Set default font family to system fonts
+        ChartJS.defaults.font.family = 'Arial, sans-serif';
+        ChartJS.defaults.font.size = 10;
     }
 });
 
@@ -291,22 +296,21 @@ async function generateChart(bars, direction, entryPrice, stopLoss, takeProfit) 
                     display: true,
                     text: `${direction} Entry: $${entryPrice}`,
                     color: direction === 'LONG' ? '#00ff88' : '#ff6b6b',
-                    font: { size: 16, weight: 'bold' }
+                    font: { size: 14, weight: 'bold', family: 'Arial' }
                 },
                 legend: {
-                    display: true,
-                    labels: { color: '#ffffff', font: { size: 12 } }
+                    display: false  // Disable legend to save space and avoid font issues
                 }
             },
             scales: {
                 x: {
-                    title: { display: true, text: 'Time', color: '#ffffff' },
-                    ticks: { color: '#ffffff' },
+                    title: { display: false },  // Remove titles to avoid font rendering issues
+                    ticks: { color: '#ffffff', font: { family: 'Arial', size: 9 } },
                     grid: { color: '#333333' }
                 },
                 y: {
-                    title: { display: true, text: 'Price', color: '#ffffff' },
-                    ticks: { color: '#ffffff' },
+                    title: { display: false },  // Remove titles to avoid font rendering issues
+                    ticks: { color: '#ffffff', font: { family: 'Arial', size: 9 } },
                     grid: { color: '#333333' }
                 }
             },
