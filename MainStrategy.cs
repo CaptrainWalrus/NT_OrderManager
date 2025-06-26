@@ -384,6 +384,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
 		public bool UseRemoteServiceParameter { get; set; }
 
+		[NinjaScriptProperty]    
+		[Display(Name="Enable Pushcut Approval", Order=1, GroupName="Class Parameters")]
+		public bool EnablePushcutApproval { get; set; }
+
 
 		/// <summary>
 		/// widget controls
