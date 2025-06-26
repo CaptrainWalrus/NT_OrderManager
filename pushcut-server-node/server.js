@@ -4,6 +4,31 @@ const fs = require('fs').promises;
 const path = require('path');
 const { ChartJSNodeCanvas } = require('chartjs-node-canvas');
 const { v4: uuidv4 } = require('uuid');
+const { Chart } = require('chart.js');
+const {
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Title,
+    Tooltip,
+    Legend,
+    TimeScale
+} = require('chart.js');
+const { de } = require('date-fns/locale');
+const dateFnsAdapter = require('chartjs-adapter-date-fns');
+
+Chart.register(
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Title,
+    Tooltip,
+    Legend,
+    TimeScale,
+    dateFnsAdapter
+);
 
 const app = express();
 const PORT = process.env.PORT || 8000;
