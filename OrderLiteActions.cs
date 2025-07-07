@@ -117,7 +117,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						PriceStats = orderPriceStats,
 						OrderSupplementals = orderSupplementals,
 						ExitFunctions = exitFunctions,
-						SignalContextId = signalPackageParam.SignalContextId
+						SignalContextId = signalPackageParam.SignalContextId,
+						builtSignal = builtSignal
 					};
 					tryCatchSection = "Section 3e Order Management Lite ";
 					simulatedEntry simulatedEntryAction = new simulatedEntry
@@ -205,6 +206,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						
 							EnterLong(1,1,entryUUID);
+							Print($"enterlong {entryUUID}");
 							//SubmitOrderUnmanaged(1, OrderAction.Buy, OrderType.Market,accountEntryQuantity, 0, 0,null, orderRecordMasterLite.EntryOrderUUID);
 							return;
 							
@@ -215,10 +217,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							//Print($"SubmitOrderUnmanaged : openOrderTest {openOrderTest}");
 							//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID}, Quantity {Q} EnterShort {GetMarketPositionByIndex(BarsInProgress)}");
 							//SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, accountEntryQuantity, 0, 0, null,orderRecordMasterLite.EntryOrderUUID);
-							EnterShort(1,1,entryUUID);
+							
+						EnterShort(1,1,entryUUID);
+							Print($"entershort {entryUUID}");
+
 							return;
 							
 						
+					}
+					else
+					{
+						Print($"ERROR {OA} && {GetMarketPositionByIndex(0)} && {GetMarketPositionByIndex(1)}");
 					}
 				}
 					

@@ -90,6 +90,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
   	protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
 	{
+		Print("OnExecutionUpdate");
 		myStrategyControlPane.updateStates();
 		   // Print(CurrentBars[0]+" "+Time[0]+" OnExecutionUpdate 1");
 		if (selectedBroker == brokerSelection.Topstep && execution.Order.OrderState == OrderState.Filled)
@@ -126,7 +127,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
     protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled, double averageFillPrice, OrderState orderState, DateTime time, ErrorCode error, string nativeError)
 	{
-		
+		//Print($"OnOrderUpdate {order.Name}, {order.OrderState} {order.OrderType}"); 
 		myStrategyControlPane.updateStates();
 
 		if (selectedBroker == brokerSelection.Topstep && order.OrderState == OrderState.Filled)
@@ -182,7 +183,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
            
             lock (eventLock)
             {
-				if(debugOrderPrints) Print($"BAR: {CurrentBars[0]}, TIME: {Times[BarsInProgress][0]}********ProcessQueuedEvents for key {key}. OrderInfo: {orderInfo != null}, ExecInfo: {execInfo != null} CONTINUE");
+				Print($"BAR: {CurrentBars[0]}, TIME: {Times[BarsInProgress][0]}********ProcessQueuedEvents for key {key}. OrderInfo: {orderInfo != null}, ExecInfo: {execInfo != null} CONTINUE");
 				
                 // Process the OrderUpdateInfo
                 customOnOrderUpdate(
@@ -380,6 +381,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										orderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
 										MasterSimulatedStops.Remove(orderRecordMasterLite.OrderSupplementals.SimulatedStop);
 										customPosition.OnOrderFilled(orderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex, order.OrderAction, quantity, averageFillPrice);
+										
+										// TRAINING DATA COLLECTION - Position closed
+										Print($"[TRAINING-DEBUG] Exit conditions - CollectTrainingData: {CollectTrainingData}, trainingDataClient: {trainingDataClient != null}, builtSignal null: {orderRecordMasterLite.builtSignal == null}");
+										if (CollectTrainingData && trainingDataClient != null && orderRecordMasterLite.builtSignal != null)
+										{
+											CollectPositionOutcome(orderRecordMasterLite, averageFillPrice, time);
+										}
+										else
+										{
+											Print($"[TRAINING-DEBUG] Skipping data collection - one or more conditions failed");
+										}
 
 
 										
@@ -444,6 +456,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	/// not to use an order object in OnExecutionUpdate() 
 	protected void customOnExecutionUpdate(Order executionOrder, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time, string fromEntrySignal)
 	{
+		
 		myStrategyControlPane.updateStates();
 		string uuid_entry = executionOrder.Name;
 		string uuid_exit = executionOrder.Name;

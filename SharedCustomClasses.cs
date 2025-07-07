@@ -825,6 +825,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public double signalScore { get; set; }
 			public int recQty { get; set; } 
 			
+			// NEW FIELDS FOR RF FILTERING
+			public string signalType { get; set; }        // "EMA_CROSS", "RSI_DIVERGENCE"
+			public string signalDefinition { get; set; }  // "EMA(9) > EMA(21) && Volume > VolumeMA * 1.2"
+			public Dictionary<string, double> signalFeatures { get; set; } // Features at signal time
+			
 		}
 		
 		public class OrderRecordMasterLite
@@ -839,6 +844,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public ExitFunctions ExitFunctions { get; set; }
 			public int EntryBar { get; set; }
 			public string SignalContextId { get; set; } // Added for pattern performance timeline
+			
+			// NEW FIELDS FOR RF FILTERING
+			public patternFunctionResponse builtSignal { get; set; } // Reference to original signal
+			public DateTime EntryTime { get; set; }
+			public double EntryPrice { get; set; }
 		}
 		
 		public class OrderActionResult 
@@ -1090,6 +1100,76 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		    }
 		}
 
+		// NEW DATA STRUCTURES FOR RF FILTERING
+		public class PositionOutcome
+		{
+			public string BacktestId { get; set; }
+			public string SignalType { get; set; }
+			public string SignalDefinition { get; set; }
+			public DateTime EntryTime { get; set; }
+			public DateTime ExitTime { get; set; }
+			public double EntryPrice { get; set; }
+			public double ExitPrice { get; set; }
+			public double RealizedPnL { get; set; }
+			public double MaxProfit { get; set; }     // Maximum favorable excursion during trade
+			public double MaxLoss { get; set; }       // Maximum adverse excursion during trade
+			public int WinLoss { get; set; }
+			public Dictionary<string, double> EntryFeatures { get; set; }
+			public string PatternId { get; set; }
+			public string PatternSubtype { get; set; }
+			public double SignalScore { get; set; }
+			public string Instrument { get; set; }
+		}
+		
+		public class RFFilterResult
+		{
+			public bool shouldTake { get; set; }
+			public double confidence { get; set; }
+			public string modelUsed { get; set; }
+			public double stopAdjustment { get; set; } = 1.0;
+			public double targetAdjustment { get; set; } = 1.0;
+			public double sizeAdjustment { get; set; } = 1.0;
+			public string reason { get; set; }
+		}
+		
+		public class RFFilterResponse
+		{
+			public bool model_available { get; set; }
+			public string model_used { get; set; }
+			public double prediction { get; set; }
+			public double confidence { get; set; }
+			public RiskAdjustments risk_adjustments { get; set; }
+			public string message { get; set; }
+		}
+		
+		public class RiskAdjustments
+		{
+			public double stop_modifier { get; set; } = 1.0;
+			public double target_modifier { get; set; } = 1.0;
+			public double size_modifier { get; set; } = 1.0;
+		}
+		
+		public enum MLFilterMode
+		{
+			Disabled,
+			TestMode,
+			Production
+		}
+		
+		/// <summary>
+		/// Traditional strategy types for isolated testing and training data collection
+		/// </summary>
+		public enum TraditionalStrategyType
+		{
+			ALL,
+			ORDER_FLOW_IMBALANCE,
+			BOLLINGER_SQUEEZE,
+			EMA_VWAP_CROSS,
+			BREAKOUT,
+			EMA_CROSSOVER,
+			RSI_DIVERGENCE,
+			VWAP_MEAN_REVERSION
+		}
 
 		
 

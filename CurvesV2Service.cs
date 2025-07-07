@@ -208,6 +208,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Add concurrent request tracking
         private int concurrentRequests = 0;
         private const int MAX_CONCURRENT_REQUESTS = 10;
+        
+        // Training mode flag - when true, skip RF exit calls during data collection
+        private bool isTrainingMode = false;
     
         // WebSocket related fields
         private ClientWebSocket webSocket;
@@ -1216,7 +1219,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 											CurrentBearStrength = 0;
 											if (IsHistoricalMode())
 											{
-												Log($"[SYNC-SIGNALS] RF NEUTRAL BULL signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+												//Log($"[SYNC-SIGNALS] RF NEUTRAL BULL signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 											}
 										
 											return (0.5, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Positive for bullish
@@ -1227,7 +1230,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 											CurrentBearStrength = 0.5; // Default score for neutral RF signals
 											if (IsHistoricalMode())
 											{
-												Log($"[SYNC-SIGNALS] RF NEUTRAL BEAR signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+												//Log($"[SYNC-SIGNALS] RF NEUTRAL BEAR signal: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 											}
 										
 											return (-0.5, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Negative for bearish
@@ -1237,7 +1240,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 											// True neutral - no direction
 											if (IsHistoricalMode())
 											{
-												Log($"[SYNC-SIGNALS] RF NEUTRAL signal with no direction: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+												//Log($"[SYNC-SIGNALS] RF NEUTRAL signal with no direction: Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 											}
 											
 											return (0, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback);
@@ -1248,7 +1251,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 										CurrentBullStrength = finalScore;
 										CurrentBearStrength = 0;
 						
-										Log($"[SYNC-SIGNALS] BULL signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										//Log($"[SYNC-SIGNALS] BULL signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 										return (finalScore, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Positive for bull
 									}
 									else if (isBear)
@@ -1256,7 +1259,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 										CurrentBullStrength = 0;
 										CurrentBearStrength = finalScore;
 							
-										Log($"[SYNC-SIGNALS] BEAR signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+										//Log($"[SYNC-SIGNALS] BEAR signal: Score={finalScore:F4}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 										return (-finalScore, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback); // Negative for bear
 									}
 									else
@@ -1264,7 +1267,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 										// Unknown signal type
 										if (IsHistoricalMode())
 										{
-											Log($"[SYNC-SIGNALS] Unknown signal type: {bestSignal.type}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
+											//Log($"[SYNC-SIGNALS] Unknown signal type: {bestSignal.type}, Pattern={bestSignal.patternType}, ID={bestSignal.patternId}");
 										}
 									
 										return (0, CurrentPosSize, CurrentRisk, CurrentTarget, CurrentPullback);
@@ -1272,7 +1275,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 								}
 								else
 								{
-									Log($"[SYNC-SIGNALS] bestSignal IS NULL ********* {responseText}");
+									//Log($"[SYNC-SIGNALS] bestSignal IS NULL ********* {responseText}");
 								}
 							}
 							else
@@ -1284,7 +1287,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							// No valid signals found
 							if (IsHistoricalMode() && signalPoolResponse?.signals?.Count > 0)
 							{
-								Log($"[SYNC-SIGNALS] No valid signals after filtering. Total signals: {signalPoolResponse.signals?.Count ?? 0}, minScore filter: {effectiveScoreRequirement}");
+								//Log($"[SYNC-SIGNALS] No valid signals after filtering. Total signals: {signalPoolResponse.signals?.Count ?? 0}, minScore filter: {effectiveScoreRequirement}");
 							}
 							ResetCurrentSignalProperties();
 							return (0, 0, 0, 0, 0);
@@ -1294,7 +1297,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							if (IsHistoricalMode())
 							{
 								string errorContent = response.Content?.ReadAsStringAsync().ConfigureAwait(false).GetAwaiter().GetResult() ?? "No content";
-								Log($"[SYNC-SIGNALS] HTTP error: {response.StatusCode}, Content: {errorContent}");
+								//Log($"[SYNC-SIGNALS] HTTP error: {response.StatusCode}, Content: {errorContent}");
 							}
 							return (0, 0, 0, 0, 0);
 						}
@@ -1317,7 +1320,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				// Network error - log only once per session
 				if (ErrorCounter < 1)
 				{
-					Log($"[SYNC-SIGNALS] Network error (first occurrence): {httpEx.Message}");
+					//Log($"[SYNC-SIGNALS] Network error (first occurrence): {httpEx.Message}");
 					ErrorCounter++;
 				}
 				return (0, 0, 0, 0, 0);
@@ -1327,7 +1330,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				// Only log unexpected errors
 				if (!ex.Message.Contains("task was canceled"))
 				{
-					Log($"[SYNC-SIGNALS] Error: {ex.Message}");
+					//Log($"[SYNC-SIGNALS] Error: {ex.Message}");
 				}
 				return (0, 0, 0, 0, 0);
 			}
@@ -2539,6 +2542,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             Log($"[STATE] Strategy state set to: {(isHistorical ? "Historical (Sync)" : "Real-time (Async)")}");
         }
         
+        /// <summary>
+        /// Set training mode - when true, RF exit calls are disabled during data collection
+        /// </summary>
+        public void SetTrainingMode(bool trainingMode)
+        {
+            isTrainingMode = trainingMode;
+            Log($"[TRAINING] Training mode set to: {(trainingMode ? "ENABLED (RF exit calls disabled)" : "DISABLED (RF exit calls enabled)")}");
+        }
+        
         public bool IsHistoricalMode()
         {
             lock (stateLock)
@@ -2923,6 +2935,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (IsDisposed()) return 0;
             
+            // Skip RF exit calls during training mode (data collection phase)
+            if (isTrainingMode) 
+            {
+                return 0; // Return 0 (no exit signal) during training mode
+            }
+            
             // Check if this position is blacklisted (failed RF registration)
             lock (rfBlacklistLock)
             {
@@ -3072,6 +3090,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (IsDisposed()) return false;
             
+            // Skip RF exit calls during training mode (data collection phase)
+            if (isTrainingMode) 
+            {
+                Log($"[TRAINING] Skipping RF exit registration for {entrySignalId} (training mode active)");
+                return true; // Return success to avoid disrupting normal flow
+            }
+            
             try
             {
                 // Build registration payload
@@ -3127,6 +3152,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         public async Task<bool> DeregisterRFExitPositionAsync(string entrySignalId, bool wasGoodExit = false)
         {
             if (IsDisposed()) return false;
+            
+            // Skip RF exit calls during training mode (data collection phase)
+            if (isTrainingMode) 
+            {
+                Log($"[TRAINING] Skipping RF exit deregistration for {entrySignalId} (training mode active)");
+                return true; // Return success to avoid disrupting normal flow
+            }
             
             try
             {
@@ -3188,6 +3220,71 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// Track positions that failed RF registration to avoid repeated checks
 		private readonly HashSet<string> rfExitBlacklist = new HashSet<string>();
 		private readonly object rfBlacklistLock = new object();
+
+        // NEW: RF Model Scoring - Request model scoring from RF service
+        public async Task<RFFilterResponse> RequestModelScoring(object request)
+        {
+            if (IsDisposed()) 
+            {
+                return new RFFilterResponse 
+                { 
+                    model_available = false, 
+                    message = "Service disposed" 
+                };
+            }
+            
+            try
+            {
+                string rfServiceUrl = "http://localhost:3009";
+                string endpoint = $"{rfServiceUrl}/api/score-with-model";
+                
+                Log($"[RF-SCORING] Requesting model scoring from RF service");
+                
+                string jsonPayload = JsonConvert.SerializeObject(request);
+                
+                using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                {
+                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string responseText = await response.Content.ReadAsStringAsync();
+                        var rfResponse = JsonConvert.DeserializeObject<RFFilterResponse>(responseText);
+                        
+                        Log($"[RF-SCORING] Model scoring response received - Available: {rfResponse.model_available}");
+                        return rfResponse;
+                    }
+                    else
+                    {
+                        Log($"[RF-SCORING] Model scoring request failed: {response.StatusCode}");
+                        return new RFFilterResponse 
+                        { 
+                            model_available = false, 
+                            message = $"HTTP {response.StatusCode}" 
+                        };
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                Log("[RF-SCORING] Model scoring request timed out");
+                return new RFFilterResponse 
+                { 
+                    model_available = false, 
+                    message = "Request timeout" 
+                };
+            }
+            catch (Exception ex)
+            {
+                Log($"[RF-SCORING] Error in RequestModelScoring: {ex.Message}");
+                return new RFFilterResponse 
+                { 
+                    model_available = false, 
+                    message = ex.Message 
+                };
+            }
+        }
 
         // NEW: Convenience method to get both divergence scores for a position
         public DivergenceScores GetAllDivergenceScores(string entrySignalId, double currentPrice = 0.0)

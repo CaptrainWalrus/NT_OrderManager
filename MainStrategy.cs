@@ -49,10 +49,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	[Gui.CategoryOrder("Critical Parameters", 10)]
 	[Gui.CategoryOrder("Strategy Level Params", 11)]
 	[Gui.CategoryOrder("ScoreRankingWeights", 12)]
-	[Gui.CategoryOrder("Debug", 13)]
-	
-	[Gui.CategoryOrder("Broker Settings", 14)]
-	[Gui.CategoryOrder("Entry Types", 15)]
+	[Gui.CategoryOrder("ML Config", 13)]
+	[Gui.CategoryOrder("Debug", 14)]
+	[Gui.CategoryOrder("Broker Settings", 15)]
+	[Gui.CategoryOrder("Entry Types", 16)]
 	public partial class MainStrategy : Strategy
 	{
 		// Instance tracking for debugging Strategy Analyzer issues
@@ -61,6 +61,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		[XmlIgnore]
 		public CurvesV2Service curvesService;
+		
+		[XmlIgnore]
+		private TrainingDataClient trainingDataClient;
 		
 		public int openOrderTest = 0;
 		[XmlIgnore]
@@ -582,6 +585,25 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					return;
 				}
 				
+				// Initialize training data client
+				trainingDataClient = new TrainingDataClient();
+				
+				if (CollectTrainingData)
+				{
+					// Start training session with unique ID
+					string sessionId = $"BT_{DateTime.Now:yyyyMMdd_HHmmss}_{Instrument.FullName}_{this.GetHashCode()}";
+					var metadata = new
+					{
+						instrument = Instrument.FullName,
+						strategy = "MainStrategy",
+						instance = this.GetHashCode(),
+						startTime = DateTime.Now
+					};
+					
+					_ = Task.Run(async () => await trainingDataClient.StartSession(sessionId, metadata));
+					Print($"[TRAINING] Training data client initialized with session: {sessionId}");
+				}
+				
 			    TradingHours tradingHours = Bars.TradingHours; // Get trading hours from the instrument
 	 
 				// Set up callbacks
@@ -693,6 +715,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					 if (curvesService != null)
 					 {
 						curvesService.SetStrategyState(false); // false = real-time mode
+						curvesService.SetTrainingMode(CollectTrainingData); // Set training mode based on CollectTrainingData parameter
 						Print("CurvesService set to Real-time mode (async behavior)");
 					 }
 					
@@ -707,6 +730,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					 if (curvesService != null)
 					 {
 						curvesService.SetStrategyState(true); // true = historical mode
+						curvesService.SetTrainingMode(CollectTrainingData); // Set training mode based on CollectTrainingData parameter
 						Print("CurvesService set to Historical mode (sync behavior)");
 					 }
 
@@ -1060,7 +1084,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				{
 					foreach (var simStop in MasterSimulatedStops.Take(4)) // Max 4 positions
 					{
-						if (!string.IsNullOrEmpty(simStop.EntryOrderUUID))
+						if (!string.IsNullOrEmpty(simStop.EntryOrderUUID) && DivergenceSignalThresholds)
 						{
 							// Fire-and-forget individual divergence check
 							Task.Run(async () => {
@@ -1367,11 +1391,60 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			DebugFreezePrint("BuildNewSignal returned");
 			msg = "after BuildNewSignal";
 			//Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
+			
+			// NEW: RF Model Filtering
+			if (EnableRFFiltering && builtSignal != null && builtSignal.signalType != null)
+			{
+				try
+				{
+					var rfFilterResult = ApplyRFModelFilter(builtSignal);
+					
+					if (rfFilterResult.shouldTake == false)
+					{
+						// Log filtered signal for analysis
+						if (CollectTrainingData)
+						{
+							LogFilteredSignal(builtSignal, rfFilterResult);
+						}
+						
+						Print($"[RF] Signal filtered out: {builtSignal.signalType} - {rfFilterResult.reason}");
+						
+						// Override signal to NoAction
+						builtSignal.newSignal = FunctionResponses.NoAction;
+						newSignal = FunctionResponses.NoAction;
+					}
+					else
+					{
+						// Apply risk adjustments from model
+						builtSignal.recStop *= rfFilterResult.stopAdjustment;
+						builtSignal.recTarget *= rfFilterResult.targetAdjustment;
+						builtSignal.recQty = (int)(builtSignal.recQty * rfFilterResult.sizeAdjustment);
+						
+						Print($"[RF] Signal approved: {builtSignal.signalType} - Confidence: {rfFilterResult.confidence:F2}");
+					}
+				}
+				catch (Exception ex)
+				{
+					Print($"[RF] Filter error: {ex.Message}");
+					// On error, allow signal through (fail open)
+				}
+			}
+			
 			if(builtSignal.newSignal == FunctionResponses.NoAction)
 			{
 				///no signal
 				return;
 			}
+			Print($"builtSignal.newSignal = {builtSignal.newSignal.ToString()}");
+			  Print($"builtSignal.newSignal = {builtSignal.newSignal.ToString()}");
+
+			  // DEBUG: Check each condition
+			 // Print($"[DEBUG] lastActionBar={lastActionBar}, CurrentBars[0]={CurrentBars[0]}, condition1={(lastActionBar < CurrentBars[0])}");
+			  //Print($"[DEBUG] totalAccountQuantity={totalAccountQuantity}, strategyDefaultQuantity={strategyDefaultQuantity},strategyMaxQuantity={strategyMaxQuantity}");
+			  //Print($"[DEBUG] condition2={(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity)}");
+			  //Print($"[DEBUG] accountMaxQuantity={accountMaxQuantity}, condition3={(totalAccountQuantity+strategyDefaultQuantity <= accountMaxQuantity)}");      
+			  //Print($"[DEBUG] getAllcustomPositionsCombined()={getAllcustomPositionsCombined()}, condition4={(getAllcustomPositionsCombined() <strategyMaxQuantity)}");
+			
 			if(lastActionBar < CurrentBars[0] && totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
 				
@@ -1536,7 +1609,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													}
 													else
 													{
-														if (isRealTime) Print(Time[0] + " ENTER LONG WAS REJECTED");
+														Print(Time[0] + " ENTER LONG WAS REJECTED");
 													}
 													
 					                            }
@@ -1551,7 +1624,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                          
 					                                if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
 					                           		{  
-														if (isRealTime) Print(Time[0] + " ENTER SHORT FROM SHORT");
+														Print(Time[0] + " ENTER SHORT FROM SHORT");
 														// Use approval-gated entry during real-time, direct entry in historical
 														if (isRealTime && EnablePushcutApproval)
 														{
@@ -1569,7 +1642,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
-														if (isRealTime) Print(Time[0] + " ENTER SHORTFROM FLAT");
+														Print(Time[0] + " ENTER SHORTFROM FLAT");
 														// Use approval-gated entry during real-time, direct entry in historical
 														if (isRealTime && EnablePushcutApproval)
 														{
@@ -1588,7 +1661,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 													}
 													else
 													{
-														if (isRealTime) Print(Time[0] + " ENTER SHORT WAS REJECTED");
+														Print(Time[0] + " ENTER SHORT WAS REJECTED");
 													}
 													
 					                            }
@@ -1752,7 +1825,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	
 		protected virtual patternFunctionResponse BuildNewSignal()
 		{
-			Print("MainStrat [BuildNewSignal]");
+			//Print("MainStrat [BuildNewSignal]");
+			
+			// First check traditional strategies for meta-labeling approach
+			patternFunctionResponse traditionalSignal = TraditionalStrategies.CheckAllTraditionalStrategies(this, TraditionalStrategyFilter);
+			if (traditionalSignal != null)
+			{
+				Print($"[TRADITIONAL] Signal found: {traditionalSignal.newSignal}, type: {traditionalSignal.signalType}");
+				return traditionalSignal;
+			}
+			
+			// If no traditional signal found, return default no-action signal
 			patternFunctionResponse thisSignal = new patternFunctionResponse();
 			thisSignal.newSignal = FunctionResponses.NoAction;
 			thisSignal.patternSubType = "none";
@@ -1861,6 +1944,221 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		            return $"{baseInstrument}{kvp.Value}{year % 10}";
 		
 		    return $"{baseInstrument}H{(year + 1) % 10}";
+		}
+		
+		// RF FILTERING METHODS
+		private RFFilterResult ApplyRFModelFilter(patternFunctionResponse signal)
+		{
+			try
+			{
+				// Request scoring from approved model for this signal type
+				string requestedModel = $"{Instrument.FullName}_{signal.signalType}_v{ModelVersion}";
+				
+				// Collect current features
+				var features = CollectCurrentFeatures();
+				
+				// Call RF service to score against specific approved model
+				var request = new
+				{
+					requested_model = requestedModel,
+					signal_type = signal.signalType,
+					signal_definition = signal.signalDefinition,
+					features = features,
+					instrument = Instrument.FullName
+				};
+				
+				var response = curvesService.RequestModelScoring(request).Result;
+				
+				if (!response.model_available)
+				{
+					Print($"[RF] Model {requestedModel} not available in approved models");
+					return new RFFilterResult { shouldTake = true, confidence = 1.0, reason = "Model not available" };
+				}
+				
+				return new RFFilterResult
+				{
+					shouldTake = response.prediction > RFConfidenceThreshold,
+					confidence = response.confidence,
+					modelUsed = response.model_used,
+					stopAdjustment = response.risk_adjustments?.stop_modifier ?? 1.0,
+					targetAdjustment = response.risk_adjustments?.target_modifier ?? 1.0,
+					sizeAdjustment = response.risk_adjustments?.size_modifier ?? 1.0,
+					reason = response.prediction > RFConfidenceThreshold ? "Confidence above threshold" : "Confidence below threshold"
+				};
+			}
+			catch (Exception ex)
+			{
+				Print($"[RF] Filter Error: {ex.Message}");
+				// On error, allow signal through
+				return new RFFilterResult { shouldTake = true, confidence = 1.0, reason = $"Error: {ex.Message}" };
+			}
+		}
+		
+		private Dictionary<string, double> CollectCurrentFeatures()
+		{
+			var features = new Dictionary<string, double>();
+			
+			try
+			{
+				// Market data features
+				features["close"] = Close[0];
+				features["high"] = High[0];
+				features["low"] = Low[0];
+				features["open"] = Open[0];
+				features["volume"] = Volume[0];
+				
+				// Technical indicators - check if they exist before accessing
+				if (EMA(9) != null && EMA(9).Count > 0)
+					features["ema_9"] = EMA(9)[0];
+				if (EMA(21) != null && EMA(21).Count > 0)
+					features["ema_21"] = EMA(21)[0];
+				if (EMA(50) != null && EMA(50).Count > 0)
+					features["ema_50"] = EMA(50)[0];
+				
+				if (RSI(14, 3) != null && RSI(14, 3).Count > 0)
+					features["rsi_14"] = RSI(14, 3)[0];
+				
+				if (ATR(14) != null && ATR(14).Count > 0)
+					features["atr_14"] = ATR(14)[0];
+				
+				if (Bollinger(2, 20) != null && Bollinger(2, 20).Count > 0)
+				{
+					features["bb_upper"] = Bollinger(2, 20).Upper[0];
+					features["bb_middle"] = Bollinger(2, 20).Middle[0];
+					features["bb_lower"] = Bollinger(2, 20).Lower[0];
+				}
+				
+				// Volume indicators
+				if (SMA(Volume, 20) != null && SMA(Volume, 20).Count > 0)
+					features["volume_sma_20"] = SMA(Volume, 20)[0];
+				
+				// Market condition features
+				features["hour_of_day"] = Time[0].Hour;
+				features["day_of_week"] = (double)Time[0].DayOfWeek;
+				
+				// Position and account info
+				features["position_quantity"] = Position.Quantity;
+				features["unrealized_pnl"] = Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency);
+				
+				// Price range features
+				if (Bars.Count > 1)
+				{
+					features["price_change"] = Close[0] - Close[1];
+					features["price_change_pct"] = (Close[0] - Close[1]) / Close[1];
+				}
+				
+				// Add range values if available
+				features["price_range_0"] = GetPriceRangeValue0;
+				features["price_range_1"] = GetPriceRangeValue1;
+				features["price_range_2"] = GetPriceRangeValue2;
+				features["price_range_3"] = GetPriceRangeValue3;
+			}
+			catch (Exception ex)
+			{
+				Print($"[RF] Error collecting features: {ex.Message}");
+			}
+			
+			return features;
+		}
+		
+		private void LogFilteredSignal(patternFunctionResponse signal, RFFilterResult filterResult)
+		{
+			try
+			{
+				if (trainingDataClient != null)
+				{
+					var filteredSignalLog = new
+					{
+						timestamp = DateTime.Now,
+						signal_type = signal.signalType,
+						signal_definition = signal.signalDefinition,
+						pattern_id = signal.patternId,
+						pattern_subtype = signal.patternSubType,
+						signal_score = signal.signalScore,
+						rf_confidence = filterResult.confidence,
+						rf_decision = filterResult.shouldTake,
+						rf_reason = filterResult.reason,
+						model_used = filterResult.modelUsed,
+						instrument = Instrument.FullName,
+						entry_price = Close[0],
+						features = signal.signalFeatures
+					};
+					
+					string logData = JsonConvert.SerializeObject(filteredSignalLog, Formatting.Indented);
+					trainingDataClient.SendFilteredSignal(filteredSignalLog);
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"[RF] Error logging filtered signal: {ex.Message}");
+			}
+		}
+		
+		private void CollectPositionOutcome(OrderRecordMasterLite orderRecord, double exitPrice, DateTime exitTime)
+		{
+			try
+			{
+				Print($"[TRAINING-DEBUG] CollectPositionOutcome called - builtSignal null: {orderRecord.builtSignal == null}");
+				if (orderRecord.builtSignal == null) 
+				{
+					Print("[TRAINING-DEBUG] Skipping - builtSignal is null");
+					return;
+				}
+				
+				Print($"[TRAINING-DEBUG] Signal Type: {orderRecord.builtSignal.signalType}");
+				
+				double entryPrice = orderRecord.EntryPrice;
+				if (entryPrice == 0) entryPrice = orderRecord.EntryOrder?.AverageFillPrice ?? 0;
+				
+				// Calculate P&L
+				double pnl = 0;
+				int winLoss = 0;
+				
+				if (orderRecord.EntryOrder != null)
+				{
+					bool isLong = orderRecord.EntryOrder.OrderAction == OrderAction.Buy || orderRecord.EntryOrder.OrderAction == OrderAction.BuyToCover;
+					
+					if (isLong)
+					{
+						pnl = (exitPrice - entryPrice) * orderRecord.EntryOrder.Quantity;
+					}
+					else
+					{
+						pnl = (entryPrice - exitPrice) * orderRecord.EntryOrder.Quantity;
+					}
+					
+					winLoss = pnl > 0 ? 1 : 0;
+				}
+				
+				var outcome = new PositionOutcome
+				{
+					BacktestId = $"BT_{DateTime.Now:yyyyMMdd_HHmmss}_{Instrument.FullName}",
+					SignalType = orderRecord.builtSignal.signalType,
+					SignalDefinition = orderRecord.builtSignal.signalDefinition,
+					EntryTime = orderRecord.EntryTime,
+					ExitTime = exitTime,
+					EntryPrice = entryPrice,
+					ExitPrice = exitPrice,
+					RealizedPnL = pnl,
+					MaxProfit = orderRecord.PriceStats.OrderStatsAllTimeHighProfit,
+					MaxLoss = orderRecord.PriceStats.OrderStatsAllTimeLowProfit,
+					WinLoss = winLoss,
+					EntryFeatures = orderRecord.builtSignal.signalFeatures,
+					PatternId = orderRecord.builtSignal.patternId,
+					PatternSubtype = orderRecord.builtSignal.patternSubType,
+					SignalScore = orderRecord.builtSignal.signalScore,
+					Instrument = Instrument.FullName
+				};
+				
+				Print($"[TRAINING-DEBUG] About to export outcome - SignalType: {outcome.SignalType}");
+				trainingDataClient?.SendOutcome(outcome);
+				
+				Print($"[TRAINING] Collected outcome: {outcome.SignalType} - P&L: {pnl:F2} - W/L: {winLoss}");
+			}
+			catch (Exception ex)
+			{
+				Print($"[TRAINING] Error collecting position outcome: {ex.Message}");
+			}
 		}
 		
 		public void updateRangeValues()
@@ -2384,6 +2682,32 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[Display(Name="Signal Strength Threshold", Order=20, GroupName="Strategy Level Params")]
 		public double SignalStrengthThreshold
 		{ get; set; } = 0.2;
+		
+		// ML CONFIGURATION PROPERTIES
+		[NinjaScriptProperty]
+		[Display(Name="Enable RF Filtering", Description="Enable Random Forest model filtering of signals", Order=1, GroupName="ML Config")]
+		public bool EnableRFFiltering { get; set; } = false;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Collect Training Data", Description="Collect signal outcomes for model training", Order=2, GroupName="ML Config")]
+		public bool CollectTrainingData { get; set; } = false;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Model Version", Description="Version of RF model to use", Order=3, GroupName="ML Config")]
+		public string ModelVersion { get; set; } = "1.0";
+		
+		[NinjaScriptProperty]
+		[Range(0.0, 1.0)]
+		[Display(Name="RF Confidence Threshold", Description="Minimum confidence for RF model to accept signal", Order=4, GroupName="ML Config")]
+		public double RFConfidenceThreshold { get; set; } = 0.5;
+		
+		[NinjaScriptProperty]
+		[Display(Name="ML Filter Mode", Description="ML filtering operation mode", Order=5, GroupName="ML Config")]
+		public MLFilterMode MLMode { get; set; } = MLFilterMode.Disabled;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Traditional Strategy Filter", Description="Test specific traditional strategy type for pure training data", Order=6, GroupName="ML Config")]
+		public TraditionalStrategyType TraditionalStrategyFilter { get; set; } = TraditionalStrategyType.ALL;
 		
 	#endregion
 	

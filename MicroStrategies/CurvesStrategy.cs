@@ -24,7 +24,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 public partial class CurvesStrategy : MainStrategy
 {
 	// Mark non-serializable fields with XmlIgnore
-	
+
 	
 	[XmlIgnore]
 	private bool somethingWasConnected;
@@ -372,6 +372,7 @@ public partial class CurvesStrategy : MainStrategy
 			
 				// 1. Simple, direct send of bar data - fire and forget
 				DebugFreezePrint("About to send bar (sync/async based on mode)");
+				/*
 				if (State == State.Realtime)
 				{
 				    // Real-time: async/fire-and-forget
@@ -388,6 +389,7 @@ public partial class CurvesStrategy : MainStrategy
 				    );
 				    Print($"{Time[0]} SendBarFireAndForget completed");
 				}
+				
 				else if (State == State.Historical || IsInStrategyAnalyzer)
 				{
 				    // Backtest (Strategy Analyzer) or Historical (pre-realtime): sync/blocking
@@ -405,9 +407,10 @@ public partial class CurvesStrategy : MainStrategy
 				    
 				   
 				}
+				*/
 				// 2. PARALLEL signal check - no delay, no dependency on barSent
 				double currentPrice = Close[0];  // Use the current bar's close price
-			    curvesService.UpdateAllDivergenceScoresAsync(currentPrice);
+			    //curvesService.UpdateAllDivergenceScoresAsync(currentPrice);
 
 					
 			}
@@ -424,6 +427,7 @@ public partial class CurvesStrategy : MainStrategy
 	}
 	
 	// Fix BuildNewSignal to actually return entry signals
+	/*
 	protected override patternFunctionResponse BuildNewSignal()
 	{
 		//Print("CurvesStrategy BuildNewSignal START");
@@ -503,7 +507,7 @@ public partial class CurvesStrategy : MainStrategy
 				// NEW: Use synchronous version that returns enhanced signal data
 				
 				var (score, posSize, risk, target, pullback) = curvesService.CheckSignalsSync(UseRemoteService, Time[0], instrumentCode, OutlierScoreRequirement, effectiveScoreRequirement);
-				Print($"[BuildNewSignal] {Time[0]}, score={score}, posSize={posSize}, risk={risk}, target={target}, pullback{pullback} >>>> CurvesV2Service.SignalsAreFresh {CurvesV2Service.SignalsAreFresh}");
+				//Print($"[BuildNewSignal] {Time[0]}, score={score}, posSize={posSize}, risk={risk}, target={target}, pullback{pullback} >>>> CurvesV2Service.SignalsAreFresh {CurvesV2Service.SignalsAreFresh}");
 				DebugFreezePrint("CheckSignalsSync completed");
 				
 				// Store signal in history for persistence validation using CurrentBars[0]
@@ -520,52 +524,77 @@ public partial class CurvesStrategy : MainStrategy
 			       
 			        	
 						
-						if(score > 0)
-						{
+						
 							
 							
 			            	// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-				            if (score > OutlierScoreRequirement && EMA3[0] > VWAP1[0] && IsRising(EMA3))
+				            if (CrossAbove(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsRising(EMA3))
 				            {
-								DebugFreezePrint("LONG signal generated with persistence");
-								Print($"[LONG] Score={score:F4} [PERSISTENT]");
+							
+								Print($"[LONG]");
 								
 					                ThrottleAll = Times[0][0];
 					                thisSignal.newSignal = FunctionResponses.EnterLong;
-									thisSignal.patternSubType = CurvesV2Service.CurrentSubtype + "_PERSISTENT";
-									thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-									thisSignal.recStop = risk;       // Use RF risk value (dollars)
-									thisSignal.recTarget = target;
-									thisSignal.recPullback = (100-pullback)/100; // Use RF pullback percentage eg 15 .. .15 >> 0.85
+									thisSignal.patternSubType = (CurvesV2Service.CurrentSubtype ?? "EMA_VWAP_CROSS") + "_PERSISTENT";
+									thisSignal.patternId = CurvesV2Service.CurrentPatternId?.ToString() ?? $"EMA_VWAP_{Time[0]:yyyyMMdd_HHmmss}";
+									//thisSignal.recStop = risk;       // Use RF risk value (dollars)
+									//thisSignal.recTarget = target;
+									//thisSignal.recPullback = (100-pullback)/100; // Use RF pullback percentage eg 15 .. .15 >> 0.85
 									thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
 									thisSignal.signalScore = score;
+									thisSignal.signalType = "EMA_VWAP_CROSS";
+									thisSignal.signalDefinition = "CrossAbove(EMA3, VWAP1, 10) && EMA3[0] - VWAP1[0] > TickSize * 3 && IsRising(EMA3)";
+									thisSignal.signalFeatures = new Dictionary<string, double>
+									{
+									    ["ema3_value"] = EMA3?.Count > 0 ? EMA3[0] : Close[0],
+									    ["vwap_value"] = VWAP1?.Count > 0 ? VWAP1[0] : Close[0],
+									    ["ema_vwap_distance"] = (EMA3?.Count > 0 && VWAP1?.Count > 0) ? (EMA3[0] - VWAP1[0]) : 0,
+									    ["ema_vwap_distance_ticks"] = (EMA3?.Count > 0 && VWAP1?.Count > 0) ? ((EMA3[0] - VWAP1[0]) / TickSize) : 0,
+									    ["close_price"] = Close[0],
+									    ["volume"] = Volume[0],
+									    ["hour_of_day"] = Time[0].Hour,
+									    ["signal_score"] = score,
+									    ["is_ema_falling"] = IsFalling(EMA3) ? 1.0 : 0.0,
+									    ["atr_14"] = ATR(14)[0],
+									    ["rsi_14"] = RSI(14, 3)[0]
+									};
 									return thisSignal;
 							}
-			            }
-						else if(score < 0)
-						{
+			           
 							
-				            if (Math.Abs(score) > OutlierScoreRequirement && EMA3[0] < VWAP1[0] && IsFalling(EMA3))
+				            if (CrossBelow(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsFalling(EMA3))
 				            {
-								DebugFreezePrint("SHORT signal generated with persistence");
-								Print($"[SHORT] Score={score:F4} [PERSISTENT]");
+								
+								Print($"[SHORT]");
 														
 								ThrottleAll = Times[0][0];
 					            thisSignal.newSignal = FunctionResponses.EnterShort;
 								thisSignal.patternSubType = CurvesV2Service.CurrentSubtype + "_PERSISTENT";
 								thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-								thisSignal.recStop = risk;       // Use RF risk value (dollars)
-								thisSignal.recPullback = pullback; // Use RF pullback percentage
-								thisSignal.recTarget = target;
+								//thisSignal.recStop = risk;       // Use RF risk value (dollars)
+								//thisSignal.recPullback = pullback; // Use RF pullback percentage
+								//thisSignal.recTarget = target;
 								thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
 								thisSignal.signalScore = score;
+								thisSignal.signalType = "EMA_VWAP_CROSS";
+								thisSignal.signalDefinition = "CrossBelow(EMA3, VWAP1, 10) && EMA3[0] - VWAP1[0] > TickSize * 3 && IsFalling(EMA3)";
+								thisSignal.signalFeatures = new Dictionary<string, double>
+								{
+								    ["ema3_value"] = EMA3[0],
+								    ["vwap_value"] = VWAP1[0],
+								    ["ema_vwap_distance"] = EMA3[0] - VWAP1[0],
+								    ["ema_vwap_distance_ticks"] = (EMA3[0] - VWAP1[0]) / TickSize,
+								    ["close_price"] = Close[0],
+								    ["volume"] = Volume[0],
+								    ["hour_of_day"] = Time[0].Hour,
+								    ["signal_score"] = score,
+								    ["is_ema_falling"] = IsFalling(EMA3) ? 1.0 : 0.0,
+								    ["atr_14"] = ATR(14)[0],
+								    ["rsi_14"] = RSI(14, 3)[0]
+								};
 								return thisSignal;
 							}
-						}
-						else
-						{
-							//Print($"[PERSISTENCE] Signal direction mismatch: score={score:F2}, persistence={persistenceDirection}");
-						}
+						
 			        	
 					
 				
@@ -622,7 +651,7 @@ public partial class CurvesStrategy : MainStrategy
 		return instrumentCode;
 	}
 
-	
+	*/
 
 			// Add simple debug logging for backtesting
 		private void BacktestLog(string message)

@@ -214,7 +214,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
                 // Transform to new server format
                 var tradeNotification = new
                 {
-                    instrument = tradeRequest.signal.direction == "LONG" ? "ES LONG" : "ES SHORT",
+                    instrument = tradeRequest.instrument,
                     direction = tradeRequest.signal.direction,
                     entryPrice = tradeRequest.signal.entry_price,
                     stopLoss = tradeRequest.signal.entry_price - (tradeRequest.signal.direction == "LONG" ? tradeRequest.signal.risk_amount : -tradeRequest.signal.risk_amount),
