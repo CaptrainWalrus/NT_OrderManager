@@ -183,6 +183,85 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double LowConfluencePenalty { get; set; } = 0.8;   // 20% quicker exits for low confluence
     }
 
+    // NEW: Signal Approval Service Classes
+    public class SignalApprovalRequest
+    {
+        [JsonProperty("instrument")]
+        public string Instrument { get; set; }
+        
+        [JsonProperty("direction")]
+        public string Direction { get; set; }
+        
+        [JsonProperty("entry_price")]
+        public double EntryPrice { get; set; }
+        
+        [JsonProperty("features")]
+        public FeatureSet Features { get; set; }
+        
+        [JsonProperty("timestamp")]
+        public string Timestamp { get; set; }
+    }
+
+    public class FeatureSet
+    {
+        [JsonProperty("momentum_5")]
+        public double Momentum5 { get; set; }
+        
+        [JsonProperty("price_change_pct_5")]
+        public double PriceChangePct5 { get; set; }
+        
+        [JsonProperty("bb_width")]
+        public double BbWidth { get; set; }
+        
+        [JsonProperty("bb_position")]
+        public double BbPosition { get; set; }
+        
+        [JsonProperty("volume_spike_3bar")]
+        public double VolumeSpike3Bar { get; set; }
+        
+        [JsonProperty("ema_spread_pct")]
+        public double EmaSpreadPct { get; set; }
+        
+        [JsonProperty("rsi")]
+        public double Rsi { get; set; }
+        
+        [JsonProperty("atr_pct")]
+        public double AtrPct { get; set; }
+        
+        [JsonProperty("range_expansion")]
+        public double RangeExpansion { get; set; }
+    }
+
+    public class SignalApprovalResponse
+    {
+        [JsonProperty("approved")]
+        public bool Approved { get; set; }
+        
+        [JsonProperty("confidence")]
+        public double Confidence { get; set; }
+        
+        [JsonProperty("reasons")]
+        public string[] Reasons { get; set; }
+        
+        [JsonProperty("suggested_tp")]
+        public double SuggestedTp { get; set; }
+        
+        [JsonProperty("suggested_sl")]
+        public double SuggestedSl { get; set; }
+        
+        [JsonProperty("rec_pullback")]
+        public double RecPullback { get; set; }
+        
+        [JsonProperty("max_contracts")]
+        public int MaxContracts { get; set; }
+        
+        [JsonProperty("feature_scores")]
+        public object FeatureScores { get; set; }
+        
+        [JsonProperty("timestamp")]
+        public string Timestamp { get; set; }
+    }
+
     public class CurvesV2Service : IDisposable
     {
         public static string CurrentContextId { get; set; }
@@ -286,6 +365,65 @@ namespace NinjaTrader.NinjaScript.Strategies
         
         // Add DTW Service URL for divergence tracking
         private readonly string meServiceUrl = "http://localhost:5000"; // Use local ME service for orange line API
+        
+        // Storage Agent URL for direct data storage
+        private readonly string storageUrl = "http://localhost:3015"; // Direct NT->Storage flow
+        
+        // Send outcome data directly to Storage Agent (bypassing ME service)
+        public async Task<bool> SendOutcomeToStorageAsync(string entrySignalId, Dictionary<string, double> features, PositionOutcomeData outcomeData, string instrument, string direction, string entryType)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                // DEBUG: Check what features we're getting
+                int featureCount = features?.Count ?? 0;
+                Log($"[STORAGE-DEBUG] SendOutcomeToStorage - Features: {featureCount}, EntrySignalId: {entrySignalId}");
+                var payload = new
+                {
+                    entrySignalId = entrySignalId,
+                    instrument = instrument,
+                    direction = direction,
+                    entryType = entryType,
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    features = features,
+                    outcome = new
+                    {
+                        pnl = outcomeData.PnLDollars,
+                        pnlPoints = outcomeData.PnLPoints,
+                        exitPrice = outcomeData.ExitPrice,
+                        exitReason = outcomeData.ExitReason,
+                        holdingBars = outcomeData.HoldingBars,
+                        entryTime = outcomeData.EntryTime,
+                        exitTime = outcomeData.ExitTime,
+                        profitByBar = outcomeData.profitByBar // KEY: Include trajectory data
+                    }
+                };
+                
+                string jsonPayload = JsonConvert.SerializeObject(payload);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                
+                string endpoint = $"{storageUrl}/api/store-vector";
+                
+                var response = await client.PostAsync(endpoint, content);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    Log($"[STORAGE-DIRECT] Successfully sent outcome to Storage Agent: {entrySignalId}");
+                    return true;
+                }
+                else
+                {
+                    Log($"[STORAGE-DIRECT] Failed to send outcome: {response.StatusCode}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[STORAGE-DIRECT] Error sending outcome to Storage Agent: {ex.Message}");
+                return false;
+            }
+        }
         
         // Divergence tracking properties
         public static double CurrentDivergenceScore { get; private set; } = 0;
@@ -444,6 +582,220 @@ namespace NinjaTrader.NinjaScript.Strategies
                      !message.Contains("calculateEmaRibbonCurvature"))
             {
                 logger?.Invoke($"CurvesV2 [HTTP]: {message}");
+            }
+        }
+
+        // Send unified record to Storage Agent
+        public async Task<bool> SendToStorageAgent(UnifiedTradeRecord unifiedRecord, bool doNotStore = false, bool storeAsRecent = false)
+        {
+            if (IsDisposed()) return false;
+            
+            try
+            {
+                string storageUrl = "http://localhost:3015";
+                
+                // Three-state routing logic:
+                // - DoNotStore=true → OUT_OF_SAMPLE (JSON files)
+                // - DoNotStore=false, StoreAsRecent=true → RECENT (LanceDB)
+                // - DoNotStore=false, StoreAsRecent=false → TRAINING (LanceDB)
+                
+                string dataType;
+                string endpoint;
+                
+                if (doNotStore)
+                {
+                    // OUT_OF_SAMPLE: Send to live performance endpoint (JSON files)
+                    dataType = "OUT_OF_SAMPLE";
+                    endpoint = $"{storageUrl}/api/live-performance";
+                }
+                else if (storeAsRecent)
+                {
+                    // RECENT: Store in LanceDB for live graduation learning
+                    dataType = "RECENT";
+                    endpoint = $"{storageUrl}/api/store-vector";
+                }
+                else
+                {
+                    // TRAINING: Store in LanceDB as historical training data
+                    dataType = "TRAINING";
+                    endpoint = $"{storageUrl}/api/store-vector";
+                }
+                
+                // Create dedicated storage client with shorter timeout for better performance
+                using (var storageClient = new HttpClient())
+                {
+                    storageClient.Timeout = TimeSpan.FromSeconds(10); // Much shorter timeout for storage operations
+                    
+                    object storageRecord;
+                    
+                    if (dataType == "OUT_OF_SAMPLE")
+                    {
+                        // OUT_OF_SAMPLE: Simplified format for live performance tracking (JSON files)
+                        storageRecord = new
+                        {
+                            instrument = unifiedRecord.Instrument,
+                            entryType = unifiedRecord.EntryType,
+                            pnl = unifiedRecord.PnLDollars,
+                            pnlPerContract = unifiedRecord.PnLDollars, // Assuming 1 contract for now
+                            timestamp = unifiedRecord.Timestamp,
+                            exitReason = unifiedRecord.ExitReason
+                        };
+                    }
+                    else
+                    {
+                        // TRAINING/RECENT: Full format for LanceDB storage
+                        storageRecord = new
+                        {
+                            entrySignalId = unifiedRecord.EntrySignalId,
+                            instrument = unifiedRecord.Instrument,
+                            timestamp = unifiedRecord.Timestamp,
+                            entryType = unifiedRecord.EntryType,
+                            direction = unifiedRecord.Direction,
+                            sessionId = unifiedRecord.SessionId,  // Include session ID for backtest separation
+                            dataType = dataType,  // TRAINING or RECENT
+                            features = unifiedRecord.Features,
+                            recordType = "UNIFIED",  // Important: mark as unified record
+                            status = "UNIFIED",      // Also set status
+                            riskUsed = new
+                            {
+                                stopLoss = unifiedRecord.StopLoss,
+                                takeProfit = unifiedRecord.TakeProfit
+                            },
+                            outcome = new
+                            {
+                                pnl = unifiedRecord.PnLDollars,
+                                pnlPoints = unifiedRecord.PnLPoints,
+                                holdingBars = unifiedRecord.HoldingBars,
+                                exitReason = unifiedRecord.ExitReason,
+                                maxProfit = unifiedRecord.MaxProfit,
+                                maxLoss = unifiedRecord.MaxLoss,
+                                wasGoodExit = unifiedRecord.WasGoodExit,
+                                exitPrice = unifiedRecord.ExitPrice,
+                                profitByBar = unifiedRecord.profitByBar
+                            }
+                        };
+                    }
+                
+                var json = JsonConvert.SerializeObject(storageRecord, Formatting.Indented);
+                
+                // Log the payload we're sending
+                //Log($"[UNIFIED-STORAGE] ========== PAYLOAD TO STORAGE AGENT ==========");
+                //Log($"[UNIFIED-STORAGE] Endpoint: {endpoint}");
+                //Log($"[UNIFIED-STORAGE] Payload JSON:");
+               // Log(json);
+                //Log($"[UNIFIED-STORAGE] ===========================================");
+                    using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+                    {
+						Log($"[UNIFIED-PAYLOAD] {JsonConvert.SerializeObject(json)}");
+					
+                        //Log($"[UNIFIED-STORAGE] Sending POST request to {endpoint}");
+                        var response = await storageClient.PostAsync(endpoint, content);
+                    
+                    //Log($"[UNIFIED-STORAGE] Response Status: {response.StatusCode}");
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var responseBody = await response.Content.ReadAsStringAsync();
+                       // Log($"[UNIFIED-STORAGE] Success Response: {responseBody}");
+                        Log($"[UNIFIED-STORAGE] Successfully stored {dataType} record for {unifiedRecord.EntrySignalId}");
+                        return true;
+                    }
+                    else
+                    {
+                        var error = await response.Content.ReadAsStringAsync();
+                        Log($"[UNIFIED-STORAGE] Failed to store record - Status: {response.StatusCode}");
+                        Log($"[UNIFIED-STORAGE] Error Response: {error}");
+                        return false;
+                    }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[UNIFIED-STORAGE] Error storing unified record: {ex.Message}");
+                return false;
+            }
+        }
+
+        // Send performance summary to storage agent when backtest completes
+        public async Task<bool> SendPerformanceSummary(NinjaTrader.NinjaScript.StrategyBase strategy)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(sessionID))
+                {
+                    Log("[PERFORMANCE-SUMMARY] No sessionID available - skipping performance summary");
+                    return false;
+                }
+
+                Log($"[PERFORMANCE-SUMMARY] Sending performance summary for session {sessionID}");
+
+                // Extract performance metrics from NinjaTrader's SystemPerformance
+                var performance = strategy.SystemPerformance;
+                var allTrades = performance.AllTrades;
+                var tradesPerf = allTrades.TradesPerformance;
+                
+                var summary = new
+                {
+                    sessionId = sessionID,
+                    timestamp = DateTimeToUnixMs(DateTime.Now),
+                    instrument = strategy.Instrument.MasterInstrument.Name,
+                    accountName = strategy.Account?.Name ?? "Backtest",
+                    startTime = DateTimeToUnixMs(strategy.Time[strategy.BarsArray[0].Count - 1]),
+                    endTime = DateTimeToUnixMs(strategy.Time[0]),
+                    
+                    // Core performance metrics
+                    totalTrades = allTrades.Count,
+                    winningTrades = allTrades.WinningTrades.Count,
+                    losingTrades = allTrades.LosingTrades.Count,
+                    winRate = allTrades.Count > 0 ? (double)allTrades.WinningTrades.Count / allTrades.Count : 0,
+                    
+                    // Financial metrics
+                    netProfit = tradesPerf.NetProfit,
+                    grossProfit = tradesPerf.GrossProfit,
+                    grossLoss = tradesPerf.GrossLoss,
+                    profitFactor = tradesPerf.ProfitFactor,
+                    
+               
+                    avgTrade = allTrades.Count > 0 ? tradesPerf.NetProfit / allTrades.Count : 0,
+                    
+     
+                    // Strategy parameters (if MainStrategy)
+                    strategyParameters = strategy is MainStrategy mainStrategy ? new
+                    {
+                        takeProfitTicks = mainStrategy.microContractTakeProfit,
+                        stopLossTicks = mainStrategy.microContractStoploss,
+                        softTakeProfit = mainStrategy.softTakeProfitMult,
+                        riskAgentConfidenceThreshold = mainStrategy.RiskAgentConfidenceThreshold
+                    } : null
+                };
+
+                string jsonPayload = JsonConvert.SerializeObject(summary);
+                string storageUrl = "http://localhost:3015";
+                string endpoint = $"{storageUrl}/api/sessions/{sessionID}/performance";
+
+                using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                {
+                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Log($"[PERFORMANCE-SUMMARY] Successfully sent performance summary - Win Rate: {summary.winRate:P2}, Net Profit: ${summary.netProfit:F2}");
+                        return true;
+                    }
+                    else
+                    {
+                        var error = await response.Content.ReadAsStringAsync();
+                        Log($"[PERFORMANCE-SUMMARY] Failed to send summary - Status: {response.StatusCode}, Error: {error}");
+                        return false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[PERFORMANCE-SUMMARY] Error sending performance summary: {ex.Message}");
+                return false;
             }
         }
 
@@ -2082,19 +2434,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Enhanced registration with entry price and direction for Dynamic Risk Alignment
-        public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null)
+        public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternSubType, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null, bool doNotStore = false)
         {
-            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast,useRemoteService);
+            return await RegisterPositionWithDataAsync(entrySignalId, patternSubType, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast, useRemoteService, doNotStore);
         }
 
         // Legacy registration method for compatibility
-        public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
+        public async Task<bool> RegisterPositionAsync(string entrySignalId, string patternSubType, string patternUuid, string instrument, DateTime entryTimestamp)
         {
-            return await RegisterPositionWithDataAsync(entrySignalId, patternUuid, instrument, entryTimestamp, 0.0, "long", null,useRemoteService);
+            return await RegisterPositionWithDataAsync(entrySignalId, patternSubType, patternUuid, instrument, entryTimestamp, 0.0, "long", null,useRemoteService);
         }
 
         // Core registration method with full Dynamic Risk Alignment data
-        private async Task<bool> RegisterPositionWithDataAsync(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice, string direction, double[] originalForecast,bool useRemoteService)
+        private async Task<bool> RegisterPositionWithDataAsync(string entrySignalId, string patternSubType, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice, string direction, double[] originalForecast, bool useRemoteService, bool doNotStore = false)
         {
             if (IsDisposed()) return false;
 
@@ -2126,16 +2478,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         strategyId = sessionID,  // Session ID for tracking
                         entrySignalId = entrySignalId,
+						entryType = patternSubType,
                         patternUuid = patternUuid,
                         instrument = instrument,
                         entryTimestamp = isoTimestamp,
                         entryPrice = entryPrice, // Actual entry price from strategy
-                        direction = direction, // Actual direction from strategy  
+                        direction = direction, // Actual direction from strategy  					
                         originalForecast = originalForecast ?? new double[] { }, // Forecast from Curved Prediction Service
                         marketContext = new { // Current market context
                             timestamp = isoTimestamp,
                             sessionId = sessionID
-                        }
+                        },
+                        doNotStore = doNotStore // Flag for out-of-sample testing
                     };
                     
                     // Log details on first attempt
@@ -2252,9 +2606,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             return false;
         }
 
+		#region
+		/*
         // Enhanced synchronous registration with entry price and direction - CONDITIONAL SYNC/ASYNC
-        public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null)
+        public bool RegisterPosition(string entrySignalId, string patternSubType,string patternUuid, string instrument, DateTime entryTimestamp, double entryPrice = 0.0, string direction = "long", double[] originalForecast = null, bool doNotStore = false)
         {
+            var startTime = DateTime.Now;
             if (IsDisposed()) return false;
             
             try
@@ -2264,8 +2621,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     // BACKTESTING: Use synchronous calls for sequential bar processing
                     Log($"[HISTORICAL-SYNC] RegisterPosition starting sync call for {entrySignalId}");
-                    var result = RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast).ConfigureAwait(false).GetAwaiter().GetResult();
-                    Log($"[HISTORICAL-SYNC] RegisterPosition completed sync call for {entrySignalId}");
+                    var result = RegisterPositionAsync(entrySignalId, patternSubType, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast, doNotStore).ConfigureAwait(false).GetAwaiter().GetResult();
+                    
+                    var duration = (DateTime.Now - startTime).TotalMilliseconds;
+                    Log($"[HISTORICAL-SYNC] RegisterPosition completed sync call for {entrySignalId} - Duration: {duration:F0}ms");
                     return result;
                 }
                 else
@@ -2275,7 +2634,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         try
                         {
                             Log($"[REALTIME-ASYNC] RegisterPosition starting background registration for {entrySignalId}");
-                            await RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast);
+                            await RegisterPositionAsync(entrySignalId, patternSubType, patternUuid, instrument, entryTimestamp, entryPrice, direction, originalForecast, doNotStore);
                             Log($"[REALTIME-ASYNC] RegisterPosition completed background registration for {entrySignalId}");
             }
             catch (Exception ex)
@@ -2296,7 +2655,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Legacy synchronous wrapper for compatibility - CONDITIONAL SYNC/ASYNC
-        public bool RegisterPosition(string entrySignalId, string patternUuid, string instrument, DateTime entryTimestamp)
+        public bool RegisterPosition(string entrySignalId, string patternSubType, string patternUuid, string instrument, DateTime entryTimestamp)
         {
             if (IsDisposed()) return false;
             
@@ -2307,7 +2666,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     // BACKTESTING: Use synchronous calls for sequential bar processing
                     Log($"[HISTORICAL-SYNC] Legacy RegisterPosition starting sync call for {entrySignalId}");
-                    var result = RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp).ConfigureAwait(false).GetAwaiter().GetResult();
+                    var result = RegisterPositionAsync(entrySignalId, patternSubType, patternUuid, instrument, entryTimestamp).ConfigureAwait(false).GetAwaiter().GetResult();
                     Log($"[HISTORICAL-SYNC] Legacy RegisterPosition completed sync call for {entrySignalId}");
                     return result;
                 }
@@ -2318,7 +2677,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         try
                         {
                             Log($"[REALTIME-ASYNC] Legacy RegisterPosition starting background registration for {entrySignalId}");
-                            await RegisterPositionAsync(entrySignalId, patternUuid, instrument, entryTimestamp);
+                            await RegisterPositionAsync(entrySignalId, patternSubType, patternUuid, instrument, entryTimestamp);
                             Log($"[REALTIME-ASYNC] Legacy RegisterPosition completed background registration for {entrySignalId}");
             }
             catch (Exception ex)
@@ -2442,6 +2801,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		}
 
+		*/
+		
+		#endregion
 		// UPDATED: Dynamic Risk Alignment with forecast recalculation and 3-strike rule
 		// Returns binary divergence score from intelligent risk assessment
 		private async Task<double> PerformDynamicRiskRequestAsync(string entrySignalId,bool useRemoteService, double currentPrice = 0.0)
@@ -2584,7 +2946,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // ENHANCED: Batch method to update BOTH standard divergence AND RF exit scores - call this once per bar
-        public async Task UpdateAllDivergenceScoresAsync(double currentPrice = 0.0)
+       /* public async Task UpdateAllDivergenceScoresAsync(double currentPrice = 0.0)
         {
             // Use MasterSimulatedStops instead of activePositions to get actual open positions
             if (IsDisposed() || MasterSimulatedStops == null || MasterSimulatedStops.Count == 0) return;
@@ -2630,7 +2992,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // Deregister a position when it's closed
-        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool useRemoteService, bool wasGoodExit = false, double finalDivergenceP = 0.0)
+        public async Task<bool> DeregisterPositionAsync(string entrySignalId, bool useRemoteService, bool wasGoodExit = false, double finalDivergenceP = 0.0, PositionOutcomeData outcomeData = null)
         {
             if (IsDisposed()) return false;
             
@@ -2669,12 +3031,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         strategyId = sessionID,  // NEW: Add sessionID as strategyId
                         wasGoodExit = wasGoodExit,
-                        finalDivergence = finalDivergenceP
+                        finalDivergence = finalDivergenceP,
+                        // NEW: Add position outcome data to existing payload
+                        positionOutcome = outcomeData
                     };
                     
                     // Convert to JSON
                     string jsonPayload = JsonConvert.SerializeObject(exitOutcomeData);
-                    
                     // Create request message explicitly to include body with DELETE
                     var request = new HttpRequestMessage
                     {
@@ -2686,6 +3049,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Send request with timeout
                     using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3))) // Reduced timeout
                     {
+						
                         var response = await client.SendAsync(request, timeoutCts.Token);
                         
                         if (response.IsSuccessStatusCode)
@@ -2709,7 +3073,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                             }
                             
                             // NEW: Also deregister from RF service (fire-and-forget to avoid blocking)
-                            Task.Run(async () => {
+                           Task.Run(async () => {
                                 try
                                 {
                                     await DeregisterRFExitPositionAsync(entrySignalId, wasGoodExit);
@@ -2782,9 +3146,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             Log($"[DIVERGENCE] All attempts to deregister position {entrySignalId} failed, but continuing");
             return true;
         }
+		*/
 
+		/*
         // Synchronous wrapper for DeregisterPositionAsync - CONDITIONAL SYNC/ASYNC
-        public bool DeregisterPosition(string entrySignalId, bool wasGoodExit = false, double finalDivergence = 0.0)
+        public bool DeregisterPosition(string entrySignalId, bool wasGoodExit = false, double finalDivergence = 0.0, PositionOutcomeData outcomeData = null)
         {
             if (IsDisposed()) return false;
             
@@ -2795,7 +3161,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     // BACKTESTING: Use synchronous calls for sequential bar processing
                     Log($"[HISTORICAL-SYNC] DeregisterPosition starting sync call for {entrySignalId}");
-                    var result = DeregisterPositionAsync(entrySignalId, useRemoteService, wasGoodExit, finalDivergence).ConfigureAwait(false).GetAwaiter().GetResult();
+                    var result = DeregisterPositionAsync(entrySignalId, useRemoteService, wasGoodExit, finalDivergence, outcomeData).ConfigureAwait(false).GetAwaiter().GetResult();
                     Log($"[HISTORICAL-SYNC] DeregisterPosition completed sync call for {entrySignalId}");
                     return result;
                 }
@@ -2818,7 +3184,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         try
                         {
                             Log($"[REALTIME-ASYNC] DeregisterPosition starting background deregistration for {entrySignalId}");
-                            await DeregisterPositionAsync(entrySignalId,useRemoteService,  wasGoodExit, finalDivergence);
+                            await DeregisterPositionAsync(entrySignalId,useRemoteService,  wasGoodExit, finalDivergence, outcomeData);
                             Log($"[REALTIME-ASYNC] DeregisterPosition completed background deregistration for {entrySignalId}");
             }
             catch (Exception ex)
@@ -2837,7 +3203,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
         }
-
+		*/
         // Add Thompson score retrieval method
         public async Task<double> GetThompsonScoreAsync(string patternId)
         {
@@ -3090,6 +3456,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (IsDisposed()) return false;
             
+            // Skip RF exit calls during backtesting (historical mode)
+            if (isHistoricalMode) 
+            {
+                Log($"[BACKTEST] Skipping RF exit registration for {entrySignalId} (historical mode)");
+                return true; // Return success to avoid disrupting normal flow
+            }
+            
             // Skip RF exit calls during training mode (data collection phase)
             if (isTrainingMode) 
             {
@@ -3152,6 +3525,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         public async Task<bool> DeregisterRFExitPositionAsync(string entrySignalId, bool wasGoodExit = false)
         {
             if (IsDisposed()) return false;
+            
+            // Skip RF exit calls during backtesting (historical mode)
+            if (isHistoricalMode) 
+            {
+                Log($"[BACKTEST] Skipping RF exit deregistration for {entrySignalId} (historical mode)");
+                return true; // Return success to avoid disrupting normal flow
+            }
             
             // Skip RF exit calls during training mode (data collection phase)
             if (isTrainingMode) 
@@ -3285,7 +3665,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 };
             }
         }
-
+/*
         // NEW: Convenience method to get both divergence scores for a position
         public DivergenceScores GetAllDivergenceScores(string entrySignalId, double currentPrice = 0.0)
         {
@@ -3322,7 +3702,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 };
             }
         }
-
+*/
+		/*
         // NEW: Async version for comprehensive divergence checking
         public async Task<DivergenceScores> GetAllDivergenceScoresAsync(string entrySignalId, double currentPrice = 0.0)
         {
@@ -3364,7 +3745,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 };
             }
         }
-
+		*/
         // NEW: Helper class to return both divergence scores
         public class DivergenceScores
         {
@@ -3386,6 +3767,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         public async Task<bool> SendPositionClosedAsync(string patternID, List<BarDataPacket> closingBars, double profit, bool isWin)
         {
             if (IsDisposed()) return false;
+
+            // Skip position annotations during backtesting (historical mode)
+            if (isHistoricalMode) 
+            {
+                Log($"[BACKTEST] Skipping position closure annotation for {patternID} (historical mode)");
+                return true; // Return success to avoid disrupting normal flow
+            }
 
             try
             {
@@ -3660,7 +4048,95 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
         }
-
+/*
+        // NEW: Signal Approval - Request signal approval from approval service
+        public async Task<SignalApprovalResponse> RequestSignalApprovalAsync(SignalApprovalRequest request)
+        {
+            var startTime = DateTime.Now;
+            if (IsDisposed()) 
+            {
+                return new SignalApprovalResponse 
+                { 
+                    Approved = false, 
+                    Confidence = 0.0,
+                    Reasons = new[] { "service_disposed" },
+                    SuggestedTp = ((MainStrategy)strategy).microContractTakeProfit,
+                    SuggestedSl = ((MainStrategy)strategy).microContractStoploss,
+                    RecPullback = ((MainStrategy)strategy).softTakeProfitMult // Default soft floor $5
+                };
+            }
+            
+            try
+            {
+                string approvalServiceUrl = "http://localhost:3017";
+                string endpoint = $"{approvalServiceUrl}/api/approve-signal";
+                
+                Log($"[SIGNAL-APPROVAL] Requesting signal approval for {request.Direction} {request.Instrument}");
+                
+                string jsonPayload = JsonConvert.SerializeObject(request);
+                
+                using (var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json"))
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                {
+                    var response = await client.PostAsync(endpoint, content, timeoutCts.Token);
+                    
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string responseText = await response.Content.ReadAsStringAsync();
+                        var approvalResponse = JsonConvert.DeserializeObject<SignalApprovalResponse>(responseText);
+                        
+                        string status = approvalResponse.Approved ? "APPROVED" : "REJECTED";
+                        var duration = (DateTime.Now - startTime).TotalMilliseconds;
+                        Log($"[SIGNAL-APPROVAL] Signal {status} - Confidence: {approvalResponse.Confidence:P1} - Duration: {duration:F0}ms");
+                        
+                        return approvalResponse;
+                    }
+                    else
+                    {
+                        var errorDuration = (DateTime.Now - startTime).TotalMilliseconds;
+                        Log($"[SIGNAL-APPROVAL] Approval request failed: {response.StatusCode} - Duration: {errorDuration:F0}ms");
+                        return new SignalApprovalResponse 
+                        { 
+                            Approved = false, 
+                            Confidence = 0.0,
+                            Reasons = new[] { $"http_error_{response.StatusCode}" },
+                            SuggestedTp = ((MainStrategy)strategy).microContractTakeProfit,
+		                    SuggestedSl = ((MainStrategy)strategy).microContractStoploss,
+		                    RecPullback = ((MainStrategy)strategy).softTakeProfitMult // Default soft floor $5
+                        };
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                var timeoutDuration = (DateTime.Now - startTime).TotalMilliseconds;
+                Log($"[SIGNAL-APPROVAL] Signal approval request timed out - Duration: {timeoutDuration:F0}ms");
+                return new SignalApprovalResponse 
+                { 
+                    Approved = false, 
+                    Confidence = 0.0,
+                    Reasons = new[] { "request_timeout" },
+                    SuggestedTp = ((MainStrategy)strategy).microContractTakeProfit,
+                    SuggestedSl = ((MainStrategy)strategy).microContractStoploss,
+                    RecPullback = ((MainStrategy)strategy).softTakeProfitMult // Default soft floor $5
+                };
+            }
+            catch (Exception ex)
+            {
+                var exceptionDuration = (DateTime.Now - startTime).TotalMilliseconds;
+                Log($"[SIGNAL-APPROVAL] Error in RequestSignalApprovalAsync: {ex.Message} - Duration: {exceptionDuration:F0}ms");
+                return new SignalApprovalResponse 
+                { 
+                    Approved = false, 
+                    Confidence = 0.0,
+                    Reasons = new[] { $"error_{ex.Message}" },
+                    SuggestedTp = ((MainStrategy)strategy).microContractTakeProfit,
+                    SuggestedSl = ((MainStrategy)strategy).microContractStoploss,
+                    RecPullback = ((MainStrategy)strategy).softTakeProfitMult // Default soft floor $5
+                };
+            }
+        }
+*/
         // NEW: Method to trigger backfill when switching to remote mode
         public async Task<bool> BackfillRemoteServiceAsync(List<object> historicalBars, string instrument)
         {

@@ -71,6 +71,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					string entryUUID =  uuid+"_Entry";
 					string exitUUID = uuid+"_Exit";
 					
+					// Store features for this position if they exist
+					Print($"[FEATURE-STORAGE] Checking for pending features with patternId: {patternIdString}");
+					if (HasPendingFeatures(patternIdString))
+					{
+						var pendingFeatures = GetPendingFeatures(patternIdString);
+						positionFeatures[entryUUID] = pendingFeatures;
+						RemovePendingFeatures(patternIdString);
+						Print($"[FEATURE-STORAGE] Stored features for position {entryUUID} (from patternId: {patternIdString})");
+						Print($"[FEATURE-STORAGE] Feature count: {pendingFeatures?.Features?.Count ?? 0}");
+					}
+					else
+					{
+						Print($"[FEATURE-STORAGE] No pending features found for patternId: {patternIdString}");
+					}
 
 					//Print($"BarsInProgress {BarsInProgress} BAR: {CurrentBars[BarsInProgress]}  TIME{Time[0]}, EntryLimitFunctionLite entryUUID created {entryUUID}");
 			
@@ -95,12 +109,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						OrderStatsEntryPrice = signalPackageParam.price,
 						OrderStatsExitPrice = 0,
 						OrderStatsProfit = 0,
-						OrderStatsHardProfitTarget = recTarget != 0 && recTarget < microContractTakeProfit ? recTarget : microContractTakeProfit,/// Profit is scalable so dont let to overscale
+						OrderStatsHardProfitTarget = recTarget != 0 ? recTarget : 999,/// Profit is scalable so dont let to overscale
 						OrderStatsAllTimeHighProfit = 0,
 						OrderStatsAllTimeLowProfit = 0,
 						OrderStatspullBackThreshold = recPullback > softTakeProfitMult ? recPullback : softTakeProfitMult,
 						OrderStatspullBackPct =  pullBackPct,
-						OrderMaxLoss = recMaxLoss != 0 && recMaxLoss < microContractStoploss ? recMaxLoss : microContractStoploss,/// loss is scalable so dont let to overscale
+						OrderMaxLoss = recMaxLoss != 0 ? recMaxLoss : 666,/// loss is scalable so dont let to overscale
+						profitByBar = new Dictionary<int,double>()
 					};
 					tryCatchSection = "Section 3d Order Management Lite ";
 					
@@ -113,6 +128,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						EntryOrderUUID = entryUUID,
 						EntryOrder = null,
 						ExitOrder = null,
+						EntryBar = thisBar,
 						ExitOrderUUID = exitUUID,
 						PriceStats = orderPriceStats,
 						OrderSupplementals = orderSupplementals,
@@ -202,7 +218,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 					
 					
-					if(OA == OrderAction.Buy && GetMarketPositionByIndex(0) != MarketPosition.Short && GetMarketPositionByIndex(1) != MarketPosition.Short)
+					if(OA == OrderAction.Buy && GetMarketPositionByIndex(0) != MarketPosition.Short)
 					{
 						
 							EnterLong(1,1,entryUUID);
@@ -211,14 +227,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							return;
 							
 					}
-					else if(OA == OrderAction.SellShort && GetMarketPositionByIndex(0) != MarketPosition.Long && GetMarketPositionByIndex(1) != MarketPosition.Long)
+					else if(OA == OrderAction.SellShort && GetMarketPositionByIndex(0) != MarketPosition.Long)
 					{
 						
 							//Print($"SubmitOrderUnmanaged : openOrderTest {openOrderTest}");
 							//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID}, Quantity {Q} EnterShort {GetMarketPositionByIndex(BarsInProgress)}");
 							//SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, accountEntryQuantity, 0, 0, null,orderRecordMasterLite.EntryOrderUUID);
 							
-						EnterShort(1,1,entryUUID);
+							EnterShort(1,1,entryUUID);
 							Print($"entershort {entryUUID}");
 
 							return;
@@ -227,7 +243,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					}
 					else
 					{
-						Print($"ERROR {OA} && {GetMarketPositionByIndex(0)} && {GetMarketPositionByIndex(1)}");
+						Print($"ERROR {OA} && {GetMarketPositionByIndex(0)} && {GetMarketPositionByIndex(1)} {entryUUID}");
 					}
 				}
 					

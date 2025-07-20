@@ -33,7 +33,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 
 
-
+/// <summary>
+/// THIS FILE IS UNIQUE TO RITHMIC EXCHANGE WHICH DOESN'T SEND ORDERS UPDATES ON ORDER/EXECUTION, SO WE FORCE-MANAGE IT
+/// </summary>
 	public partial class MainStrategy : Strategy
 	{
 			

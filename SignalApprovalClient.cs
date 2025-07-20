@@ -11,9 +11,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         private readonly HttpClient httpClient;
         private readonly string baseUrl;
         
-        public SignalApprovalClient(string rfServiceUrl = "http://localhost:3009")
+        public SignalApprovalClient(string signalApprovalServiceUrl = "http://localhost:3017")
         {
-            this.baseUrl = rfServiceUrl;
+            this.baseUrl = signalApprovalServiceUrl;
             this.httpClient = new HttpClient();
             this.httpClient.Timeout = TimeSpan.FromSeconds(5); // Quick timeout for trading
         }
@@ -21,16 +21,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         /// <summary>
         /// Check if a signal should be approved for trading
         /// </summary>
-        public async Task<SignalApprovalResponse> ApproveSignalAsync(string signalType, object signalFeatures, string patternId, string instrument)
+        public async Task<SignalApprovalResponse> ApproveSignalAsync(string signalType, object signalFeatures, string patternId, string instrument, string direction = "long", double entryPrice = 0.0)
         {
             try
             {
+                // ONLY send basic signal info - ME will provide features
                 var request = new
                 {
-                    signalType = signalType,
-                    signalFeatures = signalFeatures,
-                    patternId = patternId,
-                    instrument = instrument
+                    instrument = instrument,
+                    direction = direction,
+                    entry_price = entryPrice,
+                    timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                    // NO FEATURES - ME provides them
                 };
                 
                 var json = JsonConvert.SerializeObject(request);
@@ -127,5 +129,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         
         [JsonProperty("threshold")]
         public double Threshold { get; set; }
+        
+        [JsonProperty("cachedId")]
+        public string CachedId { get; set; }
+        
+        [JsonProperty("source")]
+        public string Source { get; set; }
+        
+        [JsonProperty("suggested_tp")]
+        public double SuggestedTP { get; set; }
+        
+        [JsonProperty("suggested_sl")]
+        public double SuggestedSL { get; set; }
     }
 }

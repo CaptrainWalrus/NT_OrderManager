@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.Strategies;
 using NinjaTrader.NinjaScript.Indicators;
@@ -12,324 +13,63 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	/// Traditional strategy library for meta-labeling approach
 	/// These strategies provide the baseline "edge" that RF models will enhance
 	/// </summary>
+	/// 
+		
 	public static class TraditionalStrategies
 	{
+		// Random number generator for threshold variations
+		private static readonly Random random = new Random();
+		
 		/// <summary>
-		/// Order Flow Imbalance - Buy/Sell Pressure Analysis with Wick Analysis
-		/// Detects aggressive buying/selling through volume delta and wick/body ratios
+		/// Apply randomization to a threshold value
 		/// </summary>
-		public static patternFunctionResponse CheckOrderFlowImbalance(Strategy strategy)
+		private static double Randomize(double value, double variationPercent = 0.1)
+		{
+			// Apply +/- variationPercent randomization
+			double variation = value * variationPercent;
+			return value + (random.NextDouble() * 2 - 1) * variation;
+		}
+		
+		
+		
+		
+		/// <summary>
+		/// Wick Imbalance Reversal - Simple rejection pattern detector
+		/// Detects deep wicks that reject price levels for reversal entries
+		/// </summary>
+		public static patternFunctionResponse CheckWickImbalance(Strategy strategy)
 		{
 			try
 			{
-				// Ensure we have enough bars for context
-				if (strategy.CurrentBar < 50) return null;
+				if (strategy.CurrentBar < 21) return null;
 				
-				// Get price data
-				var close = strategy.Close[0];
-				var open = strategy.Open[0];
+				// Simple wick imbalance - look for rejection wicks
 				var high = strategy.High[0];
 				var low = strategy.Low[0];
-				var volume = strategy.Volume[0];
-				var atr = strategy.ATR(14)[0];
+				var close = strategy.Close[0];
+				var open = strategy.Open[0];
 				
-				// Calculate candle components
-				double body = Math.Abs(close - open);
 				double totalRange = high - low;
+				if (totalRange <= 0) return null;
+				
 				double upperWick = high - Math.Max(open, close);
 				double lowerWick = Math.Min(open, close) - low;
 				
-				// Wick ratios - critical for gold
-				double bodyRatio = totalRange > 0 ? body / totalRange : 0;
-				double upperWickRatio = totalRange > 0 ? upperWick / totalRange : 0;
-				double lowerWickRatio = totalRange > 0 ? lowerWick / totalRange : 0;
-				double wickToBodyRatio = body > 0 ? (upperWick + lowerWick) / body : 10; // High value if no body
-				
-				// Wick imbalance - tells us where rejection happened
-				double wickImbalance = (upperWick - lowerWick) / totalRange;
-				
-				// Check market context to avoid chop
-				var ema50 = strategy.EMA(50)[0];
-				var ema200 = strategy.EMA(200)[0];
-				double recentRange = strategy.MAX(strategy.High, 10)[0] - strategy.MIN(strategy.Low, 10)[0];
-				bool isChoppy = recentRange < atr * 2;
-				
-				if (isChoppy) return null; // Skip choppy markets
-				
-				// Enhanced volume delta calculation using wick analysis
-				double volumeDelta = 0;
-				double buyVolume = 0;
-				double sellVolume = 0;
-				
-				// Volume distribution based on wick and body analysis
-				if (close > open) // Bullish bar
+				// Long signal: Lower wick rejection (randomized threshold)
+				if (lowerWick / totalRange > Randomize(0.5, 0.1) && close > strategy.EMA(21)[0])
 				{
-					// Large lower wick = buyers stepped in at lows
-					if (lowerWickRatio > 0.4 && upperWickRatio < 0.2)
-					{
-						buyVolume = volume * 0.8; // Strong buying absorption
-						sellVolume = volume * 0.2;
-					}
-					// Large upper wick = sellers rejected highs
-					else if (upperWickRatio > 0.4 && bodyRatio < 0.3)
-					{
-						buyVolume = volume * 0.4; // Weak bullish - rejection at top
-						sellVolume = volume * 0.6;
-					}
-					// Clean bullish bar (small wicks)
-					else if (bodyRatio > 0.6 && upperWickRatio < 0.15)
-					{
-						buyVolume = volume * 0.75; // Strong directional buying
-						sellVolume = volume * 0.25;
-					}
-					else
-					{
-						// Standard calculation
-						double bullishRatio = (close - open) / totalRange;
-						buyVolume = volume * (0.5 + bullishRatio * 0.3);
-						sellVolume = volume - buyVolume;
-					}
-				}
-				else if (close < open) // Bearish bar
-				{
-					// Large upper wick = sellers stepped in at highs
-					if (upperWickRatio > 0.4 && lowerWickRatio < 0.2)
-					{
-						sellVolume = volume * 0.8; // Strong selling pressure
-						buyVolume = volume * 0.2;
-					}
-					// Large lower wick = buyers rejected lows
-					else if (lowerWickRatio > 0.4 && bodyRatio < 0.3)
-					{
-						sellVolume = volume * 0.4; // Weak bearish - rejection at bottom
-						buyVolume = volume * 0.6;
-					}
-					// Clean bearish bar (small wicks)
-					else if (bodyRatio > 0.6 && lowerWickRatio < 0.15)
-					{
-						sellVolume = volume * 0.75; // Strong directional selling
-						buyVolume = volume * 0.25;
-					}
-					else
-					{
-						// Standard calculation
-						double bearishRatio = (open - close) / totalRange;
-						sellVolume = volume * (0.5 + bearishRatio * 0.3);
-						buyVolume = volume - sellVolume;
-					}
-				}
-				else // Doji
-				{
-					// Doji with long upper wick = selling pressure
-					if (upperWickRatio > lowerWickRatio * 2)
-					{
-						sellVolume = volume * 0.65;
-						buyVolume = volume * 0.35;
-					}
-					// Doji with long lower wick = buying pressure
-					else if (lowerWickRatio > upperWickRatio * 2)
-					{
-						buyVolume = volume * 0.65;
-						sellVolume = volume * 0.35;
-					}
-					// Balanced doji
-					else
-					{
-						buyVolume = volume * 0.5;
-						sellVolume = volume * 0.5;
-					}
+					return CreateSignal(strategy, "long", "WICK_REJECTION", "Lower wick rejection", 0.8, 0.8); // Tight 80% of micro contract values
 				}
 				
-				volumeDelta = buyVolume - sellVolume;
-				
-				// Calculate cumulative delta with wick analysis and decay
-				double cumulativeDelta = volumeDelta;
-				double cumulativeWickScore = 0; // Track wick patterns over time
-				
-				for (int i = 1; i <= 4; i++)
+				// Short signal: Upper wick rejection (randomized threshold)
+				if (upperWick / totalRange > Randomize(0.5, 0.1) && close < strategy.EMA(21)[0])
 				{
-					var pastClose = strategy.Close[i];
-					var pastOpen = strategy.Open[i];
-					var pastHigh = strategy.High[i];
-					var pastLow = strategy.Low[i];
-					var pastVolume = strategy.Volume[i];
-					var pastRange = pastHigh - pastLow;
-					
-					// Skip invalid bars
-					if (pastRange <= 0) continue;
-					
-					// Calculate past bar components
-					double pastBody = Math.Abs(pastClose - pastOpen);
-					double pastUpperWick = pastHigh - Math.Max(pastOpen, pastClose);
-					double pastLowerWick = Math.Min(pastOpen, pastClose) - pastLow;
-					double pastBodyRatio = pastBody / pastRange;
-					double pastUpperWickRatio = pastUpperWick / pastRange;
-					double pastLowerWickRatio = pastLowerWick / pastRange;
-					
-					// Apply decay factor - recent bars matter more
-					double decay = 1.0 - (i * 0.15);
-					
-					// Calculate past bar delta based on wick analysis
-					double pastDelta = 0;
-					double wickScore = 0;
-					
-					if (pastClose > pastOpen)
-					{
-						if (pastLowerWickRatio > 0.4 && pastUpperWickRatio < 0.2)
-						{
-							pastDelta = pastVolume * 0.6 * decay; // Strong buy absorption
-							wickScore = 1.0 * decay;
-						}
-						else if (pastUpperWickRatio > 0.4)
-						{
-							pastDelta = -pastVolume * 0.2 * decay; // Rejected at highs
-							wickScore = -0.5 * decay;
-						}
-						else
-						{
-							pastDelta = pastVolume * 0.3 * decay;
-							wickScore = 0.3 * decay;
-						}
-					}
-					else
-					{
-						if (pastUpperWickRatio > 0.4 && pastLowerWickRatio < 0.2)
-						{
-							pastDelta = -pastVolume * 0.6 * decay; // Strong sell pressure
-							wickScore = -1.0 * decay;
-						}
-						else if (pastLowerWickRatio > 0.4)
-						{
-							pastDelta = pastVolume * 0.2 * decay; // Rejected at lows
-							wickScore = 0.5 * decay;
-						}
-						else
-						{
-							pastDelta = -pastVolume * 0.3 * decay;
-							wickScore = -0.3 * decay;
-						}
-					}
-					
-					cumulativeDelta += pastDelta;
-					cumulativeWickScore += wickScore;
-				}
-				
-				// Calculate average volume for context
-				double avgVolume = 0;
-				for (int i = 1; i <= 10; i++)
-				{
-					avgVolume += strategy.Volume[i];
-				}
-				avgVolume /= 10;
-				
-				// Calculate trend and momentum context
-				bool bullishTrend = close > ema50 && ema50 > ema200;
-				bool bearishTrend = close < ema50 && ema50 < ema200;
-				var rsi = strategy.RSI(14, 3)[0];
-				
-				// Strong buying imbalance signal with wick confirmation
-				if (volumeDelta > volume * 0.3 && // Current bar shows 30%+ buying
-					cumulativeDelta > 0 && // Cumulative buying pressure
-					cumulativeWickScore > 0.5 && // Positive wick patterns
-					volume > avgVolume * 1.5 && // High volume
-					close > open && // Bullish close
-					bullishTrend && // With the trend
-					rsi > 40 && rsi < 70) // Not oversold/overbought
-				{
-					// Additional wick-based entry filters
-					bool strongEntry = false;
-					string entryReason = "";
-					
-					// Hammer pattern - strong rejection of lows
-					if (lowerWickRatio > 0.5 && upperWickRatio < 0.15 && bodyRatio < 0.35)
-					{
-						strongEntry = true;
-						entryReason = "Hammer with volume surge";
-					}
-					// Bullish engulfing with small upper wick
-					else if (bodyRatio > 0.7 && upperWickRatio < 0.1 && close > strategy.High[1])
-					{
-						strongEntry = true;
-						entryReason = "Clean breakout with volume";
-					}
-					// Lower wick absorption
-					else if (lowerWickRatio > 0.4 && wickImbalance < -0.2 && volumeDelta > volume * 0.5)
-					{
-						strongEntry = true;
-						entryReason = "Strong buying absorption at lows";
-					}
-					
-					if (strongEntry)
-					{
-						return new patternFunctionResponse
-						{
-							newSignal = FunctionResponses.EnterLong,
-							signalType = "ORDER_FLOW_IMBALANCE",
-							signalDefinition = $"Buy imbalance: {entryReason} (Delta: {(volumeDelta/volume*100):F1}%, WickScore: {cumulativeWickScore:F2})",
-							recStop = Math.Max(low - (atr * 1.2), low - lowerWick * 0.5), // Use wick low as reference
-							recTarget = close + (atr * 2.5),
-							signalScore = 0.85,
-							recQty = 1,
-							patternId = $"OFI_BUY_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-							patternSubType = "WICK_ABSORPTION_BUY",
-							signalFeatures = CollectSignalFeatures(strategy, "ORDER_FLOW_IMBALANCE")
-						};
-					}
-				}
-				
-				// Strong selling imbalance signal with wick confirmation
-				if (volumeDelta < volume * -0.3 && // Current bar shows 30%+ selling
-					cumulativeDelta < 0 && // Cumulative selling pressure
-					cumulativeWickScore < -0.5 && // Negative wick patterns
-					volume > avgVolume * 1.5 && // High volume
-					close < open && // Bearish close
-					bearishTrend && // With the trend
-					rsi < 60 && rsi > 30) // Not overbought/oversold
-				{
-					// Additional wick-based entry filters
-					bool strongEntry = false;
-					string entryReason = "";
-					
-					// Shooting star pattern - strong rejection of highs
-					if (upperWickRatio > 0.5 && lowerWickRatio < 0.15 && bodyRatio < 0.35)
-					{
-						strongEntry = true;
-						entryReason = "Shooting star with volume surge";
-					}
-					// Bearish engulfing with small lower wick
-					else if (bodyRatio > 0.7 && lowerWickRatio < 0.1 && close < strategy.Low[1])
-					{
-						strongEntry = true;
-						entryReason = "Clean breakdown with volume";
-					}
-					// Upper wick rejection
-					else if (upperWickRatio > 0.4 && wickImbalance > 0.2 && volumeDelta < volume * -0.5)
-					{
-						strongEntry = true;
-						entryReason = "Strong selling rejection at highs";
-					}
-					
-					if (strongEntry)
-					{
-						return new patternFunctionResponse
-						{
-							newSignal = FunctionResponses.EnterShort,
-							signalType = "ORDER_FLOW_IMBALANCE",
-							signalDefinition = $"Sell imbalance: {entryReason} (Delta: {(volumeDelta/volume*100):F1}%, WickScore: {cumulativeWickScore:F2})",
-							recStop = Math.Min(high + (atr * 1.2), high + upperWick * 0.5), // Use wick high as reference
-							recTarget = close - (atr * 2.5),
-							signalScore = 0.85,
-							recQty = 1,
-							patternId = $"OFI_SELL_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-							patternSubType = "WICK_REJECTION_SELL",
-							signalFeatures = CollectSignalFeatures(strategy, "ORDER_FLOW_IMBALANCE")
-						};
-					}
+					return CreateSignal(strategy, "short", "WICK_REJECTION", "Upper wick rejection", 0.8, 0.8); // Tight 80% of micro contract values
 				}
 			}
 			catch (Exception ex)
 			{
-				strategy.Print($"[TRADITIONAL] Error in Order Flow Imbalance: {ex.Message}");
+				strategy.Print($"[TRADITIONAL] Error in Wick Imbalance: {ex.Message}");
 			}
 			
 			return null;
@@ -343,72 +83,69 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			try
 			{
-				// Ensure we have enough bars
-				if (strategy.CurrentBar < 21) return null;
-				
-				var ema9 = strategy.EMA(9)[0];
-				var ema21 = strategy.EMA(21)[0];
-				var ema9Prev = strategy.EMA(9)[1];
-				var ema21Prev = strategy.EMA(21)[1];
-				var volume = strategy.Volume[0];
-				var volumeMA = strategy.SMA(strategy.Volume, 20)[0];
-				var atr = strategy.ATR(14)[0];
-				var close = strategy.Close[0];
-				var open = strategy.Open[0];
-				var high = strategy.High[0];
-				var low = strategy.Low[0];
-				
-				// Calculate volume delta for order flow confirmation
-				double volumeDelta = 0;
-				if (close > open && high > low)
+				if(strategy.CrossAbove(strategy.EMA(strategy.Close,25),strategy.EMA(strategy.Close,50),20) && strategy.IsRising(strategy.SMA(strategy.BarsArray[0],100)))
 				{
-					double bullishRatio = (close - open) / (high - low);
-					double buyVolume = volume * (0.5 + bullishRatio * 0.5);
-					volumeDelta = buyVolume - (volume - buyVolume);
-				}
-				else if (close < open && high > low)
-				{
-					double bearishRatio = (open - close) / (high - low);
-					double sellVolume = volume * (0.5 + bearishRatio * 0.5);
-					volumeDelta = (volume - sellVolume) - sellVolume;
-				}
-				
-				// Bullish crossover: EMA9 crosses above EMA21 with buying pressure
-				if (ema9 > ema21 && ema9Prev <= ema21Prev && 
-					volume > volumeMA * 1.2 && volumeDelta > 0)
-				{
-					return new patternFunctionResponse
+					// Generate entry signal ID and features
+					string entrySignalId = $"EMA_CROSS_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					
+					// Queue features and get Risk Agent approval with micro contract values
+					var mainStrategy = (MainStrategy)strategy;
+					double maxStopLoss = mainStrategy.microContractStoploss * 0.7; // 70% of micro contract SL
+					double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.73; // 73% of micro contract TP
+					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+						strategy.Instrument.FullName, "long", "EMA_CROSS", 1, maxStopLoss, maxTakeProfit).Result;
+					
+					if (approved && features != null)
 					{
-						newSignal = FunctionResponses.EnterLong,
-						signalType = "EMA_CROSS",
-						signalDefinition = "EMA(9) > EMA(21) && EMA(9)[1] <= EMA(21)[1] && Volume > VolumeMA * 1.2 && VolumeDelta > 0",
-						recStop = strategy.Low[0] - (2 * atr),
-						recTarget = strategy.Close[0] + (3 * atr),
-						signalScore = 0.75,
-						recQty = 1,
-						patternId = $"EMA_CROSS_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BULLISH_CROSS",
-						signalFeatures = CollectSignalFeatures(strategy, "EMA_CROSS")
-					};
+						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						return new patternFunctionResponse
+						{
+							newSignal = FunctionResponses.EnterLong,
+							signalType = "EMA_CROSS",
+							signalDefinition = "EMA(9) > EMA(21) && EMA(9)[1] <= EMA(21)[1] && Volume > VolumeMA * 1.2 && VolumeDelta > 0",
+							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
+							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
+							recPullback = pending?.RecPullback ?? 10, // Use Risk Agent soft-floor value
+							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recQty = 1,
+							patternId = entrySignalId,
+							patternSubType = "BULLISH_CROSS",
+							signalFeatures = features
+						};
+					}
 				}
 				
-				// Bearish crossover: EMA9 crosses below EMA21 with selling pressure
-				if (ema9 < ema21 && ema9Prev >= ema21Prev && 
-					volume > volumeMA * 1.2 && volumeDelta < 0)
+				if(strategy.CrossBelow(strategy.EMA(strategy.Close,25),strategy.EMA(strategy.Close,50),20) && strategy.IsFalling(strategy.SMA(strategy.BarsArray[0],100)))
 				{
-					return new patternFunctionResponse
+					// Generate entry signal ID and features
+					string entrySignalId = $"EMA_CROSS_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					
+					// Queue features and get Risk Agent approval with micro contract values
+					var mainStrategy = (MainStrategy)strategy;
+					double maxStopLoss = mainStrategy.microContractStoploss * 0.7; // 70% of micro contract SL
+					double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.73; // 73% of micro contract TP
+					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+						strategy.Instrument.FullName, "short", "EMA_CROSS", 1, maxStopLoss, maxTakeProfit).Result;
+					
+					if (approved && features != null)
 					{
-						newSignal = FunctionResponses.EnterShort,
-						signalType = "EMA_CROSS",
-						signalDefinition = "EMA(9) < EMA(21) && EMA(9)[1] >= EMA(21)[1] && Volume > VolumeMA * 1.2 && VolumeDelta < 0",
-						recStop = strategy.High[0] + (2 * atr),
-						recTarget = strategy.Close[0] - (3 * atr),
-						signalScore = 0.75,
-						recQty = 1,
-						patternId = $"EMA_CROSS_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BEARISH_CROSS",
-						signalFeatures = CollectSignalFeatures(strategy, "EMA_CROSS")
-					};
+						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						return new patternFunctionResponse
+						{
+							newSignal = FunctionResponses.EnterShort,
+							signalType = "EMA_CROSS",
+							signalDefinition = "EMA(9) < EMA(21) && EMA(9)[1] >= EMA(21)[1] && Volume > VolumeMA * 1.2 && VolumeDelta < 0",
+							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
+							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
+							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recQty = 1,
+							patternId = entrySignalId,
+							patternSubType = "BEARISH_CROSS",
+							signalFeatures = features
+						};
+					}
 				}
 			}
 			catch (Exception ex)
@@ -420,62 +157,41 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		
 		/// <summary>
-		/// RSI Divergence with Trend Filter
-		/// Mean reversion strategy with trend confirmation
+		/// Fair Value Gap (FVG) Fill - Imbalance reversal detector
+		/// Detects price gaps that need to be filled for reversal entries
 		/// </summary>
-		public static patternFunctionResponse CheckRSIDivergence(Strategy strategy)
+		public static patternFunctionResponse CheckFVGFill(Strategy strategy)
 		{
 			try
 			{
-				// Ensure we have enough bars
-				if (strategy.CurrentBar < 50) return null;
+				// Look for 3-bar gap (imbalance)
+				if (strategy.CurrentBar < 3) return null;
 				
-				var rsi = strategy.RSI(14, 3)[0];
-				var close = strategy.Close[0];
-				var ema50 = strategy.EMA(50)[0];
-				var volume = strategy.Volume[0];
-				var volumeMA = strategy.SMA(strategy.Volume, 20)[0];
+				var currentHigh = strategy.High[0];
+				var currentLow = strategy.Low[0];
+				var prevHigh = strategy.High[2];  // 2 bars ago
+				var prevLow = strategy.Low[2];
 				var atr = strategy.ATR(14)[0];
 				
-				// Bullish divergence: RSI oversold but price above trend
-				if (rsi < 30 && close > ema50 && volume > volumeMA)
+				// Bullish FVG: Gap up, now filling down (randomized gap size threshold)
+				if (prevHigh < currentLow && 
+					(currentLow - prevHigh) > atr * Randomize(0.1, 0.05) &&
+					strategy.Close[0] < strategy.Close[1])
 				{
-					return new patternFunctionResponse
-					{
-						newSignal = FunctionResponses.EnterLong,
-						signalType = "RSI_DIVERGENCE",
-						signalDefinition = "RSI(14) < 30 && Close > EMA(50) && Volume > VolumeMA",
-						recStop = strategy.Low[0] - (1.5 * atr),
-						recTarget = strategy.Close[0] + (2.5 * atr),
-						signalScore = 0.70,
-						recQty = 1,
-						patternId = $"RSI_DIV_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BULLISH_DIVERGENCE",
-						signalFeatures = CollectSignalFeatures(strategy, "RSI_DIVERGENCE")
-					};
+					return CreateSignal(strategy, "long", "FVG_FILL", "Filling bullish gap", 0.7, 0.67); // 70% SL, 67% TP of micro contract values
 				}
 				
-				// Bearish divergence: RSI overbought but price below trend
-				if (rsi > 70 && close < ema50 && volume > volumeMA)
+				// Bearish FVG: Gap down, now filling up (randomized gap size threshold)
+				if (prevLow > currentHigh && 
+					(prevLow - currentHigh) > atr * Randomize(0.1, 0.05) &&
+					strategy.Close[0] > strategy.Close[1])
 				{
-					return new patternFunctionResponse
-					{
-						newSignal = FunctionResponses.EnterShort,
-						signalType = "RSI_DIVERGENCE",
-						signalDefinition = "RSI(14) > 70 && Close < EMA(50) && Volume > VolumeMA",
-						recStop = strategy.High[0] + (1.5 * atr),
-						recTarget = strategy.Close[0] - (2.5 * atr),
-						signalScore = 0.70,
-						recQty = 1,
-						patternId = $"RSI_DIV_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BEARISH_DIVERGENCE",
-						signalFeatures = CollectSignalFeatures(strategy, "RSI_DIVERGENCE")
-					};
+					return CreateSignal(strategy, "short", "FVG_FILL", "Filling bearish gap", 0.7, 0.67); // 70% SL, 67% TP of micro contract values
 				}
 			}
 			catch (Exception ex)
 			{
-				strategy.Print($"[TRADITIONAL] Error in RSI Divergence: {ex.Message}");
+				strategy.Print($"[TRADITIONAL] Error in FVG Fill: {ex.Message}");
 			}
 			
 			return null;
@@ -500,39 +216,69 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				var atr = strategy.ATR(14)[0];
 				
 				// Bullish breakout: Close above 20-period high with volume
-				if (close > high20 && volume > volumeMA * 1.5)
+				if (close > high20 && volume > volumeMA * Randomize(1.5, 0.2))
 				{
-					return new patternFunctionResponse
+					// Generate entry signal ID and features
+					string entrySignalId = $"BREAKOUT_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					var features = ((MainStrategy)strategy).GenerateFeatures( strategy.Time[0], strategy.Instrument.FullName);
+					
+					// Queue features and get Risk Agent approval with micro contract values
+					var mainStrategy = (MainStrategy)strategy;
+					double maxStopLoss = mainStrategy.microContractStoploss * 1.0; // 100% of micro contract SL for breakouts
+					double maxTakeProfit = mainStrategy.microContractTakeProfit * 1.07; // 107% of micro contract TP for breakouts
+					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+						strategy.Instrument.FullName, "long", "BREAKOUT", 1, maxStopLoss, maxTakeProfit).Result;
+					
+					if (approved && features != null)
 					{
-						newSignal = FunctionResponses.EnterLong,
-						signalType = "BREAKOUT",
-						signalDefinition = "Close > MAX(High, 20)[1] && Volume > VolumeMA * 1.5",
-						recStop = low20,
-						recTarget = close + (2 * atr),
-						signalScore = 0.80,
-						recQty = 1,
-						patternId = $"BREAKOUT_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BULLISH_BREAKOUT",
-						signalFeatures = CollectSignalFeatures(strategy, "BREAKOUT")
-					};
+						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						return new patternFunctionResponse
+						{
+							newSignal = FunctionResponses.EnterLong,
+							signalType = "BREAKOUT",
+							signalDefinition = "Close > MAX(High, 20)[1] && Volume > VolumeMA * 1.5",
+							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
+							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
+							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recQty = 1,
+							patternId = entrySignalId,
+							patternSubType = "BULLISH_BREAKOUT",
+							signalFeatures = features
+						};
+					}
 				}
 				
 				// Bearish breakdown: Close below 20-period low with volume
-				if (close < low20 && volume > volumeMA * 1.5)
+				if (close < low20 && volume > volumeMA * Randomize(1.5, 0.2))
 				{
-					return new patternFunctionResponse
+					// Generate entry signal ID and features
+					string entrySignalId = $"BREAKOUT_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					var features = ((MainStrategy)strategy).GenerateFeatures( strategy.Time[0], strategy.Instrument.FullName);
+					
+					// Queue features and get Risk Agent approval with micro contract values
+					var mainStrategy = (MainStrategy)strategy;
+					double maxStopLoss = mainStrategy.microContractStoploss * 1.0; // 100% of micro contract SL for breakouts
+					double maxTakeProfit = mainStrategy.microContractTakeProfit * 1.07; // 107% of micro contract TP for breakouts
+					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+						strategy.Instrument.FullName, "short", "BREAKOUT", 1, maxStopLoss, maxTakeProfit).Result;
+					
+					if (approved && features != null)
 					{
-						newSignal = FunctionResponses.EnterShort,
-						signalType = "BREAKOUT",
-						signalDefinition = "Close < MIN(Low, 20)[1] && Volume > VolumeMA * 1.5",
-						recStop = high20,
-						recTarget = close - (2 * atr),
-						signalScore = 0.80,
-						recQty = 1,
-						patternId = $"BREAKOUT_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BEARISH_BREAKDOWN",
-						signalFeatures = CollectSignalFeatures(strategy, "BREAKOUT")
-					};
+						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						return new patternFunctionResponse
+						{
+							newSignal = FunctionResponses.EnterShort,
+							signalType = "BREAKOUT",
+							signalDefinition = "Close < MIN(Low, 20)[1] && Volume > VolumeMA * 1.5",
+							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
+							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
+							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recQty = 1,
+							patternId = entrySignalId,
+							patternSubType = "BEARISH_BREAKDOWN",
+							signalFeatures = features
+						};
+					}
 				}
 			}
 			catch (Exception ex)
@@ -544,139 +290,158 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		
 		/// <summary>
-		/// VWAP Mean Reversion with Momentum Filter
-		/// Price mean reversion to VWAP with momentum confirmation
+		/// Momentum Breakout - Simple directional momentum detector
+		/// Detects strong directional moves with volume confirmation
 		/// </summary>
-		public static patternFunctionResponse CheckVWAPMeanReversion(Strategy strategy)
+		public static patternFunctionResponse CheckMomentumBreakout(Strategy strategy)
 		{
 			try
 			{
-				// This requires a VWAP indicator - check if available
-				// For now, use a simple moving average as proxy
-				var vwapProxy = strategy.SMA(20)[0];
+				if (strategy.CurrentBar < 10) return null;
+				
 				var close = strategy.Close[0];
-				var rsi = strategy.RSI(14, 3)[0];
 				var volume = strategy.Volume[0];
-				var volumeMA = strategy.SMA(strategy.Volume, 20)[0];
+				var volumeMA = strategy.SMA(strategy.Volume, 10)[0];
 				var atr = strategy.ATR(14)[0];
 				
-				double distanceFromVWAP = (close - vwapProxy) / vwapProxy * 100;
+				// Calculate momentum (price change over last 3 bars)
+				double momentum = close - strategy.Close[3];
 				
-				// Bullish mean reversion: Price below VWAP, RSI oversold, volume spike
-				if (distanceFromVWAP < -1.5 && rsi < 40 && volume > volumeMA * 1.3)
+				// Long: Strong upward momentum with volume (randomized thresholds)
+				if (momentum > atr * Randomize(0.5, 0.1) && 
+					volume > volumeMA * Randomize(1.5, 0.2))
 				{
-					return new patternFunctionResponse
-					{
-						newSignal = FunctionResponses.EnterLong,
-						signalType = "VWAP_REVERSION",
-						signalDefinition = "Distance from VWAP < -1.5% && RSI < 40 && Volume > VolumeMA * 1.3",
-						recStop = close - (2 * atr),
-						recTarget = vwapProxy,
-						signalScore = 0.65,
-						recQty = 1,
-						patternId = $"VWAP_REV_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BULLISH_REVERSION",
-						signalFeatures = CollectSignalFeatures(strategy, "VWAP_REVERSION")
-					};
+					return CreateSignal(strategy, "long", "MOMENTUM_BREAKOUT", "Upward momentum", 0.9, 0.93); // 90% SL, 93% TP for momentum
 				}
 				
-				// Bearish mean reversion: Price above VWAP, RSI overbought, volume spike
-				if (distanceFromVWAP > 1.5 && rsi > 60 && volume > volumeMA * 1.3)
+				// Short: Strong downward momentum with volume (randomized thresholds)
+				if (momentum < atr * Randomize(-0.5, 0.1) && 
+					volume > volumeMA * Randomize(1.5, 0.2))
 				{
-					return new patternFunctionResponse
-					{
-						newSignal = FunctionResponses.EnterShort,
-						signalType = "VWAP_REVERSION",
-						signalDefinition = "Distance from VWAP > 1.5% && RSI > 60 && Volume > VolumeMA * 1.3",
-						recStop = close + (2 * atr),
-						recTarget = vwapProxy,
-						signalScore = 0.65,
-						recQty = 1,
-						patternId = $"VWAP_REV_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BEARISH_REVERSION",
-						signalFeatures = CollectSignalFeatures(strategy, "VWAP_REVERSION")
-					};
+					return CreateSignal(strategy, "short", "MOMENTUM_BREAKOUT", "Downward momentum", 0.9, 0.93); // 90% SL, 93% TP for momentum
 				}
 			}
 			catch (Exception ex)
 			{
-				strategy.Print($"[TRADITIONAL] Error in VWAP Mean Reversion: {ex.Message}");
+				strategy.Print($"[TRADITIONAL] Error in Momentum Breakout: {ex.Message}");
 			}
 			
 			return null;
 		}
 		
 		/// <summary>
-		/// Bollinger Band Squeeze Strategy
-		/// Low volatility followed by directional breakout
+		/// Simple Support/Resistance Bounce - Level rejection detector
+		/// Detects bounces off key support/resistance levels
 		/// </summary>
-		public static patternFunctionResponse CheckBollingerSqueeze(Strategy strategy)
+		public static patternFunctionResponse CheckSRBounce(Strategy strategy)
 		{
 			try
 			{
-				// Ensure we have enough bars
 				if (strategy.CurrentBar < 20) return null;
 				
-				var bb = strategy.Bollinger(2, 20);
-				var bbUpper = bb.Upper[0];
-				var bbLower = bb.Lower[0];
-				var bbMiddle = bb.Middle[0];
 				var close = strategy.Close[0];
-				var volume = strategy.Volume[0];
-				var volumeMA = strategy.SMA(strategy.Volume, 20)[0];
+				var high20 = strategy.MAX(strategy.High, 20)[1];
+				var low20 = strategy.MIN(strategy.Low, 20)[1];
 				var atr = strategy.ATR(14)[0];
 				
-				// Calculate band width (volatility measure)
-				double bandWidth = (bbUpper - bbLower) / bbMiddle * 100;
-				double bandWidthMA = 0;
-				for (int i = 1; i <= 10; i++)
+				// Long: Bounce off 20-period low (randomized proximity)
+				if (strategy.Low[0] <= low20 + (atr * Randomize(0.1, 0.05)) && 
+					close > strategy.Low[0] + (atr * Randomize(0.2, 0.05)))
 				{
-					bandWidthMA += (bb.Upper[i] - bb.Lower[i]) / bb.Middle[i] * 100;
-				}
-				bandWidthMA /= 10;
-				
-				// Squeeze condition: Current band width is below average (low volatility)
-				bool isSqueeze = bandWidth < bandWidthMA * 0.8;
-				
-				// Bullish breakout from squeeze
-				if (isSqueeze && close > bbUpper && volume > volumeMA * 1.4)
-				{
-					return new patternFunctionResponse
-					{
-						newSignal = FunctionResponses.EnterLong,
-						signalType = "BB_SQUEEZE",
-						signalDefinition = "BandWidth < AvgBandWidth * 0.8 && Close > BBUpper && Volume > VolumeMA * 1.4",
-						recStop = bbMiddle,
-						recTarget = close + (3 * atr),
-						signalScore = 0.85,
-						recQty = 1,
-						patternId = $"BB_SQUEEZE_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BULLISH_SQUEEZE_BREAKOUT",
-						signalFeatures = CollectSignalFeatures(strategy, "BB_SQUEEZE")
-					};
+					return CreateSignal(strategy, "long", "SR_BOUNCE", "Support bounce", 0.6, 0.6); // 60% of micro contract values for tight SR bounces
 				}
 				
-				// Bearish breakdown from squeeze
-				if (isSqueeze && close < bbLower && volume > volumeMA * 1.4)
+				// Short: Rejection at 20-period high (randomized proximity)
+				if (strategy.High[0] >= high20 - (atr * Randomize(0.1, 0.05)) && 
+					close < strategy.High[0] - (atr * Randomize(0.2, 0.05)))
 				{
-					return new patternFunctionResponse
-					{
-						newSignal = FunctionResponses.EnterShort,
-						signalType = "BB_SQUEEZE",
-						signalDefinition = "BandWidth < AvgBandWidth * 0.8 && Close < BBLower && Volume > VolumeMA * 1.4",
-						recStop = bbMiddle,
-						recTarget = close - (3 * atr),
-						signalScore = 0.85,
-						recQty = 1,
-						patternId = $"BB_SQUEEZE_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BEARISH_SQUEEZE_BREAKDOWN",
-						signalFeatures = CollectSignalFeatures(strategy, "BB_SQUEEZE")
-					};
+					return CreateSignal(strategy, "short", "SR_BOUNCE", "Resistance rejection", 0.6, 0.6); // 60% of micro contract values for tight SR bounces
 				}
 			}
 			catch (Exception ex)
 			{
-				strategy.Print($"[TRADITIONAL] Error in Bollinger Squeeze: {ex.Message}");
+				strategy.Print($"[TRADITIONAL] Error in SR Bounce: {ex.Message}");
+			}
+			
+			return null;
+		}
+		
+		/// <summary>
+		/// Pullback from Recent Extremes - 3-bar decline from recent high/low
+		/// Detects pullbacks from recent highs (bear) and bounces from recent lows (bull)
+		/// </summary>
+		public static patternFunctionResponse CheckPullbackFromExtremes(Strategy strategy)
+		{
+			try
+			{
+				if (strategy.CurrentBar < 50) return null;
+				
+				// Find 50-bar high and low (excluding current bar)
+				var high50 = strategy.MAX(strategy.High, 50)[1];
+				var low50 = strategy.MIN(strategy.Low, 50)[1];
+				var atr = strategy.ATR(14)[0];
+				
+				// Find when the 50-bar high occurred (look back 10 bars for deadzone)
+				int highBarIndex = -1;
+				for (int i = 1; i <= Math.Min(50, strategy.CurrentBar); i++)
+				{
+					if (Math.Abs(strategy.High[i] - high50) < strategy.TickSize * 0.5)
+					{
+						highBarIndex = i;
+						break;
+					}
+				}
+				
+				// Find when the 50-bar low occurred (look back 10 bars for deadzone)
+				int lowBarIndex = -1;
+				for (int i = 1; i <= Math.Min(50, strategy.CurrentBar); i++)
+				{
+					if (Math.Abs(strategy.Low[i] - low50) < strategy.TickSize * 0.5)
+					{
+						lowBarIndex = i;
+						break;
+					}
+				}
+				
+				// Short signal: 3 declining bars from recent high (within deadzone)
+				if (highBarIndex > 0 && highBarIndex <= Randomize(10, 2)) // Deadzone: within ~10 bars of high
+				{
+					// Check for 3 consecutive declining closes
+					bool threeDeclines = strategy.Close[0] < strategy.Close[1] &&
+					                    strategy.Close[1] < strategy.Close[2] &&
+					                    strategy.Close[2] < strategy.Close[3];
+					
+					// Ensure we're still close to the recent high
+					var distanceFromHigh = high50 - strategy.Close[0];
+					var maxDistance = atr * Randomize(2.0, 0.3); // Allow some distance from high
+					
+					if (threeDeclines && distanceFromHigh > 0 && distanceFromHigh <= maxDistance)
+					{
+						return CreateSignal(strategy, "short", "PULLBACK_HIGH", $"3-bar decline from recent high ({highBarIndex} bars ago)", 0.5, 0.53); // Very tight 50% SL, 53% TP for pullbacks
+					}
+				}
+				
+				// Long signal: 3 ascending bars from recent low (within deadzone)
+				if (lowBarIndex > 0 && lowBarIndex <= Randomize(10, 2)) // Deadzone: within ~10 bars of low
+				{
+					// Check for 3 consecutive ascending closes
+					bool threeAscends = strategy.Close[0] > strategy.Close[1] &&
+					                   strategy.Close[1] > strategy.Close[2] &&
+					                   strategy.Close[2] > strategy.Close[3];
+					
+					// Ensure we're still close to the recent low
+					var distanceFromLow = strategy.Close[0] - low50;
+					var maxDistance = atr * Randomize(2.0, 0.3); // Allow some distance from low
+					
+					if (threeAscends && distanceFromLow > 0 && distanceFromLow <= maxDistance)
+					{
+						return CreateSignal(strategy, "long", "PULLBACK_LOW", $"3-bar rise from recent low ({lowBarIndex} bars ago)", 0.5, 0.53); // Very tight 50% SL, 53% TP for pullbacks
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				strategy.Print($"[TRADITIONAL] Error in Pullback from Extremes: {ex.Message}");
 			}
 			
 			return null;
@@ -725,66 +490,70 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				bool isFalling = strategy.CurrentBar >= 2 && ema3[0] < ema3[2];
 				
 				// Long signal: CrossAbove(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsRising(EMA3)
-				if (crossedAbove && (ema3[0] - vwap[0]) > (tickSize * 3) && isRising)
+				if (crossedAbove && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isRising)
 				{
-					return new patternFunctionResponse
+					// Generate entry signal ID and features
+					string entrySignalId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					
+					// Queue features and get Risk Agent approval with micro contract values
+					var mainStrategy = (MainStrategy)strategy;
+					double maxStopLoss = mainStrategy.microContractStoploss * 0.8; // 80% of micro contract SL
+					double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.87; // 87% of micro contract TP
+					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+						strategy.Instrument.FullName, "long", "CheckEMAVWAPCross", 1, maxStopLoss, maxTakeProfit).Result;
+					
+					if (approved && features != null)
 					{
-						newSignal = FunctionResponses.EnterLong,
-						signalType = "EMA_VWAP_CROSS",
-						signalDefinition = "CrossAbove(EMA3, VWAP1, 10) && EMA3[0] - VWAP1[0] > TickSize * 3 && IsRising(EMA3)",
-						recStop = close - (2 * atr), // Conservative stop
-						recTarget = close + (3 * atr), // 1.5:1 R/R
-						signalScore = 0.85,
-						recQty = 1,
-						patternId = $"EMA_VWAP_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BULLISH_CROSS",
-						signalFeatures = new Dictionary<string, double>
+						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						return new patternFunctionResponse
 						{
-							["ema3_value"] = ema3[0],
-							["vwap_value"] = vwap[0],
-							["ema_vwap_distance"] = ema3[0] - vwap[0],
-							["ema_vwap_distance_ticks"] = (ema3[0] - vwap[0]) / tickSize,
-							["close_price"] = close,
-							["volume"] = strategy.Volume[0],
-							["hour_of_day"] = strategy.Time[0].Hour,
-							["signal_score"] = 0.85,
-							["is_ema_rising"] = isRising ? 1.0 : 0.0,
-							["atr_14"] = atr,
-							["rsi_14"] = strategy.RSI(14, 3)[0]
-						}
-					};
+							newSignal = FunctionResponses.EnterLong,
+							signalType = "CheckEMAVWAPCross",
+							signalDefinition = "crossedAbove && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isRising",
+							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
+							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
+							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recQty = 1,
+							patternId = entrySignalId,
+							patternSubType = "BULLISH_CheckEMAVWAPCross",
+							signalFeatures = features
+						};
+					}
 				}
 				
 				// Short signal: CrossBelow(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsFalling(EMA3)
 				// Note: The original condition seems wrong for short (should be VWAP - EMA3 > threshold), but keeping as-is for compatibility
-				if (crossedBelow && (ema3[0] - vwap[0]) > (tickSize * 3) && isFalling)
+				if (crossedBelow && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isFalling)
 				{
-					return new patternFunctionResponse
+					// Generate entry signal ID and features
+					string entrySignalId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					
+					// Queue features and get Risk Agent approval with micro contract values
+					var mainStrategy = (MainStrategy)strategy;
+					double maxStopLoss = mainStrategy.microContractStoploss * 0.8; // 80% of micro contract SL
+					double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.87; // 87% of micro contract TP
+					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+						strategy.Instrument.FullName, "short", "CheckEMAVWAPCross", 1, maxStopLoss, maxTakeProfit).Result;
+					
+					if (approved && features != null)
 					{
-						newSignal = FunctionResponses.EnterShort,
-						signalType = "EMA_VWAP_CROSS", 
-						signalDefinition = "CrossBelow(EMA3, VWAP1, 10) && EMA3[0] - VWAP1[0] > TickSize * 3 && IsFalling(EMA3)",
-						recStop = close + (2 * atr), // Conservative stop
-						recTarget = close - (3 * atr), // 1.5:1 R/R
-						signalScore = 0.85,
-						recQty = 1,
-						patternId = $"EMA_VWAP_{strategy.Time[0]:yyyyMMdd_HHmmss}",
-						patternSubType = "BEARISH_CROSS",
-						signalFeatures = new Dictionary<string, double>
+						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						return new patternFunctionResponse
 						{
-							["ema3_value"] = ema3[0],
-							["vwap_value"] = vwap[0],
-							["ema_vwap_distance"] = ema3[0] - vwap[0],
-							["ema_vwap_distance_ticks"] = (ema3[0] - vwap[0]) / tickSize,
-							["close_price"] = close,
-							["volume"] = strategy.Volume[0],
-							["hour_of_day"] = strategy.Time[0].Hour,
-							["signal_score"] = 0.85,
-							["is_ema_falling"] = isFalling ? 1.0 : 0.0,
-							["atr_14"] = atr,
-							["rsi_14"] = strategy.RSI(14, 3)[0]
-						}
-					};
+							newSignal = FunctionResponses.EnterShort,
+							signalType = "CheckEMAVWAPCross",
+							signalDefinition = "crossedBelow && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isFalling",
+							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
+							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
+							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recQty = 1,
+							patternId = entrySignalId,
+							patternSubType = "BEARISH_CheckEMAVWAPCross",
+							signalFeatures = features
+						};
+					}
 				}
 			}
 			catch (Exception ex)
@@ -797,201 +566,46 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		
 		/// <summary>
-		/// Collect comprehensive signal features for ML training
+		/// Helper method to create standardized signals - reduces code duplication
 		/// </summary>
-		private static Dictionary<string, double> CollectSignalFeatures(Strategy strategy, string signalType)
+		private static patternFunctionResponse CreateSignal(Strategy strategy, string direction, string signalType, string reason, double maxStopLossMultiplier = 1.0, double maxTakeProfitMultiplier = 1.0)
 		{
-			var features = new Dictionary<string, double>();
-			
 			try
 			{
-				// Basic OHLCV
-				features["close"] = strategy.Close[0];
-				features["high"] = strategy.High[0];
-				features["low"] = strategy.Low[0];
-				features["open"] = strategy.Open[0];
-				features["volume"] = strategy.Volume[0];
+				string entrySignalId = $"{signalType}_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+				var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
 				
-				// Technical indicators
-				if (strategy.EMA(9).Count > 0) features["ema_9"] = strategy.EMA(9)[0];
-				if (strategy.EMA(21).Count > 0) features["ema_21"] = strategy.EMA(21)[0];
-				if (strategy.EMA(50).Count > 0) features["ema_50"] = strategy.EMA(50)[0];
-				if (strategy.RSI(14, 3).Count > 0) features["rsi_14"] = strategy.RSI(14, 3)[0];
-				if (strategy.ATR(14).Count > 0) features["atr_14"] = strategy.ATR(14)[0];
+				// Get micro contract values from MainStrategy and apply multipliers
+				var mainStrategy = (MainStrategy)strategy;
+				double maxStopLoss = mainStrategy.microContractStoploss * maxStopLossMultiplier;
+				double maxTakeProfit = mainStrategy.microContractTakeProfit * maxTakeProfitMultiplier;
 				
-				// Volume indicators
-				if (strategy.SMA(strategy.Volume, 20).Count > 0) 
-					features["volume_sma_20"] = strategy.SMA(strategy.Volume, 20)[0];
+				bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+					strategy.Instrument.FullName, direction, signalType, 1, maxStopLoss, maxTakeProfit).Result;
 				
-				// Bollinger Bands
-				var bb = strategy.Bollinger(2, 20);
-				if (bb.Count > 0)
+				if (approved && features != null)
 				{
-					features["bb_upper"] = bb.Upper[0];
-					features["bb_middle"] = bb.Middle[0];
-					features["bb_lower"] = bb.Lower[0];
-					features["bb_position"] = (strategy.Close[0] - bb.Lower[0]) / (bb.Upper[0] - bb.Lower[0]);
-				}
-				
-				// Price momentum
-				if (strategy.CurrentBar >= 5)
-				{
-					features["price_change_5"] = strategy.Close[0] - strategy.Close[5];
-					features["price_change_pct_5"] = (strategy.Close[0] - strategy.Close[5]) / strategy.Close[5];
-				}
-				
-				// Market timing
-				features["hour_of_day"] = strategy.Time[0].Hour;
-				features["day_of_week"] = (double)strategy.Time[0].DayOfWeek;
-				features["minute_of_hour"] = strategy.Time[0].Minute;
-				
-				// Signal-specific features
-				features["signal_type_numeric"] = GetSignalTypeNumeric(signalType);
-				
-				// Position and account context
-				features["position_quantity"] = strategy.Position.Quantity;
-				
-				// Volatility measures
-				if (strategy.CurrentBar >= 20)
-				{
-					double sum = 0;
-					for (int i = 1; i <= 20; i++)
+					var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+					return new patternFunctionResponse
 					{
-						sum += Math.Abs(strategy.Close[i] - strategy.Close[i + 1]);
-					}
-					features["avg_true_range_20"] = sum / 20;
-				}
-				
-				// Order Flow Features
-				var close = strategy.Close[0];
-				var open = strategy.Open[0];
-				var high = strategy.High[0];
-				var low = strategy.Low[0];
-				var volume = strategy.Volume[0];
-				
-				// Current bar volume delta
-				double volumeDelta = 0;
-				if (close > open && high > low)
-				{
-					double bullishRatio = (close - open) / (high - low);
-					double buyVolume = volume * (0.5 + bullishRatio * 0.5);
-					volumeDelta = buyVolume - (volume - buyVolume);
-				}
-				else if (close < open && high > low)
-				{
-					double bearishRatio = (open - close) / (high - low);
-					double sellVolume = volume * (0.5 + bearishRatio * 0.5);
-					volumeDelta = (volume - sellVolume) - sellVolume;
-				}
-				features["volume_delta"] = volumeDelta;
-				features["volume_delta_pct"] = volume > 0 ? volumeDelta / volume : 0;
-				
-				// Cumulative volume delta (5 bars)
-				double cumulativeDelta = volumeDelta;
-				for (int i = 1; i <= 4 && strategy.CurrentBar >= i; i++)
-				{
-					var pastClose = strategy.Close[i];
-					var pastOpen = strategy.Open[i];
-					var pastHigh = strategy.High[i];
-					var pastLow = strategy.Low[i];
-					var pastVolume = strategy.Volume[i];
-					
-					if (pastClose > pastOpen && pastHigh > pastLow)
-					{
-						double pastBullishRatio = (pastClose - pastOpen) / (pastHigh - pastLow);
-						double pastBuyVol = pastVolume * (0.5 + pastBullishRatio * 0.5);
-						cumulativeDelta += (pastBuyVol - (pastVolume - pastBuyVol));
-					}
-					else if (pastClose < pastOpen && pastHigh > pastLow)
-					{
-						double pastBearishRatio = (pastOpen - pastClose) / (pastHigh - pastLow);
-						double pastSellVol = pastVolume * (0.5 + pastBearishRatio * 0.5);
-						cumulativeDelta += ((pastVolume - pastSellVol) - pastSellVol);
-					}
-				}
-				features["cumulative_delta_5"] = cumulativeDelta;
-				
-				// Buying/Selling pressure indicators
-				features["buying_pressure"] = close > open ? (close - open) / (high - low) : 0;
-				features["selling_pressure"] = close < open ? (open - close) / (high - low) : 0;
-				
-				// Volume profile indicators
-				features["volume_at_close"] = volume * Math.Abs(close - open) / (high - low);
-				features["volume_above_vwap"] = close > strategy.SMA(20)[0] ? volume : 0;
-				features["volume_below_vwap"] = close < strategy.SMA(20)[0] ? volume : 0;
-				
-				// Tick analysis (approximation)
-				features["uptick_volume"] = close > strategy.Close[1] ? volume : 0;
-				features["downtick_volume"] = close < strategy.Close[1] ? volume : 0;
-				
-				// Order flow momentum
-				if (strategy.CurrentBar >= 3)
-				{
-					double volumeRatio3 = strategy.Volume[0] / ((strategy.Volume[1] + strategy.Volume[2] + strategy.Volume[3]) / 3);
-					features["volume_spike_3bar"] = volumeRatio3;
-				}
-				
-				// Gold-specific volatility features
-				features["price_velocity"] = strategy.CurrentBar >= 3 ? 
-					Math.Abs(strategy.Close[0] - strategy.Close[3]) / 3 : 0;
-				features["range_expansion"] = (high - low) / strategy.ATR(14)[0];
-				features["gap_from_previous"] = Math.Abs(open - strategy.Close[1]);
-				
-				// Market structure
-				features["higher_high"] = high > strategy.High[1] ? 1.0 : 0.0;
-				features["lower_low"] = low < strategy.Low[1] ? 1.0 : 0.0;
-				features["inside_bar"] = (high < strategy.High[1] && low > strategy.Low[1]) ? 1.0 : 0.0;
-				
-				// Wick analysis features - critical for gold
-				double totalRange = high - low;
-				if (totalRange > 0)
-				{
-					double body = Math.Abs(close - open);
-					double upperWick = high - Math.Max(open, close);
-					double lowerWick = Math.Min(open, close) - low;
-					
-					features["body_ratio"] = body / totalRange;
-					features["upper_wick_ratio"] = upperWick / totalRange;
-					features["lower_wick_ratio"] = lowerWick / totalRange;
-					features["wick_to_body_ratio"] = body > 0 ? (upperWick + lowerWick) / body : 10;
-					features["wick_imbalance"] = (upperWick - lowerWick) / totalRange; // Positive = upper wick larger
-					features["total_wick_ratio"] = (upperWick + lowerWick) / totalRange;
-					
-					// Candle patterns
-					features["is_doji"] = body / totalRange < 0.1 ? 1.0 : 0.0;
-					features["is_hammer"] = (lowerWick > body * 2 && upperWick < body * 0.3) ? 1.0 : 0.0;
-					features["is_shooting_star"] = (upperWick > body * 2 && lowerWick < body * 0.3) ? 1.0 : 0.0;
-					features["is_marubozu"] = (upperWick < totalRange * 0.05 && lowerWick < totalRange * 0.05) ? 1.0 : 0.0;
-				}
-				
-				// Multi-bar wick patterns
-				if (strategy.CurrentBar >= 3)
-				{
-					double wickTrend = 0;
-					for (int i = 0; i < 3; i++)
-					{
-						var pastHigh = strategy.High[i];
-						var pastLow = strategy.Low[i];
-						var pastOpen = strategy.Open[i];
-						var pastClose = strategy.Close[i];
-						var pastRange = pastHigh - pastLow;
-						
-						if (pastRange > 0)
-						{
-							double pastUpperWick = pastHigh - Math.Max(pastOpen, pastClose);
-							double pastLowerWick = Math.Min(pastOpen, pastClose) - pastLow;
-							wickTrend += (pastUpperWick - pastLowerWick) / pastRange;
-						}
-					}
-					features["wick_trend_3bar"] = wickTrend / 3;
+						newSignal = direction == "long" ? FunctionResponses.EnterLong : FunctionResponses.EnterShort,
+						signalType = signalType,
+						signalDefinition = reason,
+						recStop = pending?.StopLoss ?? Math.Min(30, maxStopLoss),
+						recTarget = pending?.TakeProfit ?? Math.Min(90, maxTakeProfit),
+						recPullback = pending?.RecPullback ?? 10, // Use Risk Agent soft-floor value
+						signalScore = pending?.Confidence ?? 0.65,
+						recQty = 1,
+						patternId = entrySignalId,
+						signalFeatures = features
+					};
 				}
 			}
 			catch (Exception ex)
 			{
-				strategy.Print($"[TRADITIONAL] Error collecting features: {ex.Message}");
+				strategy.Print($"[TRADITIONAL] Error creating signal: {ex.Message}");
 			}
-			
-			return features;
+			return null;
 		}
 		
 		/// <summary>
@@ -1012,7 +626,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		
 		/// <summary>
-		/// Main strategy dispatcher - checks all traditional strategies
+		/// Main strategy dispatcher - checks all traditional strategies and picks highest confidence
 		/// This is the method called from BuildNewSignal()
 		/// </summary>
 		public static patternFunctionResponse CheckAllTraditionalStrategies(Strategy strategy, TraditionalStrategyType strategyFilter = TraditionalStrategyType.ALL)
@@ -1020,55 +634,67 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			try
 			{
 				// Single strategy testing for pure training data
-				switch (strategyFilter)
+				if (strategyFilter != TraditionalStrategyType.ALL)
 				{
-					case TraditionalStrategyType.ORDER_FLOW_IMBALANCE:
-						return CheckOrderFlowImbalance(strategy);
-					
-					case TraditionalStrategyType.BOLLINGER_SQUEEZE:
-						return CheckBollingerSqueeze(strategy);
-					
-					case TraditionalStrategyType.EMA_VWAP_CROSS:
-						return CheckEMAVWAPCross(strategy);
-					
-					case TraditionalStrategyType.BREAKOUT:
-						return CheckBreakoutStrategy(strategy);
-					
-					case TraditionalStrategyType.EMA_CROSSOVER:
-						return CheckEMACrossover(strategy);
-					
-					case TraditionalStrategyType.RSI_DIVERGENCE:
-						return CheckRSIDivergence(strategy);
-					
-					case TraditionalStrategyType.VWAP_MEAN_REVERSION:
-						return CheckVWAPMeanReversion(strategy);
-					
-					case TraditionalStrategyType.ALL:
-					default:
-						// Check each strategy in order of priority/strength
-						// Order Flow Imbalance has highest priority for 1-minute gold
-						var signal = CheckOrderFlowImbalance(strategy);
-						if (signal != null) return signal;
-						
-						signal = CheckBollingerSqueeze(strategy);
-						if (signal != null) return signal;
-						
-						signal = CheckEMAVWAPCross(strategy);
-						if (signal != null) return signal;
-						
-						signal = CheckBreakoutStrategy(strategy);
-						if (signal != null) return signal;
-						
-						signal = CheckEMACrossover(strategy);
-						if (signal != null) return signal;
-						
-						signal = CheckRSIDivergence(strategy);
-						if (signal != null) return signal;
-						
-						signal = CheckVWAPMeanReversion(strategy);
-						if (signal != null) return signal;
-						break;
+					switch (strategyFilter)
+					{
+						case TraditionalStrategyType.ORDER_FLOW_IMBALANCE:
+							return CheckWickImbalance(strategy);
+						case TraditionalStrategyType.BOLLINGER_SQUEEZE:
+							return CheckSRBounce(strategy);
+						case TraditionalStrategyType.EMA_VWAP_CROSS:
+							return CheckEMAVWAPCross(strategy);
+						case TraditionalStrategyType.BREAKOUT:
+							return CheckBreakoutStrategy(strategy);
+						case TraditionalStrategyType.EMA_CROSSOVER:
+							return CheckEMACrossover(strategy);
+						case TraditionalStrategyType.RSI_DIVERGENCE:
+							return CheckFVGFill(strategy);
+						case TraditionalStrategyType.VWAP_MEAN_REVERSION:
+							return CheckMomentumBreakout(strategy);
+						default:
+							return null;
+					}
 				}
+				
+				// Confidence-based strategy selection - evaluate all strategies and pick highest confidence
+				var candidateSignals = new List<patternFunctionResponse>();
+				
+				// Check all strategies for potential signals
+				var wickSignal = CheckWickImbalance(strategy);
+				if (wickSignal != null) candidateSignals.Add(wickSignal);
+				
+				var srSignal = CheckSRBounce(strategy);
+				if (srSignal != null) candidateSignals.Add(srSignal);
+				
+				var pullbackSignal = CheckPullbackFromExtremes(strategy);
+				if (pullbackSignal != null) candidateSignals.Add(pullbackSignal);
+				
+				var fvgSignal = CheckFVGFill(strategy);
+				if (fvgSignal != null) candidateSignals.Add(fvgSignal);
+				
+				var momentumSignal = CheckMomentumBreakout(strategy);
+				if (momentumSignal != null) candidateSignals.Add(momentumSignal);
+				
+				var emaVwapSignal = CheckEMAVWAPCross(strategy);
+				if (emaVwapSignal != null) candidateSignals.Add(emaVwapSignal);
+				
+				var breakoutSignal = CheckBreakoutStrategy(strategy);
+				if (breakoutSignal != null) candidateSignals.Add(breakoutSignal);
+				
+				var emaCrossSignal = CheckEMACrossover(strategy);
+				if (emaCrossSignal != null) candidateSignals.Add(emaCrossSignal);
+				
+				// If no signals found, return null
+				if (candidateSignals.Count == 0)
+					return null;
+				
+				// Pick the signal with highest confidence
+				var bestSignal = candidateSignals.OrderByDescending(s => s.signalScore).First();
+				
+				strategy.Print($"[TRADITIONAL] Selected {bestSignal.signalType} with confidence {bestSignal.signalScore:F3} from {candidateSignals.Count} candidates");
+				
+				return bestSignal;
 			}
 			catch (Exception ex)
 			{

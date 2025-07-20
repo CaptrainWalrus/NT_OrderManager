@@ -118,6 +118,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 					outcome.EntryPrice,
 					outcome.ExitPrice,
 					outcome.RealizedPnL,
+					outcome.MaxProfit,
+					outcome.MaxLoss,
 					outcome.WinLoss,
 					outcome.SignalScore,
 					outcome.Instrument,

@@ -37,27 +37,27 @@ using System.Collections.Concurrent;
 //This namespace holds Strategies in this folder and is required. Do not change it. 
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
-	
-	[Gui.CategoryOrder("Matching Engine Config", 1)]
+	[Gui.CategoryOrder("Risk Agent Config", 1)]
 	[Gui.CategoryOrder("Class Parameters", 2)]
 	[Gui.CategoryOrder("Entry Parameters", 3)]
-	[Gui.CategoryOrder("Order Flow Pattern", 4)]
-	[Gui.CategoryOrder("SignalPool", 5)]
-	[Gui.CategoryOrder("Entry Behaviors", 7)]
-	[Gui.CategoryOrder("EMA", 8)]
-	[Gui.CategoryOrder("Signal Parameters", 9)]
-	[Gui.CategoryOrder("Critical Parameters", 10)]
-	[Gui.CategoryOrder("Strategy Level Params", 11)]
-	[Gui.CategoryOrder("ScoreRankingWeights", 12)]
-	[Gui.CategoryOrder("ML Config", 13)]
-	[Gui.CategoryOrder("Debug", 14)]
-	[Gui.CategoryOrder("Broker Settings", 15)]
-	[Gui.CategoryOrder("Entry Types", 16)]
+	[Gui.CategoryOrder("Entry Behaviors", 4)]
+	[Gui.CategoryOrder("EMA", 5)]
+	[Gui.CategoryOrder("Signal Parameters", 6)]
+	[Gui.CategoryOrder("Strategy Level Params", 7)]
+	[Gui.CategoryOrder("Debug", 8)]
+	[Gui.CategoryOrder("Broker Settings", 9)]
+	[Gui.CategoryOrder("Entry Types", 10)]
 	public partial class MainStrategy : Strategy
 	{
 		// Instance tracking for debugging Strategy Analyzer issues
 		private static readonly HashSet<int> ActiveInstances = new HashSet<int>();
 		private static readonly object InstanceLock = new object();
+		
+		// Clear stale instances on static initialization
+		static MainStrategy()
+		{
+			ActiveInstances.Clear();
+		}
 		
 		[XmlIgnore]
 		public CurvesV2Service curvesService;
@@ -236,7 +236,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		protected int savedBar;
 		protected int lastActionBar;
 		protected int barSpacing;
- 		protected static Random random = new Random();
+ 		public Random random = new Random();
 		protected int MarginRiskBar;
 		protected double profitRate;
 		protected int smallestBarsInProgress = -1;
@@ -533,16 +533,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				microContractStoploss = 50;
 				microContractTakeProfit  = 150;
 				
-				OrderBookVolumeThreshold = 10000;
-				useAsyncProcessing = false; // DISABLED - Causes instance leaks in Strategy Analyzer
 				
-				ZScoreThreshold = 0.5;                                    // Allow patterns 0.5 std dev better than average
-				ReliabilityPenaltyEnabled = true;                         // Enable reliability penalties
-				MaxThresholdPenalty = 0.1;                               // Moderate penalty for unreliable patterns
-				AtmosphericThreshold = 0.8;                              // Pre-filtering threshold
-				DefaultCosineSimilarityThreshold = 0.70;                 // Relaxed default threshold
-				EmaRibbonCosineSimilarityThreshold = 0.75;               // Slightly higher for EMA patterns
-				SensitiveEmaRibbonCosineSimilarityThreshold = 0.78;       // Highest for sensitive patterns
+				
+			
 
 			}
 			else if (State == State.Configure)
@@ -571,38 +564,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				
 	           /// for stops
-	           AddDataSeries(Instrument.FullName,BarsPeriodType.Second, 5);
+	           AddDataSeries(Instrument.FullName,BarsPeriodType.Second, 30);
 	          // AddDataSeries(Instrument.FullName,BarsPeriodType.Minute, 30);
 	              
 	         
 			}
 			else if (State == State.DataLoaded)
 			{			
-				// Skip heavy initialization for Strategy Analyzer test instances
-				if (IsInStrategyAnalyzer && Account == null)
-				{
-					Print($"[SKIP] Test instance {this.GetHashCode()} - skipping heavy initialization");
-					return;
-				}
+				// Note: Strategy Analyzer instances have Account == null
+				// We still need to initialize critical components for backtesting
 				
 				// Initialize training data client
 				trainingDataClient = new TrainingDataClient();
 				
-				if (CollectTrainingData)
-				{
-					// Start training session with unique ID
-					string sessionId = $"BT_{DateTime.Now:yyyyMMdd_HHmmss}_{Instrument.FullName}_{this.GetHashCode()}";
-					var metadata = new
-					{
-						instrument = Instrument.FullName,
-						strategy = "MainStrategy",
-						instance = this.GetHashCode(),
-						startTime = DateTime.Now
-					};
-					
-					_ = Task.Run(async () => await trainingDataClient.StartSession(sessionId, metadata));
-					Print($"[TRAINING] Training data client initialized with session: {sessionId}");
-				}
+			
 				
 			    TradingHours tradingHours = Bars.TradingHours; // Get trading hours from the instrument
 	 
@@ -625,14 +600,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				VWAP1 = custom_VWAP(vwap1);
 				SMA200 = SMA(BarsArray[0],100);
 				
-				EMA3 = EMA(BarsArray[0],ema3_val);
-				//EMA4 = EMA(BarsArray[2],50);
-				EMA8 = EMA(BarsArray[0],8);
-				EMA13 = EMA(BarsArray[0],13);
-				EMA21 = EMA(BarsArray[0],21);
-				EMA34 = EMA(BarsArray[0],34);
-				EMA55 = EMA(BarsArray[0],55);
-				EMA89 = EMA(BarsArray[0],89);
+				EMA3 = EMA(BarsArray[0],25);
+				EMA4 = EMA(BarsArray[0],50);
+		
 				
 				
 				
@@ -689,12 +659,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	 			//stores the sessions once bars are ready, but before OnBarUpdate is called
 	    		sessionIterator = new SessionIterator(Bars);
 				/// threading
-				if(useAsyncProcessing)
-				{
-					StartOrderObjectStatsThread();
-				}
-				
-				
+			
 				
 				
 				}
@@ -715,7 +680,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					 if (curvesService != null)
 					 {
 						curvesService.SetStrategyState(false); // false = real-time mode
-						curvesService.SetTrainingMode(CollectTrainingData); // Set training mode based on CollectTrainingData parameter
 						Print("CurvesService set to Real-time mode (async behavior)");
 					 }
 					
@@ -730,13 +694,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					 if (curvesService != null)
 					 {
 						curvesService.SetStrategyState(true); // true = historical mode
-						curvesService.SetTrainingMode(CollectTrainingData); // Set training mode based on CollectTrainingData parameter
 						Print("CurvesService set to Historical mode (sync behavior)");
 					 }
+					 
 
 				
 				}
-				
+
 				else if (State == State.Terminated)
 				{
 				   // Check if termination logic has already run for this instance
@@ -764,11 +728,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						Print($"State.Terminated: Executing termination logic for instance {this.GetHashCode()}.");
 						Print("State == State.Terminated");
 					}
-					if(useAsyncProcessing)
-					{
-						StopOrderObjectStatsThread();
-					}
-					
+				
 					// Break circular references to prevent memory leaks
 					try {
 						if (myStrategyControlPane != null)
@@ -803,12 +763,25 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					}
 					CurvesV2Service.ResetStaticData();
 					
-					// 2. Properly dispose of the CurvesV2Service instance
+					// 2. Send performance summary before disposing
 					if (curvesService != null)
 					{
 						try 
 						{
-							Print("1. Disposing CurvesV2Service instance (static reset handled within Dispose)");
+							Print("1. Sending performance summary before disposal...");
+							Task.Run(async () => 
+							{
+								try
+								{
+									await curvesService.SendPerformanceSummary(this);
+								}
+								catch (Exception ex)
+								{
+									Print($"[PERFORMANCE-SUMMARY] Error in termination: {ex.Message}");
+								}
+							}).Wait(TimeSpan.FromSeconds(5)); // Wait up to 5 seconds for completion
+							
+							Print("2. Disposing CurvesV2Service instance (static reset handled within Dispose)");
 							curvesService.Dispose();
 						}
 						catch (Exception ex)
@@ -823,6 +796,36 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					else if (!isTestInstance)
 					{
 						Print("1. No active CurvesV2Service instance to dispose for instance {this.GetHashCode()}");
+					}
+					
+					// 3. End training data session to ensure final batch write
+					if (trainingDataClient != null)
+					{
+						try 
+						{
+							if (!isTestInstance)
+							{
+								Print("2. Ending training data session for final batch write");
+							}
+							_ = Task.Run(async () => {
+								try {
+									await trainingDataClient.EndSession();
+									if (!isTestInstance) {
+										Print("2. Training data session ended successfully");
+									}
+								} catch (Exception ex) {
+									Print($"Error ending training data session: {ex.Message}");
+								}
+							});
+						}
+						catch (Exception ex)
+						{
+							Print($"Error initiating training data session end: {ex.Message}");
+						}
+					}
+					else if (!isTestInstance)
+					{
+						Print("2. No training data client to end session for");
 					}
 				}
 			}
@@ -868,14 +871,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		DebugFreezePrint("Checking BarsRequiredToTrade");
 		// TEMPORARY: Reduced bars requirement for faster backtesting
 		// Allow Series0 to be 2 bars short to handle synchronization issues
-		if (CurrentBars[0] < BarsRequiredToTrade)
+		// Fix for Strategy Analyzer getting stuck at 95%
+		if (CurrentBars[0] < BarsRequiredToTrade - 2) // Allow 2 bar tolerance
 		{
 		    DebugPrint(debugSection.OnBarUpdate, "start 3");
 			
 			// Show progress for both data series
 			double series0Progress = Math.Round((((double)CurrentBars[0]/BarsRequiredToTrade)*100),1);	double series1Progress = Math.Round((((double)CurrentBars[1]/(BarsRequiredToTrade*12))*100),1);
-			Print($"Loading: Series0={series0Progress}% ({CurrentBars[0]}/{BarsRequiredToTrade}");
+			Print($"Loading: Series0={series0Progress}% ({CurrentBars[0]}/{BarsRequiredToTrade})");
 		    return;
+		}
+		else if (CurrentBars[0] < BarsRequiredToTrade)
+		{
+			// We're within 2 bars of requirement - proceed anyway to avoid getting stuck
+			Print($"[LOADING] Near completion: {CurrentBars[0]}/{BarsRequiredToTrade} bars. Proceeding to avoid Strategy Analyzer hang.");
 		}
 		 msg = "OnBarUpdate start 2.1";
 		if(UNRPNL != null )
@@ -1077,29 +1086,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		if(MasterSimulatedStops.Count() > 0)
 		{
 			DebugFreezePrint("MasterSimulatedStops processing START");
-			// Fire-and-forget individual divergence updates for active positions
-			if(BarsInProgress == 0)
-			{
-				lock (eventLock)
-				{
-					foreach (var simStop in MasterSimulatedStops.Take(4)) // Max 4 positions
-					{
-						if (!string.IsNullOrEmpty(simStop.EntryOrderUUID) && DivergenceSignalThresholds)
-						{
-							// Fire-and-forget individual divergence check
-							Task.Run(async () => {
-								try {
-									await curvesService.CheckDivergenceAsync(simStop.EntryOrderUUID, Close[0]);
-								}
-								catch (Exception ex) {
-									// Silently handle errors - don't let them affect trading
-								}
-							});
-						}
-					}
-				}
-			}
-			DebugFreezePrint("About to enter second eventLock for UpdateOrderStats");
+			
 			/// RE ENTRY ONLY 1x max per bar
 			if(IsFirstTickOfBar)
 			{
@@ -1112,7 +1099,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				        {
 				            msg = "MasterSimulatedStops 1";
 				      
-				            OrderActionResult exitAction = UpdateOrderStats(simStop);
+				            OrderActionResult exitAction = UpdateOrderStats(simStop,BarsInProgress,CurrentBars[0]);
 				            
 				            // Only add actions that need to be executed
 				            if (exitAction != null && exitAction.accountEntryQuantity > 0)
@@ -1144,43 +1131,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				            var action = OrderActionResultList[i];
 				            
 				            // Use approval-gated entry during real-time, direct entry in historical
-				            if (isRealTime && EnablePushcutApproval)
-				            {
-				                Task.Run(async () => {
-				                    bool approved = await EntryLimitFunctionLiteWithApproval(
-				                        action.accountEntryQuantity, 
-				                        action.OA, 
-				                        action.signalPackageParam, 
-				                        "SCALE IN", 
-				                        action.thisBar, 
-				                        action.orderType, 
-				                        action.builtSignal
-				                    );
-				                    if (approved)
-				                    {
-				                        BackBrush = Brushes.DarkBlue;
-				                        Print($"[SCALE-IN] Approved and executed entry for action {i+1}/{OrderActionResultList.Count()}");
-				                    }
-				                    else
-				                    {
-				                        Print($"[PUSHCUT] Scale-in trade rejected for action {i+1}");
-				                    }
-				                });
-				            }
-				            else
-				            {
+				            
+				           
 				                EntryLimitFunctionLite(
 				                    action.accountEntryQuantity, 
 				                    action.OA, 
 				                    action.signalPackageParam, 
 				                    "SCALE IN", 
-				                    action.thisBar, 
+				                    CurrentBars[0], 
 				                    action.orderType, 
 				                    action.builtSignal
 				                );
 				                BackBrush = Brushes.DarkBlue;
-				                Print($"[SCALE-IN] Executed entry for action {i+1}/{OrderActionResultList.Count()}");
-				            }
+				               
+				            
 							break;
 				        }
 						OrderActionResultList.Clear();
@@ -1393,42 +1357,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			//Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
 			
 			// NEW: RF Model Filtering
-			if (EnableRFFiltering && builtSignal != null && builtSignal.signalType != null)
-			{
-				try
-				{
-					var rfFilterResult = ApplyRFModelFilter(builtSignal);
-					
-					if (rfFilterResult.shouldTake == false)
-					{
-						// Log filtered signal for analysis
-						if (CollectTrainingData)
-						{
-							LogFilteredSignal(builtSignal, rfFilterResult);
-						}
-						
-						Print($"[RF] Signal filtered out: {builtSignal.signalType} - {rfFilterResult.reason}");
-						
-						// Override signal to NoAction
-						builtSignal.newSignal = FunctionResponses.NoAction;
-						newSignal = FunctionResponses.NoAction;
-					}
-					else
-					{
-						// Apply risk adjustments from model
-						builtSignal.recStop *= rfFilterResult.stopAdjustment;
-						builtSignal.recTarget *= rfFilterResult.targetAdjustment;
-						builtSignal.recQty = (int)(builtSignal.recQty * rfFilterResult.sizeAdjustment);
-						
-						Print($"[RF] Signal approved: {builtSignal.signalType} - Confidence: {rfFilterResult.confidence:F2}");
-					}
-				}
-				catch (Exception ex)
-				{
-					Print($"[RF] Filter error: {ex.Message}");
-					// On error, allow signal through (fail open)
-				}
-			}
 			
 			if(builtSignal.newSignal == FunctionResponses.NoAction)
 			{
@@ -1574,37 +1502,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                            	{ 
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM LONG");
 														// Use approval-gated entry during real-time, direct entry in historical
-														if (isRealTime && EnablePushcutApproval)
-														{
-															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.Buy, thisSignalPackage, "", builtSignal);
-															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
-																if (!approved) Print("[PUSHCUT] Long trade from long position rejected");
-															});
-														}
-														else
-														{
-															EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
-														}
-						                                return;
-															
+														
+														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+													
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM FLAT");
 														// Use approval-gated entry during real-time, direct entry in historical
-														if (isRealTime && EnablePushcutApproval)
-														{
-															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.Buy, thisSignalPackage, "", builtSignal);
-															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
-																if (!approved) Print("[PUSHCUT] Long trade from flat position rejected");
-															});
-														}
-														else
-														{
-															EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
-														}
+														
+														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														
 						                                return;
 													}
 													else
@@ -1626,36 +1534,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                           		{  
 														Print(Time[0] + " ENTER SHORT FROM SHORT");
 														// Use approval-gated entry during real-time, direct entry in historical
-														if (isRealTime && EnablePushcutApproval)
-														{
-															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", builtSignal);
-															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
-																if (!approved) Print("[PUSHCUT] Short trade from short position rejected");
-															});
-														}
-														else
-														{
-															EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
-														}
+														
+														
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														
 						                                return;
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
 													{
 														Print(Time[0] + " ENTER SHORTFROM FLAT");
 														// Use approval-gated entry during real-time, direct entry in historical
-														if (isRealTime && EnablePushcutApproval)
-														{
-															var snapshot = CreateTradeRequestSnapshot(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", builtSignal);
-															Task.Run(async () => {
-																bool approved = await EntryLimitFunctionLiteWithApproval(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType, builtSignal, snapshot);
-																if (!approved) Print("[PUSHCUT] Short trade from flat position rejected");
-															});
-														}
-														else
-														{
-															EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
-														}
+														
+													
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														
 						                                return;
 						                               
 													}
@@ -1947,52 +1839,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		
 		// RF FILTERING METHODS
-		private RFFilterResult ApplyRFModelFilter(patternFunctionResponse signal)
-		{
-			try
-			{
-				// Request scoring from approved model for this signal type
-				string requestedModel = $"{Instrument.FullName}_{signal.signalType}_v{ModelVersion}";
-				
-				// Collect current features
-				var features = CollectCurrentFeatures();
-				
-				// Call RF service to score against specific approved model
-				var request = new
-				{
-					requested_model = requestedModel,
-					signal_type = signal.signalType,
-					signal_definition = signal.signalDefinition,
-					features = features,
-					instrument = Instrument.FullName
-				};
-				
-				var response = curvesService.RequestModelScoring(request).Result;
-				
-				if (!response.model_available)
-				{
-					Print($"[RF] Model {requestedModel} not available in approved models");
-					return new RFFilterResult { shouldTake = true, confidence = 1.0, reason = "Model not available" };
-				}
-				
-				return new RFFilterResult
-				{
-					shouldTake = response.prediction > RFConfidenceThreshold,
-					confidence = response.confidence,
-					modelUsed = response.model_used,
-					stopAdjustment = response.risk_adjustments?.stop_modifier ?? 1.0,
-					targetAdjustment = response.risk_adjustments?.target_modifier ?? 1.0,
-					sizeAdjustment = response.risk_adjustments?.size_modifier ?? 1.0,
-					reason = response.prediction > RFConfidenceThreshold ? "Confidence above threshold" : "Confidence below threshold"
-				};
-			}
-			catch (Exception ex)
-			{
-				Print($"[RF] Filter Error: {ex.Message}");
-				// On error, allow signal through
-				return new RFFilterResult { shouldTake = true, confidence = 1.0, reason = $"Error: {ex.Message}" };
-			}
-		}
+	
 		
 		private Dictionary<string, double> CollectCurrentFeatures()
 		{
@@ -2094,72 +1941,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			}
 		}
 		
-		private void CollectPositionOutcome(OrderRecordMasterLite orderRecord, double exitPrice, DateTime exitTime)
-		{
-			try
-			{
-				Print($"[TRAINING-DEBUG] CollectPositionOutcome called - builtSignal null: {orderRecord.builtSignal == null}");
-				if (orderRecord.builtSignal == null) 
-				{
-					Print("[TRAINING-DEBUG] Skipping - builtSignal is null");
-					return;
-				}
-				
-				Print($"[TRAINING-DEBUG] Signal Type: {orderRecord.builtSignal.signalType}");
-				
-				double entryPrice = orderRecord.EntryPrice;
-				if (entryPrice == 0) entryPrice = orderRecord.EntryOrder?.AverageFillPrice ?? 0;
-				
-				// Calculate P&L
-				double pnl = 0;
-				int winLoss = 0;
-				
-				if (orderRecord.EntryOrder != null)
-				{
-					bool isLong = orderRecord.EntryOrder.OrderAction == OrderAction.Buy || orderRecord.EntryOrder.OrderAction == OrderAction.BuyToCover;
-					
-					if (isLong)
-					{
-						pnl = (exitPrice - entryPrice) * orderRecord.EntryOrder.Quantity;
-					}
-					else
-					{
-						pnl = (entryPrice - exitPrice) * orderRecord.EntryOrder.Quantity;
-					}
-					
-					winLoss = pnl > 0 ? 1 : 0;
-				}
-				
-				var outcome = new PositionOutcome
-				{
-					BacktestId = $"BT_{DateTime.Now:yyyyMMdd_HHmmss}_{Instrument.FullName}",
-					SignalType = orderRecord.builtSignal.signalType,
-					SignalDefinition = orderRecord.builtSignal.signalDefinition,
-					EntryTime = orderRecord.EntryTime,
-					ExitTime = exitTime,
-					EntryPrice = entryPrice,
-					ExitPrice = exitPrice,
-					RealizedPnL = pnl,
-					MaxProfit = orderRecord.PriceStats.OrderStatsAllTimeHighProfit,
-					MaxLoss = orderRecord.PriceStats.OrderStatsAllTimeLowProfit,
-					WinLoss = winLoss,
-					EntryFeatures = orderRecord.builtSignal.signalFeatures,
-					PatternId = orderRecord.builtSignal.patternId,
-					PatternSubtype = orderRecord.builtSignal.patternSubType,
-					SignalScore = orderRecord.builtSignal.signalScore,
-					Instrument = Instrument.FullName
-				};
-				
-				Print($"[TRAINING-DEBUG] About to export outcome - SignalType: {outcome.SignalType}");
-				trainingDataClient?.SendOutcome(outcome);
-				
-				Print($"[TRAINING] Collected outcome: {outcome.SignalType} - P&L: {pnl:F2} - W/L: {winLoss}");
-			}
-			catch (Exception ex)
-			{
-				Print($"[TRAINING] Error collecting position outcome: {ex.Message}");
-			}
-		}
+		// REMOVED: Heavy CollectPositionOutcome method - replaced with lightweight outcome data sent to ME service
 		
 		public void updateRangeValues()
 		{
@@ -2358,89 +2140,20 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			}
 		}
 			
+	
 
 ///Properties	
-	
-		[NinjaScriptProperty]
-		[Display(Name="Z-Score Threshold", Description="Allow patterns X std dev better than average", Order=0, GroupName="Matching Engine Config")]
-		public double ZScoreThreshold { get; set; } = 0.5;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Enable Reliability Penalty", Description="Enable reliability penalties for unreliable patterns", Order=1, GroupName="Matching Engine Config")]
-		public bool ReliabilityPenaltyEnabled { get; set; } = true;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Max Threshold Penalty", Description="Maximum penalty for unreliable patterns", Order=2, GroupName="Matching Engine Config")]
-		public double MaxThresholdPenalty { get; set; } = 0.1;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Atmospheric Threshold", Description="Pre-filtering threshold for atmospheric matching", Order=3, GroupName="Matching Engine Config")]
-		public double AtmosphericThreshold { get; set; } = 0.8;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Default Cosine Threshold", Description="Default cosine similarity threshold", Order=4, GroupName="Matching Engine Config")]
-		public double DefaultCosineSimilarityThreshold { get; set; } = 0.70;
-		
-		[NinjaScriptProperty]
-		[Display(Name="EMA Ribbon Threshold", Description="Cosine similarity threshold for EMA Ribbon patterns", Order=5, GroupName="Matching Engine Config")]
-		public double EmaRibbonCosineSimilarityThreshold { get; set; } = 0.75;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Sensitive EMA Ribbon Threshold", Description="Cosine similarity threshold for Sensitive EMA Ribbon patterns", Order=6, GroupName="Matching Engine Config")]
-		public double SensitiveEmaRibbonCosineSimilarityThreshold { get; set; } = 0.78;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Send Historical Bars", Description="Send Historical Bars", Order=7, GroupName="Matching Engine Config")]
-		public bool sendHistoricalBars { get; set; }
-		
+
 		#region Properties
-		[NinjaScriptProperty]    
-		[Display(Name="Use VWAP STOP", Order=0, GroupName="Class Parameters")]
-		public bool UseVwapStop { get; set; }
 		
 		[NinjaScriptProperty]    
 		[Display(Name="Use CurvesService Synchronous Processing", Order=1, GroupName="Class Parameters")]
 		public bool UseDirectSync { get; set; }
+
+		
+		
+		
 	
-		[NinjaScriptProperty]    
-		[Display(Name="patternSubtypesPicker", Order=1, GroupName="Class Parameters")]
-		public patternSubtypes patternSubtypesPicker { get; set; }
-		
-
-		
-		[NinjaScriptProperty]	
-		[Display(Name="accumulation Requirement", Order=32, GroupName="Order Flow Pattern")]
-		public int accumulationRequirement
-		{ get; set; }
-		
-
-		[NinjaScriptProperty]
-		[Display(Name="enable FUNC Exit", Description="", Order=33, GroupName="Order Flow Pattern")]
-		public bool enableFUNCL { get; set;} 
-		
-		
-		
-		[NinjaScriptProperty]    
-		[Display(Name="Use Async ObjectStatsThread", Order=1, GroupName="Class Parameters")]
-		public bool useAsyncProcessing
-		{ get; set; }
-		
-		[NinjaScriptProperty]    
-		[Display(Name="DivergenceSignal Thresholds", Order=2, GroupName="Class Parameters")]
-		public bool DivergenceSignalThresholds
-		{ get; set; }
-		
-		
-		[NinjaScriptProperty]
-		[Display(Name = "Instrument Calendar Offset", Order=3, GroupName = "Class Parameters")]
-		public int calendarOffset
-		{ get; set; }
-		
-		
-		[NinjaScriptProperty]    
-		[Display(Name="scaleIn Risk", Order=4, GroupName="Class Parameters")]
-		public double scaleInRisk
-		{ get; set; }
 		
 		[NinjaScriptProperty]
 		[Display(Name="RawScore Requirement", Order=5, GroupName="Class Parameters")]
@@ -2473,7 +2186,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{ get; set; }
 
 		[NinjaScriptProperty]
-		[Display(Name = "Soft Take Profit $ (x/xN)", Order=9, GroupName = "Class Parameters")]
+		[Display(Name = "Soft Take Profit $", Order=9, GroupName = "Class Parameters")]
 		public double softTakeProfitMult
 		{ get; set; }
 		
@@ -2500,15 +2213,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public double perOrderMaxAccountRisk
 		{ get; set; }
 		
-		[NinjaScriptProperty]
-		[Display(Name = "SL standardContract", Order=9, GroupName="Class Parameters")]
-		public double standardContractStoploss
-		{ get; set; }
 		
-		[NinjaScriptProperty]
-		[Display(Name = "TP standardContract", Order=10, GroupName="Class Parameters")]
-		public double standardContractTakeProfit
-		{ get; set; }
 		
 		[NinjaScriptProperty]
 		[Range(double.MinValue, double.MaxValue)]
@@ -2522,30 +2227,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public double dailyProfitGoalParameter
 		{ get; set; }
 		
-		[NinjaScriptProperty]    
-		[Display(Name="OrderBookGranularity", Order=13, GroupName="Class Parameters")]
-		public int OrderBookSpread
-		{ get; set; }
-		
-		[NinjaScriptProperty]    
-		[Display(Name="Cluster Increment", Order=14, GroupName="Class Parameters")]
-		public double ClusterIncrement
-		{ get; set; }
-		
-		[NinjaScriptProperty]    
-		[Display(Name="OrderBookVolumeThreshold", Order=15, GroupName="Class Parameters")]
-		public int OrderBookVolumeThreshold
-		{ get; set; }
-		
-		[NinjaScriptProperty]    
-		[Display(Name="Cluster Opacity Threshold", Order=16, GroupName="Class Parameters")]
-		public int opacityThreshold
-		{ get; set; }
-		
-		[NinjaScriptProperty]    
-		[Display(Name="Cluster Buffer", Order=17, GroupName="Class Parameters")]
-		public double clusterBuffer
-		{ get; set; }
 		
 		[NinjaScriptProperty]
 		[Display(Name="PullBackExitEnable", Description="Turn on to DebugDraw debug messages", Order=18, GroupName="Class Parameters")]
@@ -2562,10 +2243,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[Display(Name="entriesPerDirectionSpacing(Time)", Order=20, GroupName="Class Parameters")]
 		public int entriesPerDirectionSpacingTime
 		{ get; set; }
-
-		
-	
-   		
 
 		
 		[NinjaScriptProperty]
@@ -2671,43 +2348,25 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public int entriesPerDirectionSpacing
 		{ get; set; }
 		
-		[NinjaScriptProperty]
-		[Range(0.1, 1.0)]
-		[Display(Name="Signal Persistence Threshold", Order=19, GroupName="Strategy Level Params")]
-		public double SignalPersistenceThreshold
-		{ get; set; } = 0.51;
 		
-		[NinjaScriptProperty]
-		[Range(0.1, 2.0)]
-		[Display(Name="Signal Strength Threshold", Order=20, GroupName="Strategy Level Params")]
-		public double SignalStrengthThreshold
-		{ get; set; } = 0.2;
-		
-		// ML CONFIGURATION PROPERTIES
-		[NinjaScriptProperty]
-		[Display(Name="Enable RF Filtering", Description="Enable Random Forest model filtering of signals", Order=1, GroupName="ML Config")]
-		public bool EnableRFFiltering { get; set; } = false;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Collect Training Data", Description="Collect signal outcomes for model training", Order=2, GroupName="ML Config")]
-		public bool CollectTrainingData { get; set; } = false;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Model Version", Description="Version of RF model to use", Order=3, GroupName="ML Config")]
-		public string ModelVersion { get; set; } = "1.0";
-		
+
 		[NinjaScriptProperty]
 		[Range(0.0, 1.0)]
-		[Display(Name="RF Confidence Threshold", Description="Minimum confidence for RF model to accept signal", Order=4, GroupName="ML Config")]
-		public double RFConfidenceThreshold { get; set; } = 0.5;
+		[Display(Name="Risk Agent Confidence Threshold", Description="Minimum confidence for RISK model to accept signal", Order=4, GroupName="Risk Agent Config")]
+		public double RiskAgentConfidenceThreshold { get; set; } = 0.5;
+	
 		
 		[NinjaScriptProperty]
-		[Display(Name="ML Filter Mode", Description="ML filtering operation mode", Order=5, GroupName="ML Config")]
-		public MLFilterMode MLMode { get; set; } = MLFilterMode.Disabled;
-		
-		[NinjaScriptProperty]
-		[Display(Name="Traditional Strategy Filter", Description="Test specific traditional strategy type for pure training data", Order=6, GroupName="ML Config")]
+		[Display(Name="Traditional Strategy Filter", Description="Test specific traditional strategy type for pure training data", Order=6, GroupName="Risk Agent Config")]
 		public TraditionalStrategyType TraditionalStrategyFilter { get; set; } = TraditionalStrategyType.ALL;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Do Not Store (Out-of-Sample)", Description="Skip storing positions to Agentic Memory for out-of-sample testing", Order=7, GroupName="Risk Agent Config")]
+		public bool DoNotStore { get; set; } = false;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Store As Recent (Live Training)", Description="Store positions as RECENT data for live graduation learning", Order=8, GroupName="Risk Agent Config")]
+		public bool StoreAsRecent { get; set; } = false;
 		
 	#endregion
 	

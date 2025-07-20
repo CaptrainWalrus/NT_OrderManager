@@ -153,7 +153,7 @@ public partial class CurvesStrategy : MainStrategy
 				curvesService.SetStrategyState(State == State.Historical);
 				
 				// Load matching engine configuration
-				LoadMEConfig();
+				
 				
 				// Pass MasterSimulatedStops reference to service
 				curvesService.SetMasterSimulatedStops(MasterSimulatedStops);
@@ -253,26 +253,39 @@ public partial class CurvesStrategy : MainStrategy
 				}
 				terminatedStatePrinted = true;
 				
-				// 1. Dispose CurvesV2Service
+				// 1. Send performance summary before disposing
 				if (curvesService != null)
 				{
-					Print("1. Disposing CurvesV2Service...");
+					Print("1. Sending performance summary before disposal...");
+					Task.Run(async () => 
+					{
+						try
+						{
+							await curvesService.SendPerformanceSummary(this);
+						}
+						catch (Exception ex)
+						{
+							Print($"[PERFORMANCE-SUMMARY] Error in termination: {ex.Message}");
+						}
+					}).Wait(TimeSpan.FromSeconds(5)); // Wait up to 5 seconds for completion
+					
+					Print("2. Disposing CurvesV2Service...");
 					curvesService.Dispose();
 					curvesService = null;
 				}
 				
-				// 2. Reset static data
-				Print("2. Resetting all static data in CurvesV2Service");
+				// 3. Reset static data
+				Print("3. Resetting all static data in CurvesV2Service");
 				CurvesV2Service.ResetStaticData();
 				
-				// 3. (Removed WebSocket handling since it's in the service dispose method)
+				// 4. (Removed WebSocket handling since it's in the service dispose method)
 				
-				// 4. Clear local collections
-				Print("4. Clearing local collections");
+				// 5. Clear local collections
+				Print("5. Clearing local collections");
 				CurrentBullStrength = 0;
 				CurrentBearStrength = 0;
 				
-				// 5. (Removed ProcessQueue setting since we're now using fire-and-forget)
+				// 6. (Removed ProcessQueue setting since we're now using fire-and-forget)
 				
 				Print("COMPLETE SHUTDOWN SEQUENCE FINISHED");
 				
@@ -284,7 +297,10 @@ public partial class CurvesStrategy : MainStrategy
 	////////////////////////////
 	protected override void OnBarUpdate()
 	{
-		
+		if(BarsInProgress == 0)
+			{
+				Print($"{Time[0]}");
+			}
 		// KILL SWITCH: Check for abort file
 		if (System.IO.File.Exists(@"C:\temp\kill_backtest.txt"))
 		{
@@ -317,103 +333,19 @@ public partial class CurvesStrategy : MainStrategy
 			
 			DebugFreezePrint("Heartbeat check");
 			// In OnBarUpdate or a timer
-			if (UseRemoteService == true && BarsInProgress == 1) // Send heartbeats on 5-second series (BarsInProgress 1)
-			{
-			    //Print("Heartbeat, now truly fire-and-forget");
-			    curvesService?.CheckAndSendHeartbeat(UseRemoteService);
-			   // Print("Heartbeat call returned - strategy continues");
-			    //if(State == State.Realtime) Print($" Last Heartbeat : {curvesService.lastHeartbeat}, Current Time == {Time[0]}");
-			}
+			
 			DebugFreezePrint("Heartbeat completed");
 			
-			/// NEW: Collect historical bars for potential backfill (do this for all bars)
-			if (BarsInProgress == 0 && IsFirstTickOfBar && State == State.Historical)
-			{
-				
-				var barData = new
-				{
-					timestamp = Time[0],
-					open = Open[0],
-					high = High[0],
-					low = Low[0],
-					close = Close[0],
-					volume = Volume[0]
-				};
-				
-				historicalBars.Add(barData);
-				
-				// Keep only the last MAX_HISTORICAL_BARS bars
-				if (historicalBars.Count > MAX_HISTORICAL_BARS)
-				{
-					historicalBars.RemoveAt(0); // Remove oldest bar
-				}
-			}
 			
-			// For remote service: if backfill was attempted, allow trading whether it succeeded or failed
-			// This prevents infinite blocking when backfill fails but remote service gets real-time data
-			bool enoughData = UseRemoteService == true ? backfillSuccess : true;
-			bool isConnected = curvesService.IsConnected && enoughData;
+			
+			
+			
+		
+			bool isConnected = curvesService.IsConnected;
 			
 			if (CurrentBars[0] < BarsRequiredToTrade) return;
-			
-			
-			CheckAndActivateCooldown();
-			
-			// Log connection status periodically
-			CurvesV2Service.CurrentContextId = null;
-			// SIMPLIFIED APPROACH: Direct SendBar and UpdateSignals
-			if (isConnected && BarsInProgress == 0 && IsFirstTickOfBar)
-			{
-				DebugFreezePrint("Connected bar processing START");
-				//Print($"{Time[0]} isConnected, SEND");
-				
-				// Extract instrument code
-				string instrumentCode = GetInstrumentCode();
-			
-				// 1. Simple, direct send of bar data - fire and forget
-				DebugFreezePrint("About to send bar (sync/async based on mode)");
-				/*
-				if (State == State.Realtime)
-				{
-				    // Real-time: async/fire-and-forget
-				    bool barSent = curvesService.SendBarFireAndForget(
-				        UseRemoteService,
-				        instrumentCode,
-				        Time[0],
-				        Open[0],
-				        High[0],
-				        Low[0],
-				        Close[0],
-				        Volume[0],
-				        State == State.Historical ? "backtest" : "1m"
-				    );
-				    Print($"{Time[0]} SendBarFireAndForget completed");
-				}
-				
-				else if (State == State.Historical || IsInStrategyAnalyzer)
-				{
-				    // Backtest (Strategy Analyzer) or Historical (pre-realtime): sync/blocking
-				    bool barSent = curvesService.SendBarSync(
-				        instrumentCode,
-				        Time[0],
-				        Open[0],
-				        High[0],
-				        Low[0],
-				        Close[0],
-				        Volume[0],
-				        State == State.Historical ? "backtest" : "1m"
-				    );
-				    DebugFreezePrint("SendBarSync completed");
-				    
-				   
-				}
-				*/
-				// 2. PARALLEL signal check - no delay, no dependency on barSent
-				double currentPrice = Close[0];  // Use the current bar's close price
-			    //curvesService.UpdateAllDivergenceScoresAsync(currentPrice);
 
-					
-			}
+			
 			
 			
 		}
@@ -426,232 +358,124 @@ public partial class CurvesStrategy : MainStrategy
 		DebugFreezePrint("CurvesStrategy OnBarUpdate END");
 	}
 	
-	// Fix BuildNewSignal to actually return entry signals
-	/*
+	// NEW: Simplified BuildNewSignal using Signal Approval Service
 	protected override patternFunctionResponse BuildNewSignal()
 	{
-		//Print("CurvesStrategy BuildNewSignal START");
-		
 		patternFunctionResponse thisSignal = new patternFunctionResponse();
 		thisSignal.newSignal = FunctionResponses.NoAction;
-	    thisSignal.patternSubType = "none";
+		thisSignal.patternSubType = "none";
 		thisSignal.patternId = "";
 		
-		try{
+		try
+		{
 			// Early safety checks
-			if (curvesService == null)
-			{
-				//Print("BuildNewSignal: curvesService null - returning NoAction");
+			if (curvesService == null || CurrentBars[0] < BarsRequiredToTrade || BarsInProgress != 0)
 				return thisSignal;
-			}
-			
-			if (curvesService.ErrorCounter > 10)
-			{
-				//Print($"BuildNewSignal: Error counter exceeded {curvesService.ErrorCounter} - returning NoAction");
-				return thisSignal;
-			}
 			
 			// Check cooldown status first - regime protection
-			CheckCooldownExit(); // Update cooldown status
+			CheckCooldownExit();
 			if (isInCooldown)
+				return thisSignal;
+			
+			// Position and throttle checks
+			int totalPositions = getAllcustomPositionsCombined();
+			TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
+			
+			
+			if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 			{
-				//Print("BuildNewSignal: In cooldown - blocking all entries");
-				return thisSignal; // Block all trading during cooldown
+
+			
+				// Get traditional strategy signal first
+				var traditionalSignal = TraditionalStrategies.CheckAllTraditionalStrategies(this, TraditionalStrategyFilter);
+				if (traditionalSignal == null || traditionalSignal.newSignal == FunctionResponses.NoAction)
+					return thisSignal;
+				
+				// Traditional strategies already got Risk Agent approval and populated signalScore, recStop, recTarget
+				// Check if the signal meets our confidence threshold
+				if (traditionalSignal.signalScore >= RiskAgentConfidenceThreshold)
+				{
+					ThrottleAll = Times[0][0];
+					
+					string direction = traditionalSignal.newSignal == FunctionResponses.EnterLong ? "long" : "short";
+					Print($"[SIGNAL-APPROVED] {traditionalSignal.signalScore:P1} - {traditionalSignal.signalType} {direction} SL {traditionalSignal.recStop:F2} TP {traditionalSignal.recTarget:F2}");
+					return traditionalSignal;
+				}
+				else
+				{
+					string direction = traditionalSignal.newSignal == FunctionResponses.EnterLong ? "long" : "short";
+					Print($"[SIGNAL-REJECTED] {traditionalSignal.signalScore:P1} - {traditionalSignal.signalType} {direction} @ {Close[0]:F2}");
+					return thisSignal;
+				}
+			}
+			else
+			{
+				return thisSignal;
 			}
 			
-		//Print($"BuildNewSignal validation checks BarsInProgress={BarsInProgress}");
-		//Print($"[DEBUG] BuildNewSignal Begin: Bull={CurvesV2Service.CurrentBullStrength:F2}%, Bear={CurvesV2Service.CurrentBearStrength:F2}%, RawScore={CurvesV2Service.CurrentRawScore:F2}, PatternType={CurvesV2Service.CurrentPatternType}");
-	    if(CurrentBars[0] < BarsRequiredToTrade)
-	    {
-			//Print($"{CurrentBars[0]} < {BarsRequiredToTrade}");
-	        return thisSignal;
-	    }
-	    if(BarsInProgress != 0)
-	    {
-			//Print($"BarsInProgress !+ {BarsInProgress}");
-	        return thisSignal;
-	    }
-	    //Print("BuildNewSignal position calculations");
-	    // Calculate total positions and working orders
-	    int totalPositions = getAllcustomPositionsCombined();
-	    // Check if we have room for more positions
-	    TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
-
-	    
-	    
-	    // Critical safety limit - don't allow more than the max quantity
-	    if (totalPositions >= accountMaxQuantity )
-	    {
-	       // Print($"*** SAFETY HALT - Position limit reached: positions={totalPositions},  max={accountMaxQuantity}");
-	        
-	    }
-	   
-		if(!curvesService.IsConnected)
-		{
-			//Print($"curvesService.IsConnected {curvesService.IsConnected}");
-			return thisSignal;
-		}
-		
-	    // Regular position check with throttle timing
-	    //if (totalPositions < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
-		if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
-
-	    {      // Get current signal values
-	    	  //Print("BuildNewSignal signal evaluation START");
-	            double currentBullStrength = CurvesV2Service.CurrentBullStrength;
-	            double currentBearStrength = CurvesV2Service.CurrentBearStrength;
-             
-				string instrumentCode = GetInstrumentCode();
-				
-				DebugFreezePrint("About to call CheckSignalsSync (NEW SYNCHRONOUS VERSION)");
-				// NEW: Use synchronous version that returns enhanced signal data
-				
-				var (score, posSize, risk, target, pullback) = curvesService.CheckSignalsSync(UseRemoteService, Time[0], instrumentCode, OutlierScoreRequirement, effectiveScoreRequirement);
-				//Print($"[BuildNewSignal] {Time[0]}, score={score}, posSize={posSize}, risk={risk}, target={target}, pullback{pullback} >>>> CurvesV2Service.SignalsAreFresh {CurvesV2Service.SignalsAreFresh}");
-				DebugFreezePrint("CheckSignalsSync completed");
-				
-				// Store signal in history for persistence validation using CurrentBars[0]
-				currentBarIndex = CurrentBars[0];
-				signalHistory[currentBarIndex] = score;
-				
-				// Clean up old signals (keep only last 10 bars for safety)
-				var keysToRemove = signalHistory.Keys.Where(k => k < currentBarIndex - 10).ToList();
-				foreach (var key in keysToRemove)
-				{
-					signalHistory.Remove(key);
-				}
-				
-			       
-			        	
-						
-						
-							
-							
-			            	// Check for Long signal (strength and ratio conditions) - NOW USING THOMPSON-ADJUSTED THRESHOLD
-				            if (CrossAbove(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsRising(EMA3))
-				            {
-							
-								Print($"[LONG]");
-								
-					                ThrottleAll = Times[0][0];
-					                thisSignal.newSignal = FunctionResponses.EnterLong;
-									thisSignal.patternSubType = (CurvesV2Service.CurrentSubtype ?? "EMA_VWAP_CROSS") + "_PERSISTENT";
-									thisSignal.patternId = CurvesV2Service.CurrentPatternId?.ToString() ?? $"EMA_VWAP_{Time[0]:yyyyMMdd_HHmmss}";
-									//thisSignal.recStop = risk;       // Use RF risk value (dollars)
-									//thisSignal.recTarget = target;
-									//thisSignal.recPullback = (100-pullback)/100; // Use RF pullback percentage eg 15 .. .15 >> 0.85
-									thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
-									thisSignal.signalScore = score;
-									thisSignal.signalType = "EMA_VWAP_CROSS";
-									thisSignal.signalDefinition = "CrossAbove(EMA3, VWAP1, 10) && EMA3[0] - VWAP1[0] > TickSize * 3 && IsRising(EMA3)";
-									thisSignal.signalFeatures = new Dictionary<string, double>
-									{
-									    ["ema3_value"] = EMA3?.Count > 0 ? EMA3[0] : Close[0],
-									    ["vwap_value"] = VWAP1?.Count > 0 ? VWAP1[0] : Close[0],
-									    ["ema_vwap_distance"] = (EMA3?.Count > 0 && VWAP1?.Count > 0) ? (EMA3[0] - VWAP1[0]) : 0,
-									    ["ema_vwap_distance_ticks"] = (EMA3?.Count > 0 && VWAP1?.Count > 0) ? ((EMA3[0] - VWAP1[0]) / TickSize) : 0,
-									    ["close_price"] = Close[0],
-									    ["volume"] = Volume[0],
-									    ["hour_of_day"] = Time[0].Hour,
-									    ["signal_score"] = score,
-									    ["is_ema_falling"] = IsFalling(EMA3) ? 1.0 : 0.0,
-									    ["atr_14"] = ATR(14)[0],
-									    ["rsi_14"] = RSI(14, 3)[0]
-									};
-									return thisSignal;
-							}
-			           
-							
-				            if (CrossBelow(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsFalling(EMA3))
-				            {
-								
-								Print($"[SHORT]");
-														
-								ThrottleAll = Times[0][0];
-					            thisSignal.newSignal = FunctionResponses.EnterShort;
-								thisSignal.patternSubType = CurvesV2Service.CurrentSubtype + "_PERSISTENT";
-								thisSignal.patternId = CurvesV2Service.CurrentPatternId.ToString();
-								//thisSignal.recStop = risk;       // Use RF risk value (dollars)
-								//thisSignal.recPullback = pullback; // Use RF pullback percentage
-								//thisSignal.recTarget = target;
-								thisSignal.recQty = strategyDefaultQuantity;// posSize;     // Use RF position size multiplier
-								thisSignal.signalScore = score;
-								thisSignal.signalType = "EMA_VWAP_CROSS";
-								thisSignal.signalDefinition = "CrossBelow(EMA3, VWAP1, 10) && EMA3[0] - VWAP1[0] > TickSize * 3 && IsFalling(EMA3)";
-								thisSignal.signalFeatures = new Dictionary<string, double>
-								{
-								    ["ema3_value"] = EMA3[0],
-								    ["vwap_value"] = VWAP1[0],
-								    ["ema_vwap_distance"] = EMA3[0] - VWAP1[0],
-								    ["ema_vwap_distance_ticks"] = (EMA3[0] - VWAP1[0]) / TickSize,
-								    ["close_price"] = Close[0],
-								    ["volume"] = Volume[0],
-								    ["hour_of_day"] = Time[0].Hour,
-								    ["signal_score"] = score,
-								    ["is_ema_falling"] = IsFalling(EMA3) ? 1.0 : 0.0,
-								    ["atr_14"] = ATR(14)[0],
-								    ["rsi_14"] = RSI(14, 3)[0]
-								};
-								return thisSignal;
-							}
-						
-			        	
-					
-				
-		        
-		        
-	    }
-		//Print("[DEBUG] BuildNewSignal: No signals generated");
-		DebugFreezePrint("CurvesStrategy BuildNewSignal END - No signals");
-	    return thisSignal;
 		}
 		catch (Exception ex)
 		{
-			DebugFreezePrint($"ERROR in CurvesStrategy BuildNewSignal: {ex.Message}");
 			Print($"[CRITICAL] BuildNewSignal Exception: {ex.Message}");
-			Print($"[CRITICAL] Stack trace: {ex.StackTrace}");
-			
-			// Increment error counter to prevent cascading failures
 			if (curvesService != null)
-			{
 				curvesService.ErrorCounter++;
-				Print($"[ERROR-COUNTER] Incremented to {curvesService.ErrorCounter}");
-			}
-			
-			// Return safe signal to prevent strategy termination
 			return thisSignal;
 		}
-	    
 	}
-	// Keep ProcessSignal commented out
-	// private void ProcessSignal(dynamic signal) { ... }
-
 	
-
-	// Keep the original methods but don't use them
-	private void ProcessBarData() 
+	// Calculate features for signal approval
+	private FeatureSet CalculateSignalFeatures()
 	{
-		// Original implementation preserved but not used
-	}
-
-	private void ProcessBarDataSync()
-	{
-		// Original implementation preserved but not used
-	}
-
-	// Restore GetInstrumentCode method
-	private string GetInstrumentCode()
-	{
-		string instrumentCode = Instrument?.FullName?.Split(' ')?.FirstOrDefault() ?? "";
-		if (string.IsNullOrEmpty(instrumentCode))
+		try
 		{
-			Print("Warning: Unable to determine instrument code - using fallback");
-			instrumentCode = "UNKNOWN"; // Or handle appropriately
+			if (CurrentBar < 21) return null;
+			
+			return new FeatureSet
+			{
+				Momentum5 = (Close[0] / Close[5]) - 1.0,
+				PriceChangePct5 = (Close[0] - Close[5]) / Close[5],
+				BbPosition = CalculateBollingerPosition(),
+				BbWidth = CalculateBollingerWidth(),
+				VolumeSpike3Bar = CalculateVolumeSpike(),
+				EmaSpreadPct = CalculateEmaSpread(),
+				Rsi = RSI(14, 3)[0],
+				AtrPct = ATR(14)[0] / Close[0],
+				RangeExpansion = (High[0] - Low[0]) / Math.Max(ATR(14)[0], 0.1)
+			};
 		}
-		return instrumentCode;
+		catch (Exception ex)
+		{
+			Print($"Error calculating features: {ex.Message}");
+			return null;
+		}
 	}
-
-	*/
+	
+	// Helper methods for feature calculation
+	private double CalculateBollingerPosition()
+	{
+		var bb = Bollinger(Close, 2, 20);
+		return (Close[0] - bb.Lower[0]) / (bb.Upper[0] - bb.Lower[0]);
+	}
+	
+	private double CalculateBollingerWidth()
+	{
+		var bb = Bollinger(Close, 2, 20);
+		return (bb.Upper[0] - bb.Lower[0]) / bb.Middle[0];
+	}
+	
+	private double CalculateVolumeSpike()
+	{
+		if (CurrentBar < 3) return 1.0;
+		double vol3Avg = (Volume[1] + Volume[2] + Volume[3]) / 3.0;
+		return Volume[0] / Math.Max(vol3Avg, 1);
+	}
+	
+	private double CalculateEmaSpread()
+	{
+		if (EMA3?.Count > 0 && VWAP1?.Count > 0)
+			return (EMA3[0] - VWAP1[0]) / Close[0];
+		return 0.0;
+	}
 
 			// Add simple debug logging for backtesting
 		private void BacktestLog(string message)
@@ -775,7 +599,6 @@ public partial class CurvesStrategy : MainStrategy
 	        return false;
 	    }
 	}
-
 	// Restore ConvertPatternsToSignals method definition
 	private List<Signal> ConvertPatternsToSignals(List<PatternMatch> patterns)
 	{

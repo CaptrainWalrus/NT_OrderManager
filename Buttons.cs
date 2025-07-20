@@ -17,7 +17,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
     public partial class MainStrategy : Strategy
     {
 
-
+/// <summary>
+/// NONCRITICAL FILE
+/// WHEN THIS STRATEGY IS DEPLOYED TO THE CHART, THIS FILE WITH LOAD A SMALL UI TO ASSIST WITH HUMAN-IN-THE-LOOP ENTRIES AND EXITS.
+/// </summary>
+/// <param name="entryOrderAction"></param>
+/// <param name="isThisMarketPosition"></param>
+/// <param name="isNotMarketPosition"></param>
 		public void OnMyButtonClickActions(OrderAction entryOrderAction, MarketPosition? isThisMarketPosition, MarketPosition? isNotMarketPosition)
 		{
 		    Print($"Button clicked! Action: {entryOrderAction}, IsPosition: {isThisMarketPosition}, NotPosition: {isNotMarketPosition}");

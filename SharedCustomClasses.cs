@@ -797,6 +797,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public double OrderStatspullBackThreshold {get; set; }
 			public double OrderStatspullBackPct {get; set; }
 			public double OrderMaxLoss {get; set; }
+			public Dictionary<int,double> profitByBar {get; set; }
 		}
 		public class ExitFunctions
 		{
@@ -1119,6 +1120,22 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public string PatternSubtype { get; set; }
 			public double SignalScore { get; set; }
 			public string Instrument { get; set; }
+			public Dictionary<int,double> profitByBar  { get; set; }
+
+		}
+		
+		// NEW: Lightweight position outcome data for ME service deregistration
+		public class PositionOutcomeData
+		{
+			public double ExitPrice { get; set; }
+			public double PnLPoints { get; set; }
+			public double PnLDollars { get; set; }
+			public int HoldingBars { get; set; }
+			public string ExitReason { get; set; }
+			public DateTime EntryTime { get; set; }
+			public DateTime ExitTime { get; set; }
+			public Dictionary<int,double> profitByBar  { get; set; }
+
 		}
 		
 		public class RFFilterResult
@@ -1171,7 +1188,53 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			VWAP_MEAN_REVERSION
 		}
 
+		/// <summary>
+		/// Unified trade record for Agentic Memory storage
+		/// </summary>
+		public class UnifiedTradeRecord
+		{
+			public string EntrySignalId { get; set; }
+			public string Instrument { get; set; }
+			public DateTime Timestamp { get; set; }
+			public string EntryType { get; set; }
+			public string Direction { get; set; }
+			public string SessionId { get; set; }  // Unique ID per backtest session
+			public int TimeframeMinutes { get; set; } = 1;  // NEW: Timeframe in minutes
+			public int Quantity { get; set; } = 1;  // NEW: Position size (number of contracts)
+			public Dictionary<string, double> Features { get; set; }
+			public double StopLoss { get; set; }
+			public double TakeProfit { get; set; }
+			public double PnLDollars { get; set; }
+			public double PnLPoints { get; set; }
+			public int HoldingBars { get; set; }
+			public string ExitReason { get; set; }
+			public double MaxProfit { get; set; }
+			public double MaxLoss { get; set; }
+			public bool WasGoodExit { get; set; }
+			public double ExitPrice { get; set; }
+			public Dictionary<int,double> profitByBar {get; set; }
+		}
 		
+		/// <summary>
+		/// Represents a set of features pending approval
+		/// </summary>
+		public class PendingFeatureSet
+		{
+			public string EntrySignalId { get; set; }
+			public Dictionary<string, double> Features { get; set; }
+			public string Instrument { get; set; }
+			public string Direction { get; set; }
+			public string EntryType { get; set; }
+			public DateTime Timestamp { get; set; }
+			public int TimeframeMinutes { get; set; } = 1;  // NEW: Timeframe in minutes
+			public int Quantity { get; set; } = 1;  // NEW: Position size (number of contracts)
+			public double StopLoss { get; set; }
+			public double TakeProfit { get; set; }
+			public double Confidence { get; set; }
+			public double RecPullback { get; set; } // Soft-floor exit value
+			public double MaxStopLoss { get; set; }
+			public double MaxTakeProfit { get; set; }
+		}
 
  
 }

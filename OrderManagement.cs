@@ -29,6 +29,11 @@ using System.Text.RegularExpressions;
 //This namespace holds Strategies in this folder and is required. Do not change it. 
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
+	
+	/// <summary>
+	/// THIS FILE IS FOR ENTRY/EXIST MANAGEMENT AND RELATED FUNCTINS
+	/// </summary>
+	
 	public partial class MainStrategy : Strategy
 	{
 	List<LosingTrade> losingTrades = new List<LosingTrade>();
@@ -47,6 +52,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
  	private Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)> pairedEvents = new Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)>();
 	private HashSet<string> processedExitOrders = new HashSet<string>();
 	private double sumProfit;
+	
+	// Position-Feature mapping for Agentic Memory
+	private Dictionary<string, PendingFeatureSet> positionFeatures = new Dictionary<string, PendingFeatureSet>();
 
 	public class ExecutionUpdateInfo
 	{
@@ -303,23 +311,37 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 									customPosition.OnOrderFilled(orderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex, order.OrderAction, quantity, averageFillPrice);
 									
 									string direction = order.OrderAction == OrderAction.Buy ? "long" : "short";
+									
+									// Transfer features from pending to position features for unified storage
+									string patternId = orderRecordMasterLite.OrderSupplementals?.patternId;
+									Print($"[UNIFIED-STORAGE] DEBUG: PatternId={patternId}, HasPending={HasPendingFeatures(patternId ?? "")}");
+									if (!string.IsNullOrEmpty(patternId) && HasPendingFeatures(patternId))
+									{
+										var pendingFeatures = GetPendingFeatures(patternId);
+										positionFeatures[orderRecordMasterLite.EntryOrderUUID] = pendingFeatures;
+										RemovePendingFeatures(patternId);
+										Print($"[UNIFIED-STORAGE] Transferred features for {orderRecordMasterLite.EntryOrderUUID} from pattern {patternId}");
+										Print($"[UNIFIED-STORAGE] Feature count: {pendingFeatures?.Features?.Count ?? 0}");
+									}
+									else
+									{
+										Print($"[UNIFIED-STORAGE] WARNING: No pending features found for {orderRecordMasterLite.EntryOrderUUID}, PatternId: {patternId}");
+									}
+									
+									/*
 									///register - Enhanced registration with direction and entry price for RF exit monitoring
 									orderRecordMasterLite.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(
 										orderRecordMasterLite.EntryOrderUUID,
+										orderRecordMasterLite.OrderSupplementals.patternSubtype,
 										orderRecordMasterLite.OrderSupplementals.patternId, 
 										orderRecordMasterLite.EntryOrder.Instrument.FullName.Split(' ')[0],
 										time,
 										averageFillPrice, // Entry price for RF monitoring
 										direction,        // Direction for RF monitoring
-										null             // Original forecast (not available here)
+										null,            // Original forecast (not available here)
+										DoNotStore       // Out-of-sample testing flag
 									);
-									
-									// Track pattern for this position to handle EOSC exits (DISABLED)
-									// if (!string.IsNullOrEmpty(orderRecordMasterLite.OrderSupplementals.patternId))
-									// {
-									//     openPositionPatterns[orderRecordMasterLite.EntryOrderUUID] = orderRecordMasterLite.OrderSupplementals.patternId;
-									// }
-							
+									*/
 									
 								}
 							}
@@ -351,7 +373,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					 // Extra safety check - recreate counter if needed
 					
 		              	if(debugOrderPrints) Print($" RECIEVED customOnOrderUpdate for {order.Name} , {order.OrderAction}-{order.OrderState}");
-
+						
+						
+					
 						
 						tryCatchSection = "customOnOrderUpdate 8";
 						/// ********assign the Exit Order
@@ -382,16 +406,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										MasterSimulatedStops.Remove(orderRecordMasterLite.OrderSupplementals.SimulatedStop);
 										customPosition.OnOrderFilled(orderRecordMasterLite.OrderSupplementals.sourceSignalPackage.instrumentSeriesIndex, order.OrderAction, quantity, averageFillPrice);
 										
-										// TRAINING DATA COLLECTION - Position closed
-										Print($"[TRAINING-DEBUG] Exit conditions - CollectTrainingData: {CollectTrainingData}, trainingDataClient: {trainingDataClient != null}, builtSignal null: {orderRecordMasterLite.builtSignal == null}");
-										if (CollectTrainingData && trainingDataClient != null && orderRecordMasterLite.builtSignal != null)
-										{
-											CollectPositionOutcome(orderRecordMasterLite, averageFillPrice, time);
-										}
-										else
-										{
-											Print($"[TRAINING-DEBUG] Skipping data collection - one or more conditions failed");
-										}
+										
 
 
 										
@@ -795,20 +810,22 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							
 								
 									signalReturnAction signal = orderRecordMaster.EntrySignalReturnAction;
-								
+									double pnlPoints = 0;
 							    	tryCatchSection = "ENTRY IS PAIRED 2";
 							        /// Calculate the total cost of the entry
 									if(executionOrder.OrderAction == OrderAction.Sell)
 									{
 										tryCatchSection = "ENTRY IS PAIRED 2.1";
-										 profit = (executionOrder.AverageFillPrice - orderRecordMaster.EntryOrder.AverageFillPrice) * executionOrder.Quantity * Bars.Instrument.MasterInstrument.PointValue;		
+										 profit = (executionOrder.AverageFillPrice - orderRecordMaster.EntryOrder.AverageFillPrice) * executionOrder.Quantity * Bars.Instrument.MasterInstrument.PointValue;
+										pnlPoints = (executionOrder.AverageFillPrice - orderRecordMaster.EntryOrder.AverageFillPrice);
 										//Print("BuyToCover Sell "+profit);
 									}
 									 /// Calculate the total cost of the entry
 									else if(executionOrder.OrderAction == OrderAction.BuyToCover)
 									{
 										tryCatchSection = "ENTRY IS PAIRED 2.2";
-									 profit = (orderRecordMaster.EntryOrder.AverageFillPrice - executionOrder.AverageFillPrice) * executionOrder.Quantity * Bars.Instrument.MasterInstrument.PointValue;	
+									 	profit = (orderRecordMaster.EntryOrder.AverageFillPrice - executionOrder.AverageFillPrice) * executionOrder.Quantity * Bars.Instrument.MasterInstrument.PointValue;	
+										pnlPoints = (orderRecordMaster.EntryOrder.AverageFillPrice-executionOrder.AverageFillPrice);
 									
 									}
 										     
@@ -822,16 +839,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										dailyProfit += profit;
 										dailyProfitATH = Math.Max(dailyProfit,dailyProfitATH);
 										
-										if(orderRecordMaster.OrderSupplementals.patternId != "") 
+										if(!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternSubtype)) 
 										{
-											if(patternIdProfits.ContainsKey(orderRecordMaster.OrderSupplementals.patternId))
+											if(patternIdProfits.ContainsKey(orderRecordMaster.OrderSupplementals.patternSubtype))
 											{
 												sumProfit += profit;
-												patternIdProfits[orderRecordMaster.OrderSupplementals.patternId] += profit;
-												NinjaTrader.Code.Output.Process($"{Time[0]} [{orderRecordMaster.OrderSupplementals.thisSignalExitAction}] patternId  {orderRecordMaster.OrderSupplementals.patternId } > ${Math.Round(profit)}, total ${Math.Round(sumProfit)}", PrintTo.OutputTab2);
+												patternIdProfits[orderRecordMaster.OrderSupplementals.patternSubtype] += profit;
+												NinjaTrader.Code.Output.Process($"{Time[0]} > {sumProfit}", PrintTo.OutputTab2);
 
 											}
-											else patternIdProfits[orderRecordMaster.OrderSupplementals.patternId] = profit;
+											else patternIdProfits[orderRecordMaster.OrderSupplementals.patternSubtype] = profit;
 										}
 										
 
@@ -840,6 +857,49 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											virtualCashAccount += profit;
 										}
 										tryCatchSection = "ENTRY IS PAIRED 3A";	
+										
+										// TRAINING DATA COLLECTION - Position closed
+										Print($"[TRAINING-DEBUG] Exit conditions -  builtSignal null: {orderRecordMaster.builtSignal == null}");
+										if (orderRecordMaster.builtSignal != null)
+										{
+											// NEW: Replace heavy CollectPositionOutcome with lightweight outcome data
+										var outcomeData = new PositionOutcomeData
+										{
+											ExitPrice = executionOrder.AverageFillPrice,
+											PnLPoints = pnlPoints,
+											PnLDollars = profit, // Use the calculated profit from above
+											HoldingBars = CurrentBars[0] - orderRecordMaster.EntryBar,
+											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
+											EntryTime = orderRecordMaster.EntryTime,
+											ExitTime = Time[0],
+											profitByBar = orderRecordMaster.PriceStats.profitByBar // ADD: Include trajectory data
+										};
+										
+										// Send outcome data directly to Storage Agent (bypassing ME service)
+										Task.Run(async () =>
+										{
+											try
+											{
+												bool success = await curvesService.SendOutcomeToStorageAsync(
+													orderRecordMaster.EntryOrderUUID,
+													orderRecordMaster.builtSignal.signalFeatures,
+													outcomeData,
+													Instrument.FullName,
+													executionOrder.IsLong ? "long" : "short",
+													orderRecordMaster.builtSignal.signalType
+												);
+												Print($"[STORAGE-DIRECT] Sent outcome data to Storage Agent: {orderRecordMaster.builtSignal.signalType} - P&L: {profit:F2} - Success: {success}");
+											}
+											catch (Exception ex)
+											{
+												Print($"[STORAGE-DIRECT] Error sending outcome data: {ex.Message}");
+											}
+										});
+										}
+										else
+										{
+											Print($"[TRAINING-DEBUG] Skipping data collection - one or more conditions failed");
+										}
 									}
 									
 									
@@ -896,7 +956,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											}
 										}
 										
-										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, true, orderRecordMaster.OrderSupplementals.divergence);
+										// Create outcome data for winning trade
+										var winOutcomeData = new PositionOutcomeData
+										{
+											ExitPrice = executionOrder.AverageFillPrice,
+											PnLPoints = pnlPoints,
+											PnLDollars = profit,
+											HoldingBars = CurrentBars[0] - orderRecordMaster.EntryBar,
+											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
+											EntryTime = orderRecordMaster.EntryTime,
+											ExitTime = Time[0],
+											profitByBar = orderRecordMaster.PriceStats.profitByBar,
+
+										};
+										//curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, true, orderRecordMaster.OrderSupplementals.divergence, winOutcomeData);
+										
+										// Send unified record to storage
+										SendUnifiedRecordToStorage(orderRecordMaster, orderRecordMaster.EntryOrderUUID, winOutcomeData);
 
 										// ADDED: Record pattern performance for winning trades
 										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
@@ -1015,7 +1091,24 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											}
 										}
 										
-										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, false, orderRecordMaster.OrderSupplementals.divergence);
+										// Create outcome data for break-even trade
+										var breakEvenOutcomeData = new PositionOutcomeData
+										{
+											ExitPrice = executionOrder.AverageFillPrice,
+											PnLPoints = pnlPoints,
+											PnLDollars = profit,
+											HoldingBars = CurrentBars[0] - orderRecordMaster.EntryBar,
+											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
+											EntryTime = orderRecordMaster.EntryTime,
+											ExitTime = Time[0],
+											profitByBar = orderRecordMaster.PriceStats.profitByBar,
+
+										};
+										
+										//curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, false, orderRecordMaster.OrderSupplementals.divergence, breakEvenOutcomeData);
+										
+										// Send unified record to storage
+										SendUnifiedRecordToStorage(orderRecordMaster, orderRecordMaster.EntryOrderUUID, breakEvenOutcomeData);
 
 										// ADDED: Record pattern performance for break-even trades
 										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
@@ -1107,7 +1200,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											}
 										}
 										
-										curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, wasGoodExit, orderRecordMaster.OrderSupplementals.divergence);
+										// Create outcome data for losing trade
+										var lossOutcomeData = new PositionOutcomeData
+										{
+											ExitPrice = executionOrder.AverageFillPrice,
+											PnLPoints = pnlPoints,
+											PnLDollars = profit,
+											HoldingBars = CurrentBars[0] - orderRecordMaster.EntryBar,
+											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
+											EntryTime = orderRecordMaster.EntryTime,
+											ExitTime = Time[0],
+											profitByBar = orderRecordMaster.PriceStats.profitByBar,
+										};
+										
+										//curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, wasGoodExit, orderRecordMaster.OrderSupplementals.divergence, lossOutcomeData);
+										
+										// Send unified record to storage
+										SendUnifiedRecordToStorage(orderRecordMaster, orderRecordMaster.EntryOrderUUID, lossOutcomeData);
 
 										// ADDED: Record pattern performance for losing trades
 										if (!string.IsNullOrEmpty(orderRecordMaster.OrderSupplementals.patternId))
@@ -1317,16 +1426,33 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 						///register - Enhanced registration with direction and entry price for RF exit monitoring
 						string direction = order.OrderAction == OrderAction.Buy ? "long" : "short";
+						
+						// Transfer features from pending to position features for unified storage
+						string patternId = orderRecordMasterBuy.OrderSupplementals?.patternId;
+						if (!string.IsNullOrEmpty(patternId) && HasPendingFeatures(patternId))
+						{
+							var pendingFeatures = GetPendingFeatures(patternId);
+							positionFeatures[orderRecordMasterBuy.EntryOrderUUID] = pendingFeatures;
+							RemovePendingFeatures(patternId);
+							Print($"[UNIFIED-STORAGE] Transferred features for {orderRecordMasterBuy.EntryOrderUUID} from pattern {patternId}");
+						}
+						else
+						{
+							Print($"[UNIFIED-STORAGE] WARNING: No pending features found for {orderRecordMasterBuy.EntryOrderUUID}");
+						}
+						/*
 						orderRecordMasterBuy.OrderSupplementals.isEntryRegisteredDTW = curvesService.RegisterPosition(
 							orderRecordMasterBuy.EntryOrderUUID,
+							orderRecordMasterBuy.OrderSupplementals.patternSubtype,
 							orderRecordMasterBuy.OrderSupplementals.patternId, 
 							orderRecordMasterBuy.EntryOrder.Instrument.FullName.Split(' ')[0],
 							Time[0],
 							order.AverageFillPrice, // Entry price for RF monitoring
 							direction,              // Direction for RF monitoring
-							null                   // Original forecast (not available here)
+							null,                  // Original forecast (not available here)
+							DoNotStore             // Out-of-sample testing flag
 						);
-						
+					*/
 						
 					}
 					if(order.OrderState == OrderState.Working)
@@ -1395,7 +1521,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			            openOrder.ExitOrder = order;
 			            openOrder.ExitOrderUUID = openOrder.ExitOrderUUID+"Other";
 						openOrder.OrderSupplementals.SimulatedStop.ExitOrderUUID = openOrder.ExitOrderUUID+"Other";
-						curvesService.DeregisterPosition(openOrder.EntryOrderUUID);
+						//curvesService.DeregisterPosition(openOrder.EntryOrderUUID);
 				
 			            if(debugOrderPrints) Print($"Processing exit for EntryOrderUUID: {openOrder.EntryOrderUUID}, ExitOrder: {openOrder.ExitOrderUUID+"Other"} type EOSC/Other");
 			        }
@@ -1427,7 +1553,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		ORML.ExitOrderUUID = null;
 		if(curvesService.divergenceScores.ContainsKey(order.Name))
 		{
-			curvesService.DeregisterPosition(order.Name);
+			//curvesService.DeregisterPosition(order.Name);
 		}
 		
 	    try
@@ -1804,6 +1930,203 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	  
 	    // Default: use profit as fallback
 	    return profit > 0;
+	}
+	
+	/// <summary>
+	/// Send unified feature+outcome record to Storage Agent
+	/// </summary>
+	private void SendUnifiedRecordToStorage(OrderRecordMasterLite OrderRecordMaster, string entrySignalId, PositionOutcomeData outcomeData)
+	{
+		try
+		{
+			Print($"[UNIFIED-STORAGE] SendUnifiedRecordToStorage called for {entrySignalId}");
+			
+			// Check if we have features for this position
+			if (!positionFeatures.ContainsKey(entrySignalId))
+			{
+				Print($"[UNIFIED-STORAGE] No features found for {entrySignalId} - skipping storage");
+				Print($"[UNIFIED-STORAGE] Available features keys: {string.Join(", ", positionFeatures.Keys)}");
+				return;
+			}
+			
+			var features = positionFeatures[entrySignalId];
+			
+			// Create unified record
+			var unifiedRecord = new UnifiedTradeRecord
+			{
+				EntrySignalId = entrySignalId,
+				Instrument = features.Instrument,
+				Timestamp = Time[0],
+				EntryType = features.EntryType,
+				Direction = features.Direction,
+				SessionId = curvesService.sessionID,  // Include session ID for backtest separation
+				Features = features.Features,
+				StopLoss = OrderRecordMaster.PriceStats.OrderMaxLoss,
+				TakeProfit = OrderRecordMaster.PriceStats.OrderStatsHardProfitTarget,
+				PnLDollars = outcomeData.PnLDollars,
+				PnLPoints = outcomeData.PnLPoints,
+				HoldingBars = outcomeData.HoldingBars,
+				ExitReason = outcomeData.ExitReason,
+				MaxProfit = OrderRecordMaster.PriceStats.OrderStatsAllTimeHighProfit,
+				MaxLoss =  OrderRecordMaster.PriceStats.OrderStatsAllTimeLowProfit,
+				WasGoodExit = DetermineExitQuality(outcomeData.PnLDollars, 
+				GetExitAction(outcomeData.ExitReason), 0),
+				ExitPrice = outcomeData.ExitPrice,
+				profitByBar = outcomeData.profitByBar
+			};
+			
+			Print($"[UNIFIED-STORAGE] Created unified record with PnL: ${unifiedRecord.PnLDollars}, Features: {unifiedRecord.Features?.Count ?? 0}");
+			
+			// Validate record
+			if (!ValidateUnifiedRecord(unifiedRecord))
+			{
+				Print($"[UNIFIED-STORAGE] Validation failed for {entrySignalId} - skipping storage");
+				return;
+			}
+			
+			// Log the complete unified record before sending
+			/*
+			Print($"[UNIFIED-STORAGE] ===== PREPARING TO SEND UNIFIED RECORD =====");
+			Print($"[UNIFIED-STORAGE] EntrySignalId: {unifiedRecord.EntrySignalId}");
+			Print($"[UNIFIED-STORAGE] Instrument: {unifiedRecord.Instrument}");
+			Print($"[UNIFIED-STORAGE] Direction: {unifiedRecord.Direction}");
+			Print($"[UNIFIED-STORAGE] EntryType: {unifiedRecord.EntryType}");
+			Print($"[UNIFIED-STORAGE] PnL: ${unifiedRecord.PnLDollars:F2} ({unifiedRecord.PnLPoints:F2} pts)");
+			Print($"[UNIFIED-STORAGE] Risk - SL: {unifiedRecord.StopLoss}, TP: {unifiedRecord.TakeProfit}");
+			Print($"[UNIFIED-STORAGE] Feature Count: {unifiedRecord.Features?.Count ?? 0}");
+			
+			if (unifiedRecord.Features != null && unifiedRecord.Features.Count > 0)
+			{
+				// Print first 5 features as sample
+				var sampleFeatures = unifiedRecord.Features.Take(5);
+				foreach (var feat in sampleFeatures)
+				{
+					Print($"[UNIFIED-STORAGE]   Sample Feature: {feat.Key} = {feat.Value:F4}");
+				}
+			}
+			
+			Print($"[UNIFIED-STORAGE] =========================================");
+			*/
+			// Send to storage asynchronously (fire-and-forget for backtesting performance)
+			_ = Task.Run(async () =>
+			{
+				try
+				{
+					if (curvesService == null)
+					{
+						Print($"[UNIFIED-STORAGE] ERROR: curvesService is null - cannot send to storage");
+						Print($"[UNIFIED-STORAGE] Make sure you're running CurvesStrategy, not MainStrategy directly");
+						return;
+					}
+					
+					// Determine data routing for logging
+					string dataType = DoNotStore ? "OUT_OF_SAMPLE" : (StoreAsRecent ? "RECENT" : "TRAINING");
+					
+					// Reduced logging for backtesting performance
+					if (State != State.Historical)
+					{
+						Print($"[UNIFIED-STORAGE] Calling SendToStorageAgent for {entrySignalId} as {dataType} data...");
+					}
+					
+					bool success = await curvesService.SendToStorageAgent(unifiedRecord, DoNotStore, StoreAsRecent);
+					
+					// Only log results in real-time mode or failures
+					if (State != State.Historical || !success)
+					{
+						if (success)
+						{
+							Print($"[UNIFIED-STORAGE] Successfully stored unified record for {entrySignalId}");
+						}
+						else
+						{
+							Print($"[UNIFIED-STORAGE] Failed to store unified record for {entrySignalId}");
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					Print($"[UNIFIED-STORAGE] Error sending to storage: {ex.Message}");
+					Print($"[UNIFIED-STORAGE] Stack trace: {ex.StackTrace}");
+				}
+			});
+			
+			// Clean up position features
+			positionFeatures.Remove(entrySignalId);
+			Print($"[UNIFIED-STORAGE] Removed features for {entrySignalId} from positionFeatures dictionary");
+		}
+		catch (Exception ex)
+		{
+			Print($"[UNIFIED-STORAGE] Error creating unified record: {ex.Message}");
+		}
+	}
+	
+	/// <summary>
+	/// Validate unified record has all required fields
+	/// </summary>
+	private bool ValidateUnifiedRecord(UnifiedTradeRecord record)
+	{
+		// Check required fields are not null/empty
+		if (string.IsNullOrEmpty(record.EntrySignalId) ||
+			string.IsNullOrEmpty(record.Instrument) ||
+			string.IsNullOrEmpty(record.EntryType) ||
+			string.IsNullOrEmpty(record.Direction) ||
+			string.IsNullOrEmpty(record.ExitReason))
+		{
+			Print("[UNIFIED-STORAGE] Validation failed: Missing required string fields");
+			return false;
+		}
+		
+		// Check features exist
+		if (record.Features == null || record.Features.Count == 0)
+		{
+			Print("[UNIFIED-STORAGE] Validation failed: No features");
+			return false;
+		}
+		
+		// Check numeric fields are reasonable
+		if (record.StopLoss <= 0 || record.TakeProfit <= 0)
+		{
+			Print("[UNIFIED-STORAGE] Validation failed: Invalid risk parameters");
+			return false;
+		}
+		
+		if (record.HoldingBars < 0)
+		{
+			Print("[UNIFIED-STORAGE] Validation failed: Invalid holding bars");
+			return false;
+		}
+		
+		return true;
+	}
+	
+	/// <summary>
+	/// Helper to calculate max profit from bar history
+	/// </summary>
+	private double CalculateMaxProfitFromBars(string entrySignalId)
+	{
+		// TODO: Implement based on your bar tracking
+		return 0;
+	}
+	
+	/// <summary>
+	/// Helper to calculate max loss from bar history
+	/// </summary>
+	private double CalculateMaxLossFromBars(string entrySignalId)
+	{
+		// TODO: Implement based on your bar tracking
+		return 0;
+	}
+	
+	/// <summary>
+	/// Convert exit reason string to exit action enum
+	/// </summary>
+	private signalExitAction GetExitAction(string exitReason)
+	{
+		if (Enum.TryParse<signalExitAction>(exitReason, out var action))
+		{
+			return action;
+		}
+		return signalExitAction.NA;
 	}
 	
 	}
