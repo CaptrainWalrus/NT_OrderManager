@@ -19,7 +19,7 @@
 
 ## Overview
 
-OrderManager serves as the **core component** of our algorithmic trading system, functioning as the primary interface between NinjaTrader 8 and our sophisticated Agentic Memory/Risk Agent architecture. This is not a complete system but rather an experimental framework designed for continuous iteration and improvement in algorithmic trading research.
+OrderManager serves as the **core component** of our algorithmic trading system, functioning as the primary interface between NinjaTrader 8 and our Agentic Memory/Risk Agent architecture. This is not a complete system but rather an experimental framework designed for continuous iteration and improvement in algorithmic trading research.
 
 **⚠️ Important Note**: This codebase is intentionally incomplete and will never be "finished" due to the experimental nature of algorithmic trading. Many variables, classes, and code sections remain unused - this is by design, not disorganization. Uncertainty in trading requires maintaining optionality for future experimentation.
 
@@ -256,7 +256,7 @@ ProcessExitConditions();
 SendUnifiedRecordToStorage(orderRecord, entrySignalId, outcomeData);
 ```
 
-## Button UI: Human-in-the-Loop Trading
+## Button UI: Human-in-the-Loop Trading (Optional, only active when strategy is applied to a chart)
 
 The button interface (`Buttons.cs`, `MyButtonControl.xaml`) provides manual override capabilities:
 
