@@ -52,6 +52,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
  	private Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)> pairedEvents = new Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)>();
 	private HashSet<string> processedExitOrders = new HashSet<string>();
 	private double sumProfit;
+	private double printProfit;
 	
 	// Position-Feature mapping for Agentic Memory
 	private Dictionary<string, PendingFeatureSet> positionFeatures = new Dictionary<string, PendingFeatureSet>();
@@ -845,13 +846,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											{
 												sumProfit += profit;
 												patternIdProfits[orderRecordMaster.OrderSupplementals.patternSubtype] += profit;
-												NinjaTrader.Code.Output.Process($"{Time[0]} > {sumProfit}", PrintTo.OutputTab2);
+												
 
 											}
 											else patternIdProfits[orderRecordMaster.OrderSupplementals.patternSubtype] = profit;
 										}
 										
-										double printProfit = 0;
+									
 										printProfit += profit;
 										NinjaTrader.Code.Output.Process($"{Time[0]} > {printProfit}", PrintTo.OutputTab2);
 

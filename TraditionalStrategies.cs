@@ -689,10 +689,29 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				if (candidateSignals.Count == 0)
 					return null;
 				
-				// Pick the signal with highest confidence
+				// BEAR/BULL SIGNAL ALIGNMENT CHECK: Require 75% directional consensus
+				int longSignals = candidateSignals.Count(s => s.newSignal == FunctionResponses.EnterLong);
+				int shortSignals = candidateSignals.Count(s => s.newSignal == FunctionResponses.EnterShort);
+				int totalSignals = candidateSignals.Count;
+				
+				double longPercentage = (double)longSignals / totalSignals;
+				double shortPercentage = (double)shortSignals / totalSignals;
+				
+				// Require 75% consensus in one direction
+				const double ALIGNMENT_THRESHOLD = 0.75;
+				bool hasDirectionalConsensus = longPercentage >= ALIGNMENT_THRESHOLD || shortPercentage >= ALIGNMENT_THRESHOLD;
+				
+				if (!hasDirectionalConsensus || candidateSignals.Count < 3)
+				{
+					strategy.Print($"[TRADITIONAL] REJECTED - Insufficient directional consensus: {longSignals}L/{shortSignals}S from {totalSignals} signals (need {ALIGNMENT_THRESHOLD:P0})");
+					return null;
+				}
+				
+				// Pick the signal with highest confidence from the consensus direction
 				var bestSignal = candidateSignals.OrderByDescending(s => s.signalScore).First();
 				
-				strategy.Print($"[TRADITIONAL] Selected {bestSignal.signalType} with confidence {bestSignal.signalScore:F3} from {candidateSignals.Count} candidates");
+				string consensusDirection = longPercentage >= ALIGNMENT_THRESHOLD ? "BULLISH" : "BEARISH";
+				strategy.Print($"[TRADITIONAL] Selected {bestSignal.signalType} with confidence {bestSignal.signalScore:F3} from {candidateSignals.Count} candidates - {consensusDirection} consensus ({longSignals}L/{shortSignals}S)");
 				
 				return bestSignal;
 			}

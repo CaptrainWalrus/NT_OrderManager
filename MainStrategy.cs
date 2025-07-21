@@ -451,27 +451,68 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		}
 		
 		/// <summary>
-		/// Get contract mapping for ProjectX based on current instrument
+		/// Get contract mapping for ProjectX based on current NinjaTrader instrument
 		/// </summary>
 		public string GetProjectXContractId()
 		{
-			if (!string.IsNullOrEmpty(ProjectXContractId))
-				return ProjectXContractId;
+			try
+			{
+				// Get instrument details from NinjaTrader
+				string masterInstrumentName = Instrument?.MasterInstrument?.Name ?? "";
+				string fullName = Instrument?.FullName ?? "";
+				DateTime expiry = Instrument?.Expiry ?? DateTime.MinValue;
 				
-			// Auto-mapping based on instrument name
-			string instrumentName = Instrument?.FullName ?? "";
-			
-			// Example mappings - customize based on your needs
-			if (instrumentName.Contains("RTY"))
-				return "CON.F.US.RTY.Z24";
-			else if (instrumentName.Contains("ES"))
-				return "CON.F.US.ES.Z24";
-			else if (instrumentName.Contains("NQ"))
-				return "CON.F.US.NQ.Z24";
-			else if (instrumentName.Contains("GC"))
-				return "CON.F.US.GC.G25";
-			else
-				return ProjectXContractId; // Fallback to manual setting
+				// Extract base symbol
+				string baseSymbol = masterInstrumentName.ToUpper();
+				
+				// Determine month code from expiry
+				string monthCode = GetMonthCode(expiry.Month);
+				string yearCode = expiry.Year.ToString().Substring(2); // Last 2 digits
+				
+				// Build ProjectX contract ID format: CON.F.US.{SYMBOL}.{MONTH}{YEAR}
+				string contractId = $"CON.F.US.{baseSymbol}.{monthCode}{yearCode}";
+				
+				Print($"📊 ProjectX Contract Mapping: {fullName} → {contractId}");
+				
+				return contractId;
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Error mapping contract: {ex.Message}");
+				
+				// Fallback to basic mapping
+				string instrumentName = Instrument?.FullName ?? "";
+				if (instrumentName.Contains("ES")) return "CON.F.US.ES.Z24";
+				else if (instrumentName.Contains("NQ")) return "CON.F.US.NQ.Z24";
+				else if (instrumentName.Contains("RTY")) return "CON.F.US.RTY.Z24";
+				else if (instrumentName.Contains("GC")) return "CON.F.US.GC.G25";
+				else if (instrumentName.Contains("MGC")) return "CON.F.US.MGC.G25";
+				else if (instrumentName.Contains("CL")) return "CON.F.US.CL.G25";
+				else return "UNKNOWN";
+			}
+		}
+		
+		/// <summary>
+		/// Convert month number to futures month code
+		/// </summary>
+		private string GetMonthCode(int month)
+		{
+			switch (month)
+			{
+				case 1: return "F";  // January
+				case 2: return "G";  // February
+				case 3: return "H";  // March
+				case 4: return "J";  // April
+				case 5: return "K";  // May
+				case 6: return "M";  // June
+				case 7: return "N";  // July
+				case 8: return "Q";  // August
+				case 9: return "U";  // September
+				case 10: return "V"; // October
+				case 11: return "X"; // November
+				case 12: return "Z"; // December
+				default: return "Z";
+			}
 		}
 		
 		/// <summary>
@@ -1064,6 +1105,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						curvesService.SetStrategyState(true); // true = historical mode
 						Print("CurvesService set to Historical mode (sync behavior)");
 					 }
+					 
 					 
 
 				
@@ -2622,7 +2664,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[NinjaScriptProperty]
 		[Display(Name="ProjectX API Key", Order=1, GroupName="Broker Settings")]
 		public string ProjectXApiKey
-		{ get; set; } = ""; // Get from your firm
+		{ get; set; } = "XkOumk2pucUSbjyf6YIrOgfv5XnR4SiXMnNmNo6XWdI=";
 
 		[NinjaScriptProperty]
 		[Display(Name="ProjectX Username", Order=2, GroupName="Broker Settings")]
@@ -2633,14 +2675,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[Range(0, int.MaxValue)]
 		[Display(Name="ProjectX Account ID", Order=3, GroupName="Broker Settings")]
 		public int ProjectXAccountId
-		{ get; set; } = 12345; // TODO: Get real account ID from ProjectX support
-
-		[NinjaScriptProperty]
-		[Display(Name="ProjectX Contract ID", Order=4, GroupName="Broker Settings")]
-		public string ProjectXContractId
-		{ get; set; } = ""; // e.g., "CON.F.US.RTY.Z24"
-		
-	
+		{ get; set; } = 13417; // Verified account ID for LAUPGKBZYWQK0
 
 		[NinjaScriptProperty]
 		[Range(0, int.MaxValue)]

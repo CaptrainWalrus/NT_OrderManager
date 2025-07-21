@@ -5,87 +5,66 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
-using NinjaTrader.Cbi;
-using NinjaTrader.Gui;
-using NinjaTrader.Gui.Tools;
-using NinjaTrader.NinjaScript;
-using NinjaTrader.NinjaScript.AddOns;
+using NinjaTrader.Code;
 #endregion
 
-namespace NinjaTrader.NinjaScript.AddOns
+namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
     /// <summary>
     /// ProjectX Account Discovery Utility
-    /// Standalone script to authenticate and discover account IDs
+    /// Simple static class to authenticate and discover account IDs
     /// </summary>
-    public class ProjectXAccountDiscovery : AddOnBase
+    public static class ProjectXAccountDiscovery
     {
-        private HttpClient httpClient;
-        private string baseUrl = "https://api.blusky.projectx.com";
-
-        public override void OnStateChange()
-        {
-            if (State == State.SetDefaults)
-            {
-                Description = "ProjectX Account Discovery Tool";
-                Name = "ProjectX Account Discovery";
-            }
-            else if (State == State.Active)
-            {
-                // Initialize HTTP client
-                httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Add("accept", "text/plain");
-                httpClient.Timeout = TimeSpan.FromSeconds(30);
-
-                // Run discovery on a background thread
-                Task.Run(() => DiscoverAccounts());
-            }
-        }
+        private static readonly string baseUrl = "https://api.blusky.projectx.com";
 
         /// <summary>
-        /// Main discovery method
+        /// Run account discovery with provided credentials
         /// </summary>
-        private async Task DiscoverAccounts()
+        public static async Task DiscoverAccounts(string username, string apiKey)
         {
-            try
+            using (var httpClient = new HttpClient())
             {
-                // CONFIGURE YOUR CREDENTIALS HERE
-                string apiKey = "6E8xt#WN";
-                string username = "BLU_USER_511Y75_P";
-
-                LogMessage("🚀 Starting ProjectX Account Discovery...");
-                LogMessage($"   API: {baseUrl}");
-                LogMessage($"   User: {username}");
-                LogMessage("");
-
-                // Step 1: Authenticate
-                LogMessage("🔐 Step 1: Authenticating...");
-                string authToken = await Authenticate(username, apiKey);
-                
-                if (string.IsNullOrEmpty(authToken))
+                try
                 {
-                    LogMessage("❌ Authentication failed. Check credentials.");
-                    return;
+                    // Set up HTTP client
+                    httpClient.DefaultRequestHeaders.Add("accept", "text/plain");
+                    httpClient.Timeout = TimeSpan.FromSeconds(30);
+
+                    LogMessage("🚀 Starting ProjectX Account Discovery...");
+                    LogMessage($"   API: {baseUrl}");
+                    LogMessage($"   User: {username}");
+                    LogMessage("");
+
+                    // Step 1: Authenticate
+                    LogMessage("🔐 Step 1: Authenticating...");
+                    string authToken = await Authenticate(httpClient, username, apiKey);
+                    
+                    if (string.IsNullOrEmpty(authToken))
+                    {
+                        LogMessage("❌ Authentication failed. Check credentials.");
+                        LogMessage("   Make sure you have purchased API access and generated an API key.");
+                        return;
+                    }
+
+                    LogMessage("✅ Authentication successful!");
+                    LogMessage("");
+
+                    // Step 2: Search for accounts
+                    LogMessage("🔍 Step 2: Searching for accounts...");
+                    await SearchAccounts(httpClient, authToken);
                 }
-
-                LogMessage("✅ Authentication successful!");
-                LogMessage("");
-
-                // Step 2: Search for accounts
-                LogMessage("🔍 Step 2: Searching for accounts...");
-                await SearchAccounts(authToken);
-
-            }
-            catch (Exception ex)
-            {
-                LogMessage($"❌ Discovery failed: {ex.Message}");
+                catch (Exception ex)
+                {
+                    LogMessage($"❌ Discovery failed: {ex.Message}");
+                }
             }
         }
 
         /// <summary>
         /// Authenticate with ProjectX
         /// </summary>
-        private async Task<string> Authenticate(string username, string apiKey)
+        private static async Task<string> Authenticate(HttpClient httpClient, string username, string apiKey)
         {
             try
             {
@@ -116,6 +95,15 @@ namespace NinjaTrader.NinjaScript.AddOns
                     else
                     {
                         LogMessage($"   ❌ Auth failed: {authResponse.errorMessage}");
+                        LogMessage($"   Error code: {authResponse.errorCode}");
+                        
+                        if (authResponse.errorCode == 3)
+                        {
+                            LogMessage("   💡 Error 3 = Invalid Credentials");
+                            LogMessage("      - Make sure you're using an API key, not your password");
+                            LogMessage("      - API keys must be generated after purchasing API access");
+                        }
+                        
                         return null;
                     }
                 }
@@ -136,7 +124,7 @@ namespace NinjaTrader.NinjaScript.AddOns
         /// <summary>
         /// Search for available accounts
         /// </summary>
-        private async Task SearchAccounts(string authToken)
+        private static async Task SearchAccounts(HttpClient httpClient, string authToken)
         {
             try
             {
@@ -199,14 +187,9 @@ namespace NinjaTrader.NinjaScript.AddOns
         /// <summary>
         /// Log message to NinjaTrader output window
         /// </summary>
-        private void LogMessage(string message)
+        private static void LogMessage(string message)
         {
-            NinjaTrader.Code.Output.Process(message, PrintTo.OutputTab1);
-        }
-
-        public override void OnTermination()
-        {
-            httpClient?.Dispose();
+            Output.Process(message, PrintTo.OutputTab1);
         }
 
         #region Data Models
