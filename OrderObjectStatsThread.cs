@@ -280,6 +280,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit = currentProfit;
 	        }
 			
+			// ========== PROJECTX PROFIT SYNC CHECK ==========
+			if (selectedBroker == brokerSelection.BlueSky_projectx)
+			{
+				_ = Task.Run(() => UpdateProjectXProfit(simStop));
+				
+				double ntProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsProfit;
+				double pxProfit = simStop.OrderRecordMasterLite.PriceStats.OrderStatsProjectXInfo.calculatedProfit;
+				
+				bool isProfitSynced = CheckProfitSync(ntProfit, pxProfit, simStop.EntryOrderUUID);
+				
+				if (!isProfitSynced)
+				{
+					Print($"🚨 PROFIT DRIFT: {simStop.EntryOrderUUID} NT:{ntProfit:F2} PX:{pxProfit:F2}");
+					_ = Task.Run(() => HandleProfitDrift(simStop, ntProfit, pxProfit));
+				}
+			}
+			
 			DebugFreezePrint($"[PROFIT CHECK] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, Max Loss is ${-maxLoss:F2}");
 	        // 4. MAX LOSS CHECK (after divergence)
 	        if (maxLossHit)

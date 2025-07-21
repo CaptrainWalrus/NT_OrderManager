@@ -851,6 +851,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											else patternIdProfits[orderRecordMaster.OrderSupplementals.patternSubtype] = profit;
 										}
 										
+										double printProfit = 0;
+										printProfit += profit;
+										NinjaTrader.Code.Output.Process($"{Time[0]} > {printProfit}", PrintTo.OutputTab2);
 
 										if( IsInStrategyAnalyzer)
 										{

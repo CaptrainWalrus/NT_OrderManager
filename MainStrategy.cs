@@ -65,6 +65,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[XmlIgnore]
 		private TrainingDataClient trainingDataClient;
 		
+		[XmlIgnore]
+		private ProjectXBridge projectXBridge;
+		
 		public int openOrderTest = 0;
 		[XmlIgnore]
 		public double CurrentBullStrength { get; set; } 
@@ -415,6 +418,364 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				lastDebugPrint = now;
 			}
 		}
+		
+		/// <summary>
+		/// Initialize ProjectX Bridge with authentication and reconciliation
+		/// </summary>
+		private async Task InitializeProjectXBridge()
+		{
+			try
+			{
+				if (string.IsNullOrEmpty(ProjectXApiKey) || string.IsNullOrEmpty(ProjectXUsername) || ProjectXAccountId == 0)
+				{
+					Print("❌ ProjectX configuration incomplete - API Key, Username, and Account ID required");
+					Print("💡 Contact your firm to get API Key and Account ID for algorithmic trading");
+					return;
+				}
+				
+				bool initialized = await projectXBridge.InitializeAsync(ProjectXUsername, ProjectXApiKey, ProjectXAccountId);
+				
+				if (initialized)
+				{
+					Print("✅ ProjectX Bridge initialized successfully");
+				}
+				else
+				{
+					Print("❌ ProjectX Bridge initialization failed");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ ProjectX Bridge initialization exception: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Get contract mapping for ProjectX based on current instrument
+		/// </summary>
+		public string GetProjectXContractId()
+		{
+			if (!string.IsNullOrEmpty(ProjectXContractId))
+				return ProjectXContractId;
+				
+			// Auto-mapping based on instrument name
+			string instrumentName = Instrument?.FullName ?? "";
+			
+			// Example mappings - customize based on your needs
+			if (instrumentName.Contains("RTY"))
+				return "CON.F.US.RTY.Z24";
+			else if (instrumentName.Contains("ES"))
+				return "CON.F.US.ES.Z24";
+			else if (instrumentName.Contains("NQ"))
+				return "CON.F.US.NQ.Z24";
+			else if (instrumentName.Contains("GC"))
+				return "CON.F.US.GC.G25";
+			else
+				return ProjectXContractId; // Fallback to manual setting
+		}
+		
+		/// <summary>
+		/// Execute ProjectX long entry with bracket order
+		/// </summary>
+		private async Task ExecuteProjectXEntryLong(int quantity, string entryUUID)
+		{
+			try
+			{
+				if (projectXBridge == null)
+				{
+					Print($"❌ ProjectX Bridge not initialized for {entryUUID}");
+					return;
+				}
+				
+				// Get risk parameters (simplified - use your actual risk logic)
+				double currentPrice = GetCurrentAsk(0);
+				double stopLoss = currentPrice - (TickSize * 20); // 20 ticks stop
+				double takeProfit = currentPrice + (TickSize * 40); // 40 ticks target
+				string contractId = GetProjectXContractId();
+				
+				// 1. Submit ProjectX bracket order
+				bool projectXSuccess = await projectXBridge.ProjectXEnterLong(quantity, entryUUID, stopLoss, takeProfit, contractId);
+				
+				if (projectXSuccess)
+				{
+					// 2. Submit NT simulation order for strategy continuity
+					EnterLong(1, quantity, entryUUID);
+					Print($"✅ ProjectX LONG order placed: {entryUUID}");
+					
+					// 3. Monitor fill in background
+					_ = Task.Run(() => MonitorProjectXOrder(entryUUID, true));
+				}
+				else
+				{
+					Print($"❌ ProjectX LONG order failed: {entryUUID}");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ ProjectX entry long exception: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Execute ProjectX short entry with bracket order
+		/// </summary>
+		private async Task ExecuteProjectXEntryShort(int quantity, string entryUUID)
+		{
+			try
+			{
+				if (projectXBridge == null)
+				{
+					Print($"❌ ProjectX Bridge not initialized for {entryUUID}");
+					return;
+				}
+				
+				// Get risk parameters (simplified - use your actual risk logic)
+				double currentPrice = GetCurrentBid(0);
+				double stopLoss = currentPrice + (TickSize * 20); // 20 ticks stop
+				double takeProfit = currentPrice - (TickSize * 40); // 40 ticks target
+				string contractId = GetProjectXContractId();
+				
+				// 1. Submit ProjectX bracket order
+				bool projectXSuccess = await projectXBridge.ProjectXEnterShort(quantity, entryUUID, stopLoss, takeProfit, contractId);
+				
+				if (projectXSuccess)
+				{
+					// 2. Submit NT simulation order for strategy continuity
+					EnterShort(1, quantity, entryUUID);
+					Print($"✅ ProjectX SHORT order placed: {entryUUID}");
+					
+					// 3. Monitor fill in background
+					_ = Task.Run(() => MonitorProjectXOrder(entryUUID, false));
+				}
+				else
+				{
+					Print($"❌ ProjectX SHORT order failed: {entryUUID}");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ ProjectX entry short exception: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Monitor ProjectX order fill and handle failures
+		/// </summary>
+		private async Task MonitorProjectXOrder(string entryUUID, bool isLong)
+		{
+			try
+			{
+				// Wait up to 30 seconds for fill
+				int maxWaitSeconds = 30;
+				int checkIntervalSeconds = 2;
+				
+				for (int i = 0; i < maxWaitSeconds / checkIntervalSeconds; i++)
+				{
+					await Task.Delay(checkIntervalSeconds * 1000);
+					
+					// Check if ProjectX position exists
+					var position = await projectXBridge.GetProjectXPositionByUUID(entryUUID);
+					
+					if (position != null && position.isActive)
+					{
+						Print($"✅ ProjectX order filled: {entryUUID}");
+						return;
+					}
+				}
+				
+				// If we get here, ProjectX order didn't fill - emergency exit NT position
+				Print($"⚠️ ProjectX order NOT filled within {maxWaitSeconds}s: {entryUUID}");
+				await EmergencyExitNTPosition(entryUUID, isLong);
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ ProjectX monitoring error: {ex.Message}");
+				await EmergencyExitNTPosition(entryUUID, isLong);
+			}
+		}
+		
+		/// <summary>
+		/// Emergency exit NT position if ProjectX fails
+		/// </summary>
+		private async Task EmergencyExitNTPosition(string entryUUID, bool wasLong)
+		{
+			try
+			{
+				Print($"🚨 EMERGENCY EXIT NT position: {entryUUID}");
+				
+				if (wasLong)
+				{
+					ExitLong(1, 1, $"EXIT_{entryUUID}", entryUUID);
+				}
+				else
+				{
+					ExitShort(1, 1, $"EXIT_{entryUUID}", entryUUID);
+				}
+				
+				Print($"📢 ProjectX order failed - NT position closed: {entryUUID}");
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Emergency exit exception: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Update ProjectX profit information
+		/// </summary>
+		private async Task UpdateProjectXProfit(simulatedStop simStop)
+		{
+			try
+			{
+				if (projectXBridge == null)
+					return;
+					
+				var projectXPosition = await projectXBridge.GetProjectXPositionByUUID(simStop.EntryOrderUUID);
+				if (projectXPosition != null)
+				{
+					double realProfit = CalculateProjectXProfit(projectXPosition, simStop);
+					
+					// Update the ProjectX info object
+					var pxInfo = simStop.OrderRecordMasterLite.PriceStats.OrderStatsProjectXInfo;
+					pxInfo.positionId = projectXPosition.positionId;
+					pxInfo.contractId = projectXPosition.contractId;
+					pxInfo.size = projectXPosition.size;
+					pxInfo.entryPrice = projectXPosition.entryPrice;
+					pxInfo.currentPrice = projectXPosition.currentPrice;
+					pxInfo.unrealizedPnL = projectXPosition.unrealizedPnL;
+					pxInfo.calculatedProfit = realProfit;
+					pxInfo.lastUpdate = DateTime.Now;
+					pxInfo.isActive = true;
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Error updating ProjectX profit: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Calculate ProjectX profit based on position info
+		/// </summary>
+		private double CalculateProjectXProfit(ProjectXPositionInfo position, simulatedStop simStop)
+		{
+			try
+			{
+				bool isLong = simStop.OrderRecordMasterLite.EntryOrder.IsLong;
+				int quantity = simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+				double pointValue = BarsArray[simStop.instrumentSeriesIndex].Instrument.MasterInstrument.PointValue;
+				
+				double profit;
+				if (isLong)
+				{
+					profit = (position.currentPrice - position.entryPrice) * quantity * pointValue;
+				}
+				else
+				{
+					profit = (position.entryPrice - position.currentPrice) * quantity * pointValue;
+				}
+				
+				return profit;
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Error calculating ProjectX profit: {ex.Message}");
+				return 0.0;
+			}
+		}
+		
+		/// <summary>
+		/// Check if NT and ProjectX profits are synchronized
+		/// </summary>
+		private bool CheckProfitSync(double ntProfit, double pxProfit, string entryUUID)
+		{
+			try
+			{
+				double profitDifference = Math.Abs(ntProfit - pxProfit);
+				double toleranceThreshold = Math.Max(50.0, Math.Abs(ntProfit) * 0.05); // 5% or $50, whichever is larger
+				
+				bool isSynced = profitDifference <= toleranceThreshold;
+				
+				if (!isSynced)
+				{
+					Print($"[SYNC-CHECK] {entryUUID}: Diff=${profitDifference:F2} Tolerance=${toleranceThreshold:F2}");
+				}
+				
+				return isSynced;
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Error checking profit sync: {ex.Message}");
+				return true; // Assume synced on error to avoid false alarms
+			}
+		}
+		
+		/// <summary>
+		/// Handle profit drift between NT and ProjectX
+		/// </summary>
+		private async Task HandleProfitDrift(simulatedStop simStop, double ntProfit, double pxProfit)
+		{
+			try
+			{
+				double driftAmount = Math.Abs(ntProfit - pxProfit);
+				string entryUUID = simStop.EntryOrderUUID;
+				
+				// Critical drift threshold - emergency exit
+				double criticalDriftThreshold = 200.0; // $200
+				
+				if (driftAmount > criticalDriftThreshold)
+				{
+					Print($"🚨 CRITICAL DRIFT: {entryUUID} - Emergency exit triggered! Drift=${driftAmount:F2}");
+					
+					// Mark position for emergency exit
+					simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+					simStop.OrderRecordMasterLite.OrderSupplementals.thisSignalExitAction = signalExitAction.EMERGENCY;
+					simStop.OrderRecordMasterLite.OrderSupplementals.ExitReason = $"Emergency profit drift exit: ${driftAmount:F2}";
+					
+					// Exit both NT and ProjectX positions
+					bool isLong = simStop.OrderRecordMasterLite.EntryOrder.IsLong;
+					int quantity = simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+					string exitUUID = simStop.OrderRecordMasterLite.ExitOrderUUID;
+					
+					// Exit NT position
+					if (isLong)
+					{
+						ExitLong(1, quantity, exitUUID, entryUUID);
+					}
+					else
+					{
+						ExitShort(1, quantity, exitUUID, entryUUID);
+					}
+					
+					// Exit ProjectX position
+					string contractId = GetProjectXContractId();
+					if (isLong)
+					{
+						await projectXBridge.ProjectXExitLong(quantity, exitUUID, entryUUID, contractId);
+					}
+					else
+					{
+						await projectXBridge.ProjectXExitShort(quantity, exitUUID, entryUUID, contractId);
+					}
+					
+					// Mark for cleanup
+					simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
+					simStop.OrderRecordMasterLite.OrderSupplementals.forceExit = true;
+					MastersimulatedStopToDelete.Enqueue(simStop);
+					
+					Print($"📢 EMERGENCY: Both NT and ProjectX positions closed due to critical drift");
+				}
+				else
+				{
+					// Log the drift for monitoring
+					Print($"⚠️ PROFIT DRIFT: {entryUUID} NT=${ntProfit:F2} PX=${pxProfit:F2} Diff=${driftAmount:F2}");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Error handling profit drift: {ex.Message}");
+			}
+		}
 	
 		protected override void OnStateChange()
 		{
@@ -576,6 +937,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				// Initialize training data client
 				trainingDataClient = new TrainingDataClient();
+				
+				// Initialize ProjectX Bridge if BlueSky_projectx broker is selected
+				if (selectedBroker == brokerSelection.BlueSky_projectx)
+				{
+					projectXBridge = new ProjectXBridge(this);
+					_ = Task.Run(async () => await InitializeProjectXBridge());
+				}
 				
 			
 				
@@ -2249,6 +2617,28 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[Display(Name="Selected Broker", Order=0, GroupName="Broker Settings")]
 		public brokerSelection selectedBroker
 		{ get; set; }
+		
+		// ProjectX Configuration Properties
+		[NinjaScriptProperty]
+		[Display(Name="ProjectX API Key", Order=1, GroupName="Broker Settings")]
+		public string ProjectXApiKey
+		{ get; set; } = ""; // Get from your firm
+
+		[NinjaScriptProperty]
+		[Display(Name="ProjectX Username", Order=2, GroupName="Broker Settings")]
+		public string ProjectXUsername
+		{ get; set; } = "BLU_USER_511Y75_P";
+
+		[NinjaScriptProperty]
+		[Range(0, int.MaxValue)]
+		[Display(Name="ProjectX Account ID", Order=3, GroupName="Broker Settings")]
+		public int ProjectXAccountId
+		{ get; set; } = 12345; // TODO: Get real account ID from ProjectX support
+
+		[NinjaScriptProperty]
+		[Display(Name="ProjectX Contract ID", Order=4, GroupName="Broker Settings")]
+		public string ProjectXContractId
+		{ get; set; } = ""; // e.g., "CON.F.US.RTY.Z24"
 		
 	
 

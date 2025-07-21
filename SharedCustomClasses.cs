@@ -290,7 +290,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			Apex,
 			Topstep,
-			NinjaTrader
+			NinjaTrader,
+			BlueSky_projectx
 		}
 		public enum patternAction
 		{
@@ -527,7 +528,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			DIV_L,
 			DIV_S,
 			rfExitViolation_S,
-			rfExitViolation_L
+			rfExitViolation_L,
+			EMERGENCY  // ProjectX profit drift emergency exit
 		
 		}
 		
@@ -785,6 +787,92 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public DateTime? forceExitTimestamp { get; set; } // Added to track when exit was flagged
 
 		}
+		// ProjectX Integration Classes
+		public class ProjectXPositionInfo
+		{
+			public int positionId { get; set; } = 0;
+			public string contractId { get; set; } = "";
+			public int size { get; set; } = 0;
+			public double entryPrice { get; set; } = 0.0;
+			public double currentPrice { get; set; } = 0.0;
+			public double unrealizedPnL { get; set; } = 0.0;
+			public double calculatedProfit { get; set; } = 0.0;
+			public DateTime lastUpdate { get; set; } = DateTime.MinValue;
+			public bool isActive { get; set; } = false;
+			
+			// Bracket order tracking
+			public int parentOrderId { get; set; } = 0;
+			public int stopOrderId { get; set; } = 0;
+			public int targetOrderId { get; set; } = 0;
+			public double platformStopPrice { get; set; } = 0.0;
+			public double platformTargetPrice { get; set; } = 0.0;
+			public bool hasProtectiveStop { get; set; } = false;
+			public DateTime stopOrderPlacedTime { get; set; } = DateTime.MinValue;
+			public bool isExiting { get; set; } = false;
+		}
+
+		public class ProjectXOrderSet
+		{
+			public long ParentOrderId { get; set; }
+			public long StopOrderId { get; set; }
+			public long TargetOrderId { get; set; }
+			public string EntryUUID { get; set; }
+		}
+
+		public class ProjectXOrder
+		{
+			public int accountId { get; set; }
+			public string contractId { get; set; }
+			public int type { get; set; }        // 1=Limit, 2=Market, 4=Stop, 5=TrailingStop
+			public int side { get; set; }        // 0=Bid, 1=Ask (per real API)
+			public int size { get; set; }
+			public decimal? limitPrice { get; set; }
+			public decimal? stopPrice { get; set; }
+			public decimal? trailPrice { get; set; }
+			public string customTag { get; set; }
+			public long? linkedOrderId { get; set; }  // API uses int64
+		}
+
+		public class ProjectXOrderResponse
+		{
+			public long orderId { get; set; }        // API uses int64
+			public bool success { get; set; }
+			public int errorCode { get; set; }
+			public string errorMessage { get; set; }
+		}
+
+		public class ProjectXPosition
+		{
+			public int id { get; set; }
+			public int accountId { get; set; }
+			public string contractId { get; set; }
+			public DateTime creationTimestamp { get; set; }
+			public int type { get; set; }        // 1=Long, -1=Short
+			public int size { get; set; }
+			public decimal averagePrice { get; set; }
+			public decimal unrealizedPnL { get; set; }
+			public string customTag { get; set; }
+			public int orderId { get; set; }
+		}
+
+		public class ProjectXOrderStatus
+		{
+			public int orderId { get; set; }
+			public string state { get; set; }   // "FILLED", "WORKING", "CANCELLED", "REJECTED"
+			public int filledQuantity { get; set; }
+			public decimal averageFillPrice { get; set; }
+			public DateTime timestamp { get; set; }
+		}
+
+		public class ProjectXMarketData
+		{
+			public string contractId { get; set; }
+			public double currentPrice { get; set; }
+			public double bid { get; set; }
+			public double ask { get; set; }
+			public DateTime timestamp { get; set; }
+		}
+
 		public class OrderPriceStats
 		{
 			public double OrderStatsEntryPrice { get; set; }
@@ -798,6 +886,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public double OrderStatspullBackPct {get; set; }
 			public double OrderMaxLoss {get; set; }
 			public Dictionary<int,double> profitByBar {get; set; }
+			
+			// ProjectX integration
+			public ProjectXPositionInfo OrderStatsProjectXInfo { get; set; } = new ProjectXPositionInfo();
 		}
 		public class ExitFunctions
 		{

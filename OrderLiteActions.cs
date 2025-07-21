@@ -220,26 +220,29 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					if(OA == OrderAction.Buy && GetMarketPositionByIndex(0) != MarketPosition.Short)
 					{
-						
+						if (selectedBroker == brokerSelection.BlueSky_projectx)
+						{
+							_ = Task.Run(() => ExecuteProjectXEntryLong(1, entryUUID));
+						}
+						else
+						{
 							EnterLong(1,1,entryUUID);
 							Print($"enterlong {entryUUID}");
-							//SubmitOrderUnmanaged(1, OrderAction.Buy, OrderType.Market,accountEntryQuantity, 0, 0,null, orderRecordMasterLite.EntryOrderUUID);
-							return;
-							
+						}
+						return;
 					}
 					else if(OA == OrderAction.SellShort && GetMarketPositionByIndex(0) != MarketPosition.Long)
 					{
-						
-							//Print($"SubmitOrderUnmanaged : openOrderTest {openOrderTest}");
-							//Print($"BarsInProgress {BarsInProgress} BAR:{CurrentBars[BarsInProgress]} TIME: {Time[0]} SubmitOrderUnmanaged!  {simEntry.EntryOrderUUID}, Quantity {Q} EnterShort {GetMarketPositionByIndex(BarsInProgress)}");
-							//SubmitOrderUnmanaged(1, OrderAction.SellShort, OrderType.Market, accountEntryQuantity, 0, 0, null,orderRecordMasterLite.EntryOrderUUID);
-							
+						if (selectedBroker == brokerSelection.BlueSky_projectx)
+						{
+							_ = Task.Run(() => ExecuteProjectXEntryShort(1, entryUUID));
+						}
+						else
+						{
 							EnterShort(1,1,entryUUID);
 							Print($"entershort {entryUUID}");
-
-							return;
-							
-						
+						}
+						return;
 					}
 					else
 					{
