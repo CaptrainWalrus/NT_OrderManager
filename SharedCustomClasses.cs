@@ -922,6 +922,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public string signalDefinition { get; set; }  // "EMA(9) > EMA(21) && Volume > VolumeMA * 1.2"
 			public Dictionary<string, double> signalFeatures { get; set; } // Features at signal time
 			
+			// FIELDS FOR RISK AGENT APPROVAL
+			public double maxStopLoss { get; set; }       // Max SL value for Risk Agent
+			public double maxTakeProfit { get; set; }     // Max TP value for Risk Agent
+			
 		}
 		
 		public class OrderRecordMasterLite
@@ -1215,9 +1219,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		}
 		
-		// NEW: Lightweight position outcome data for ME service deregistration
+		// NEW: Enhanced position outcome data with rich NinjaTrader Trade metrics
 		public class PositionOutcomeData
 		{
+			// Basic trade data (existing)
 			public double ExitPrice { get; set; }
 			public double PnLPoints { get; set; }
 			public double PnLDollars { get; set; }
@@ -1225,7 +1230,26 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public string ExitReason { get; set; }
 			public DateTime EntryTime { get; set; }
 			public DateTime ExitTime { get; set; }
-			public Dictionary<int,double> profitByBar  { get; set; }
+			public Dictionary<int,double> profitByBar { get; set; }
+			
+			// Enhanced Trade object data
+			public double EntryPrice { get; set; }
+			public int Quantity { get; set; }
+			public double Commission { get; set; }
+			public double EntryEfficiency { get; set; }
+			public double ExitEfficiency { get; set; }
+			public double TotalEfficiency { get; set; }
+			public double MaxAdverseExcursion { get; set; }     // MAE
+			public double MaxFavorableExcursion { get; set; }   // MFE
+			public double NetProfitPercent { get; set; }
+			public double Slippage { get; set; }
+			
+			// Session context
+			public double CumulativeProfit { get; set; }
+			public int TradeNumber { get; set; }
+			public double CurrentDrawdown { get; set; }
+			public int ConsecutiveWins { get; set; }
+			public int ConsecutiveLosses { get; set; }
 
 		}
 		
@@ -1266,17 +1290,22 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		/// <summary>
 		/// Traditional strategy types for isolated testing and training data collection
+		/// UPDATED: Completely uncorrelated strategies to eliminate false consensus
 		/// </summary>
 		public enum TraditionalStrategyType
 		{
 			ALL,
-			ORDER_FLOW_IMBALANCE,
-			BOLLINGER_SQUEEZE,
-			EMA_VWAP_CROSS,
-			BREAKOUT,
-			EMA_CROSSOVER,
-			RSI_DIVERGENCE,
-			VWAP_MEAN_REVERSION
+			TIME_SESSION_MOMENTUM,        // Replaces EMA_CROSSOVER - Uses only time/day patterns
+			STATISTICAL_ZSCORE,           // Replaces BREAKOUT - Uses only mathematical Z-scores
+			PRICE_VELOCITY_ACCELERATION,  // Replaces VWAP_MEAN_REVERSION - Uses only physics concepts
+			INTRADAY_MEAN_REVERSION,      // Replaces BOLLINGER_SQUEEZE - Uses only session range behavior
+			TICK_SEQUENCE_PATTERN,        // Replaces ORDER_FLOW_IMBALANCE - Uses only tick patterns  
+			PRICE_DISTRIBUTION_SKEW,      // Replaces RSI_DIVERGENCE - Uses only statistical distribution
+			FOURIER_CYCLE_ANALYSIS,       // Replaces EMA_VWAP_CROSS - Uses only frequency analysis
+			ENTROPY_COMPLEXITY_MEASURE,   // NEW - Uses only information theory
+			LOW_VOLUME_SCALPING,          // Large position scalping during low volume periods - NOT included in ALL
+			ZIGZAG_PIVOT_STRATEGY,        // ZigZag pivot points for support/resistance and trend analysis - NOT included in ALL
+			MGC_PATTERN_FILTER            // XGBoost-discovered patterns for MGC instrument - NOT included in ALL
 		}
 
 		/// <summary>

@@ -85,8 +85,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												/// set stop in Rithmic if we are concerned about NT stalling	
 												SetStopLoss(simEntry.EntryOrderUUID,CalculationMode.Currency,microContractStoploss,false);
 												
-												if (selectedBroker == brokerSelection.BlueSky_projectx)
+												if (selectedBroker == brokerSelection.BlueSky_projectx && !IsInStrategyAnalyzer && isRealTime == true)
 												{
+													EnterLong(strategyDefaultQuantity,simEntry.quantity,simEntry.EntryOrderUUID);
 													_ = Task.Run(() => ExecuteProjectXEntryLong(simEntry.quantity, simEntry.EntryOrderUUID));
 												}
 												else
@@ -107,9 +108,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 												/// set stop in Rithmic if we are concerned about NT stalling	
 												SetStopLoss(simEntry.EntryOrderUUID,CalculationMode.Currency,microContractStoploss,false);
 												
-												if (selectedBroker == brokerSelection.BlueSky_projectx)
+												if (selectedBroker == brokerSelection.BlueSky_projectx && !IsInStrategyAnalyzer && isRealTime == true)
 												{
 													_ = Task.Run(() => ExecuteProjectXEntryShort(simEntry.quantity, simEntry.EntryOrderUUID));
+													EnterShort(strategyDefaultQuantity,simEntry.quantity,simEntry.EntryOrderUUID);
 												}
 												else
 												{

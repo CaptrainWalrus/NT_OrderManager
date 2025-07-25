@@ -410,6 +410,48 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (response.IsSuccessStatusCode)
                 {
                     Log($"[STORAGE-DIRECT] Successfully sent outcome to Storage Agent: {entrySignalId}");
+                    
+                    // PARALLEL: Send outcome to Risk Service for FluidRiskModel (fire-and-forget)
+                    _ = Task.Run(async () => {
+                        try {
+                            var riskPayload = new {
+                                entrySignalId = entrySignalId,
+                                instrument = instrument,
+                                direction = direction,
+                                pnl = outcomeData.PnLDollars,
+                                pnlPerContract = outcomeData.PnLDollars / (outcomeData.Quantity > 0 ? outcomeData.Quantity : 1),
+                                exitReason = outcomeData.ExitReason,
+                                timestamp = outcomeData.ExitTime,
+                                quantity = outcomeData.Quantity,
+                                // Enhanced Trade data for FluidRiskModel
+                                entryPrice = outcomeData.EntryPrice,
+                                exitPrice = outcomeData.ExitPrice,
+                                holdTimeMinutes = outcomeData.HoldingBars,
+                                maxProfit = outcomeData.MaxFavorableExcursion,
+                                maxLoss = outcomeData.MaxAdverseExcursion,
+                                profitByBar = outcomeData.profitByBar,
+                                // Efficiency metrics
+                                entryEfficiency = outcomeData.EntryEfficiency,
+                                exitEfficiency = outcomeData.ExitEfficiency,
+                                totalEfficiency = outcomeData.TotalEfficiency,
+                                commission = outcomeData.Commission,
+                                // Session context for equity tracking
+                                cumulativeProfit = outcomeData.CumulativeProfit,
+                                tradeNumber = outcomeData.TradeNumber,
+                                currentDrawdown = outcomeData.CurrentDrawdown,
+                                consecutiveWins = outcomeData.ConsecutiveWins,
+                                consecutiveLosses = outcomeData.ConsecutiveLosses
+                            };
+                            
+                            var riskContent = new StringContent(JsonConvert.SerializeObject(riskPayload), 
+                                                              Encoding.UTF8, "application/json");
+                            await client.PostAsync("http://localhost:3017/api/digest-trade", riskContent);
+                            Log($"[RISK-DIGEST] Sent enhanced outcome to Risk Service: {entrySignalId}");
+                        } catch (Exception ex) {
+                            Log($"[RISK-DIGEST] Error sending to Risk Service: {ex.Message}");
+                        }
+                    });
+                    
                     return true;
                 }
                 else

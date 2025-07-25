@@ -4,6 +4,14 @@ using System.ComponentModel.DataAnnotations;
 
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
+    // Enum for backtest modes
+    public enum BacktestModes
+    {
+        LiveTrading,
+        BacktestWithReset,
+        BacktestWithPersistentLearning,
+        BacktestIsolated
+    }
     // Configuration class for CurvesV2 integration
     [TypeConverter(typeof(ExpandableObjectConverter))]
     public class CurvesV2Config
@@ -88,6 +96,39 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         [Range(1, 100)]
         public int MinimumPatternTrades { get; set; } = 5;
 
+        // Risk Agent and Anti-Overfitting Settings
+        [Display(Name = "Enable Risk Agent", Description = "Enable Risk Agent for agentic memory and risk management", Order = 22, GroupName = "Risk Agent")]
+        public bool EnableRiskAgent { get; set; } = true;
+
+        [Display(Name = "Risk Agent Port", Description = "Risk Agent service port (default: 3017)", Order = 23, GroupName = "Risk Agent")]
+        [Range(3000, 9999)]
+        public int RiskAgentPort { get; set; } = 3017;
+
+        [Display(Name = "Enable Anti-Overfitting", Description = "Enable anti-overfitting protection for pattern analysis", Order = 24, GroupName = "Risk Agent")]
+        public bool EnableAntiOverfitting { get; set; } = true;
+
+        [Display(Name = "Diminishing Factor", Description = "Confidence reduction factor per pattern exposure (0.5-0.99)", Order = 25, GroupName = "Risk Agent")]
+        [Range(0.5, 0.99)]
+        public double DiminishingFactor { get; set; } = 0.8;
+
+        [Display(Name = "Max Pattern Exposure", Description = "Maximum times a pattern can be used before heavy penalty", Order = 26, GroupName = "Risk Agent")]
+        [Range(1, 20)]
+        public int MaxPatternExposure { get; set; } = 5;
+
+        [Display(Name = "Time Window Minutes", Description = "Time window for pattern clustering detection (minutes)", Order = 27, GroupName = "Risk Agent")]
+        [Range(15, 240)]
+        public int TimeWindowMinutes { get; set; } = 60;
+
+        [Display(Name = "Backtest Mode", Description = "Current backtest mode for anti-overfitting", Order = 28, GroupName = "Risk Agent")]
+        public BacktestModes BacktestMode { get; set; }
+
+        [Display(Name = "Reset Learning on Backtest", Description = "Reset pattern exposure when starting new backtests", Order = 29, GroupName = "Risk Agent")]
+        public bool ResetLearningOnBacktest { get; set; } = true;
+
+        [Display(Name = "Risk Agent Timeout (ms)", Description = "Timeout for Risk Agent requests in milliseconds", Order = 30, GroupName = "Risk Agent")]
+        [Range(100, 10000)]
+        public int RiskAgentTimeoutMs { get; set; } = 2000;
+
         // Default constructor
         public CurvesV2Config()
         {
@@ -153,6 +194,36 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             return $"{GetSignalApiEndpoint()}/api/signals/{instrument}/trade_results";
         }
 
+        // Get Risk Agent API endpoint
+        public string GetRiskAgentEndpoint()
+        {
+            string baseUrl = GetBaseApiEndpoint();
+            return $"{baseUrl}:{RiskAgentPort}";
+        }
+
+        // Get Risk Agent evaluate risk endpoint
+        public string GetRiskEvaluationEndpoint()
+        {
+            return $"{GetRiskAgentEndpoint()}/api/evaluate-risk";
+        }
+
+        // Get Risk Agent anti-overfitting configuration endpoint
+        public string GetAntiOverfittingConfigEndpoint()
+        {
+            return $"{GetRiskAgentEndpoint()}/api/anti-overfitting/configure";
+        }
+
+        // Get Risk Agent backtest control endpoints
+        public string GetBacktestStartEndpoint()
+        {
+            return $"{GetRiskAgentEndpoint()}/api/backtest/start";
+        }
+
+        public string GetBacktestEndEndpoint()
+        {
+            return $"{GetRiskAgentEndpoint()}/api/backtest/end";
+        }
+
         // Fix GetApiEndpoint for backward compatibility
         public string GetApiEndpoint()
         {
@@ -162,7 +233,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         // Override ToString for display in property grids
         public override string ToString()
         {
-            return $"CurvesV2 ({(UseRemoteServer ? "Remote" : "Local")}) [{(UseWebSocketOnly ? "WebSocket Only" : "Mixed Mode")}]";
+            string riskAgentStatus = EnableRiskAgent ? (EnableAntiOverfitting ? "Risk+Anti-Overfitting" : "Risk Only") : "No Risk Agent";
+            return $"CurvesV2 ({(UseRemoteServer ? "Remote" : "Local")}) [{(UseWebSocketOnly ? "WebSocket Only" : "Mixed Mode")}] - {riskAgentStatus}";
         }
     }
 } 

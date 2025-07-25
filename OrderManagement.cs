@@ -52,7 +52,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
  	private Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)> pairedEvents = new Dictionary<string, (OrderUpdateInfo? OrderInfo, ExecutionUpdateInfo? ExecInfo)>();
 	private HashSet<string> processedExitOrders = new HashSet<string>();
 	private double sumProfit;
-	private double printProfit;
 	
 	// Position-Feature mapping for Agentic Memory
 	private Dictionary<string, PendingFeatureSet> positionFeatures = new Dictionary<string, PendingFeatureSet>();
@@ -853,8 +852,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										}
 										
 									
-										printProfit += profit;
-										NinjaTrader.Code.Output.Process($"{Time[0]} > {printProfit}", PrintTo.OutputTab2);
+										// Use NinjaTrader's official profit calculation instead of custom tracking
+										// This includes commissions, slippage, and matches NT's cumulative analysis exactly
+										double officialProfit = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
+										NinjaTrader.Code.Output.Process($"{Time[0]} > {officialProfit}", PrintTo.OutputTab2);
 
 										if( IsInStrategyAnalyzer)
 										{
@@ -866,9 +867,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										Print($"[TRAINING-DEBUG] Exit conditions -  builtSignal null: {orderRecordMaster.builtSignal == null}");
 										if (orderRecordMaster.builtSignal != null)
 										{
-											// NEW: Replace heavy CollectPositionOutcome with lightweight outcome data
+											// NEW: Enhanced outcome data with rich Trade object metrics
 										var outcomeData = new PositionOutcomeData
 										{
+											// Basic data (existing)
 											ExitPrice = executionOrder.AverageFillPrice,
 											PnLPoints = pnlPoints,
 											PnLDollars = profit, // Use the calculated profit from above
@@ -876,8 +878,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
 											EntryTime = orderRecordMaster.EntryTime,
 											ExitTime = Time[0],
-											profitByBar = orderRecordMaster.PriceStats.profitByBar // ADD: Include trajectory data
+											profitByBar = orderRecordMaster.PriceStats.profitByBar
 										};
+										
+										// Populate enhanced Trade object data
+										PopulateEnhancedOutcomeData(outcomeData, executionOrder, orderRecordMaster);
 										
 										// Send outcome data directly to Storage Agent (bypassing ME service)
 										Task.Run(async () =>
@@ -970,9 +975,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
 											EntryTime = orderRecordMaster.EntryTime,
 											ExitTime = Time[0],
-											profitByBar = orderRecordMaster.PriceStats.profitByBar,
-
+											profitByBar = orderRecordMaster.PriceStats.profitByBar
 										};
+										
+										// Populate enhanced Trade object data
+										PopulateEnhancedOutcomeData(winOutcomeData, executionOrder, orderRecordMaster);
 										//curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, true, orderRecordMaster.OrderSupplementals.divergence, winOutcomeData);
 										
 										// Send unified record to storage
@@ -1105,9 +1112,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
 											EntryTime = orderRecordMaster.EntryTime,
 											ExitTime = Time[0],
-											profitByBar = orderRecordMaster.PriceStats.profitByBar,
-
+											profitByBar = orderRecordMaster.PriceStats.profitByBar
 										};
+										
+										// Populate enhanced Trade object data
+										PopulateEnhancedOutcomeData(breakEvenOutcomeData, executionOrder, orderRecordMaster);
 										
 										//curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, false, orderRecordMaster.OrderSupplementals.divergence, breakEvenOutcomeData);
 										
@@ -1214,8 +1223,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 											ExitReason = orderRecordMaster.OrderSupplementals.thisSignalExitAction.ToString(),
 											EntryTime = orderRecordMaster.EntryTime,
 											ExitTime = Time[0],
-											profitByBar = orderRecordMaster.PriceStats.profitByBar,
+											profitByBar = orderRecordMaster.PriceStats.profitByBar
 										};
+										
+										// Populate enhanced Trade object data
+										PopulateEnhancedOutcomeData(lossOutcomeData, executionOrder, orderRecordMaster);
 										
 										//curvesService.DeregisterPosition(orderRecordMaster.EntryOrderUUID, wasGoodExit, orderRecordMaster.OrderSupplementals.divergence, lossOutcomeData);
 										
@@ -2131,6 +2143,115 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			return action;
 		}
 		return signalExitAction.NA;
+	}
+	
+	// Helper methods for enhanced outcome data
+	private double CalculateCurrentDrawdown()
+	{
+		try
+		{
+			if (SystemPerformance.AllTrades.Count < 2) return 0;
+			
+			var trades = SystemPerformance.AllTrades;
+			double runningPnL = 0;
+			double peak = 0;
+			double maxDrawdown = 0;
+			
+			for (int i = 0; i < trades.Count; i++)
+			{
+				runningPnL += trades[i].ProfitCurrency;
+				if (runningPnL > peak)
+					peak = runningPnL;
+				
+				double currentDrawdown = peak - runningPnL;
+				if (currentDrawdown > maxDrawdown)
+					maxDrawdown = currentDrawdown;
+			}
+			
+			return maxDrawdown;
+		}
+		catch { return 0; }
+	}
+	
+	private int CountConsecutiveWins()
+	{
+		try
+		{
+			if (SystemPerformance.AllTrades.Count == 0) return 0;
+			
+			int consecutiveWins = 0;
+			var trades = SystemPerformance.AllTrades;
+			
+			for (int i = trades.Count - 1; i >= 0; i--)
+			{
+				if (trades[i].ProfitCurrency > 0)
+					consecutiveWins++;
+				else
+					break;
+			}
+			
+			return consecutiveWins;
+		}
+		catch { return 0; }
+	}
+	
+	private int CountConsecutiveLosses()
+	{
+		try
+		{
+			if (SystemPerformance.AllTrades.Count == 0) return 0;
+			
+			int consecutiveLosses = 0;
+			var trades = SystemPerformance.AllTrades;
+			
+			for (int i = trades.Count - 1; i >= 0; i--)
+			{
+				if (trades[i].ProfitCurrency <= 0)
+					consecutiveLosses++;
+				else
+					break;
+			}
+			
+			return consecutiveLosses;
+		}
+		catch { return 0; }
+	}
+	
+	// Helper method to populate enhanced trade data
+	private void PopulateEnhancedOutcomeData(PositionOutcomeData outcomeData, Order executionOrder, OrderRecordMasterLite orderRecordMaster)
+	{
+		try
+		{
+			// Enhanced Trade object data
+			outcomeData.EntryPrice = orderRecordMaster.EntryPrice;
+			outcomeData.Quantity = executionOrder.Quantity;
+			outcomeData.Commission = 0; // TODO: Get from Trade object if available
+			
+			// Get efficiency and MAE/MFE from most recent completed trade
+			if (SystemPerformance.AllTrades.Count > 0)
+			{
+				var lastTrade = SystemPerformance.AllTrades[SystemPerformance.AllTrades.Count - 1];
+				outcomeData.EntryEfficiency = lastTrade.EntryEfficiency;
+				outcomeData.ExitEfficiency = lastTrade.ExitEfficiency;
+				outcomeData.TotalEfficiency = lastTrade.TotalEfficiency;
+				outcomeData.MaxAdverseExcursion = lastTrade.MaePoints;
+				outcomeData.MaxFavorableExcursion = lastTrade.MfePoints;
+				outcomeData.NetProfitPercent = lastTrade.ProfitPercent;
+			}
+			
+			outcomeData.Slippage = 0; // TODO: Calculate or get from Trade object
+			
+			// Session context
+			outcomeData.CumulativeProfit = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
+			outcomeData.TradeNumber = SystemPerformance.AllTrades.Count;
+			outcomeData.CurrentDrawdown = CalculateCurrentDrawdown();
+			outcomeData.ConsecutiveWins = CountConsecutiveWins();
+			outcomeData.ConsecutiveLosses = CountConsecutiveLosses();
+		}
+		catch (Exception ex)
+		{
+			Print($"[ENHANCED-OUTCOME] Error populating enhanced data: {ex.Message}");
+		}
 	}
 	
 	}

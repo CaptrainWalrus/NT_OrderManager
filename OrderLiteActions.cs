@@ -220,7 +220,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					if(OA == OrderAction.Buy && GetMarketPositionByIndex(0) != MarketPosition.Short)
 					{
-						if (selectedBroker == brokerSelection.BlueSky_projectx)
+						if(selectedBroker == brokerSelection.BlueSky_projectx && !IsInStrategyAnalyzer && isRealTime == true)
 						{
 							_ = Task.Run(() => ExecuteProjectXEntryLong(1, entryUUID));
 						}
@@ -233,7 +233,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					}
 					else if(OA == OrderAction.SellShort && GetMarketPositionByIndex(0) != MarketPosition.Long)
 					{
-						if (selectedBroker == brokerSelection.BlueSky_projectx)
+						if(selectedBroker == brokerSelection.BlueSky_projectx && !IsInStrategyAnalyzer && isRealTime == true)
 						{
 							_ = Task.Run(() => ExecuteProjectXEntryShort(1, entryUUID));
 						}

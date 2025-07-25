@@ -183,6 +183,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		private OrderActionResult UpdateOrderStats(simulatedStop simStop,int bip,int thisBar)
 		{
 			OrderActionResult action = new OrderActionResult();
+			string contractId = GetProjectXContractId();
 			string msg = "";
 			//Print($"UpdateOrderStats {simStop.EntryOrderUUID}");
 			try 
@@ -314,11 +315,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            {
 					Print("Exiting Long MLL");
 	                ExitLong(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+					if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitLong(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
+
 	            }
 	            else
 	            {
 					Print("Exiting Short MLL");
 	                ExitShort(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+					if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitShort(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
+
 	            }
 	            
 	            simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
@@ -401,11 +406,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							{
 								DebugFreezePrint($"Just exit long PBL");
 								ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitLong(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 							}
 							else
 							{
 								DebugFreezePrint($"Just exit Short PBS");
 								ExitShort(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitShort(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 							}
 							
 							simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;
@@ -424,11 +431,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							{
 								DebugFreezePrint($"Just exit long TBPL");
 								ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitLong(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
+
 							}
 							else
 							{
 								DebugFreezePrint($"Just exit Short TBPS");
 								ExitShort(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitShort(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
+
 							}
 							
 							simStop.OrderRecordMasterLite.OrderSupplementals.SimulatedStop.isExitReady = false;

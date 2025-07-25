@@ -472,7 +472,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				// Build ProjectX contract ID format: CON.F.US.{SYMBOL}.{MONTH}{YEAR}
 				string contractId = $"CON.F.US.{baseSymbol}.{monthCode}{yearCode}";
 				
-				Print($"📊 ProjectX Contract Mapping: {fullName} → {contractId}");
+				//Print($"📊 ProjectX Contract Mapping: {fullName} → {contractId}");
 				
 				return contractId;
 			}
@@ -764,7 +764,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				// Critical drift threshold - emergency exit
 				double criticalDriftThreshold = 200.0; // $200
 				
-				if (driftAmount > criticalDriftThreshold)
+				if (driftAmount > criticalDriftThreshold && !IsInStrategyAnalyzer)
 				{
 					Print($"🚨 CRITICAL DRIFT: {entryUUID} - Emergency exit triggered! Drift=${driftAmount:F2}");
 					
@@ -1068,7 +1068,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	 			//stores the sessions once bars are ready, but before OnBarUpdate is called
 	    		sessionIterator = new SessionIterator(Bars);
 				/// threading
-			
 				
 				
 				}
@@ -2792,6 +2791,43 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[NinjaScriptProperty]
 		[Display(Name="Store As Recent (Live Training)", Description="Store positions as RECENT data for live graduation learning", Order=8, GroupName="Risk Agent Config")]
 		public bool StoreAsRecent { get; set; } = false;
+
+		[NinjaScriptProperty]
+		[Range(3000, 9999)]
+		[Display(Name="Risk Agent Port", Description="Risk Agent service port (default: 3017)", Order=9, GroupName="Risk Agent Config")]
+		public int RiskAgentPort { get; set; } = 3017;
+
+		[NinjaScriptProperty]
+		[Display(Name="Enable Anti-Overfitting", Description="Enable anti-overfitting protection for pattern analysis", Order=10, GroupName="Risk Agent Config")]
+		public bool EnableAntiOverfitting { get; set; } = true;
+
+		[NinjaScriptProperty]
+		[Range(0.5, 0.99)]
+		[Display(Name="Diminishing Factor", Description="Confidence reduction factor per pattern exposure (0.5=strong penalty, 0.99=light penalty)", Order=11, GroupName="Risk Agent Config")]
+		public double DiminishingFactor { get; set; } = 0.8;
+
+		[NinjaScriptProperty]
+		[Range(1, 20)]
+		[Display(Name="Max Pattern Exposure", Description="Maximum times a pattern can be used before heavy penalty", Order=12, GroupName="Risk Agent Config")]
+		public int MaxPatternExposure { get; set; } = 5;
+
+		[NinjaScriptProperty]
+		[Range(15, 240)]
+		[Display(Name="Time Window Minutes", Description="Time window for pattern clustering detection (minutes)", Order=13, GroupName="Risk Agent Config")]
+		public int TimeWindowMinutes { get; set; } = 60;
+
+		[NinjaScriptProperty]
+		[Display(Name="Backtest Mode", Description="Current backtest mode for anti-overfitting", Order=14, GroupName="Risk Agent Config")]
+		public BacktestModes BacktestMode { get; set; } = BacktestModes.LiveTrading;
+
+		[NinjaScriptProperty]
+		[Display(Name="Reset Learning on Backtest", Description="Reset pattern exposure when starting new backtests", Order=15, GroupName="Risk Agent Config")]
+		public bool ResetLearningOnBacktest { get; set; } = true;
+
+		[NinjaScriptProperty]
+		[Range(500, 10000)]
+		[Display(Name="Risk Agent Timeout (ms)", Description="Timeout for Risk Agent requests in milliseconds", Order=16, GroupName="Risk Agent Config")]
+		public int RiskAgentTimeoutMs { get; set; } = 2000;
 		
 	#endregion
 	

@@ -91,7 +91,7 @@ public partial class CurvesStrategy : MainStrategy
 			// Defaults are set as per previous step
 			Description = "Curves strategy"; 
 			Name = "Curves"; 
-			Calculate = Calculate.OnBarClose;
+			Calculate = Calculate.OnPriceChange;
 			EntriesPerDirection = 1;
 			EntryHandling = EntryHandling.UniqueEntries;
 			IsExitOnSessionCloseStrategy = false;
@@ -298,9 +298,9 @@ public partial class CurvesStrategy : MainStrategy
 	protected override void OnBarUpdate()
 	{
 		if(BarsInProgress == 0)
-			{
-				Print($"{Time[0]}");
-			}
+		{
+			Print($"{GetInstrumentCode()} >> {Time[0]}");
+		}
 		// KILL SWITCH: Check for abort file
 		if (System.IO.File.Exists(@"C:\temp\kill_backtest.txt"))
 		{
