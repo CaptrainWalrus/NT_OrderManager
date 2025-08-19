@@ -29,7 +29,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
     {
 		private List<OrderRecordMasterLite> openOrders = new List<OrderRecordMasterLite>();
 
-      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string overWriteSignal,int thisBar,OrderType orderType,patternFunctionResponse builtSignal)
+      	protected void EntryLimitFunctionLite(int accountEntryQuantity,OrderAction OA, signalPackage signalPackageParam,string overWriteSignal,int thisBar,OrderType orderType,patternFunctionResponse builtSignal, StrategyConfig config = null)
 		{	 
 		
 		string subTypeParam = builtSignal.patternSubType;
@@ -46,9 +46,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		// Usage in your logic
 		/// eg instrument 3L
-		if (PositionAccount.Quantity == accountMaxQuantity) /// NEVER go above MAX-1 because we still need 1 to exit! (3L+4L) > 4 Yes
+		if (PositionAccount != null && accountMaxQuantity > 0 && PositionAccount.Quantity >= accountMaxQuantity) /// NEVER go above MAX-1 because we still need 1 to exit! (3L+4L) > 4 Yes
 		{
-		    Print("Order block in position check 2");
+		    Print($"Order blocked: PositionAccount.Quantity ({PositionAccount.Quantity}) >= accountMaxQuantity ({accountMaxQuantity})");
 			return;
 		}
 	
@@ -73,18 +73,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					// Store features for this position if they exist
 					Print($"[FEATURE-STORAGE] Checking for pending features with patternId: {patternIdString}");
-					if (HasPendingFeatures(patternIdString))
-					{
-						var pendingFeatures = GetPendingFeatures(patternIdString);
-						positionFeatures[entryUUID] = pendingFeatures;
-						RemovePendingFeatures(patternIdString);
-						Print($"[FEATURE-STORAGE] Stored features for position {entryUUID} (from patternId: {patternIdString})");
-						Print($"[FEATURE-STORAGE] Feature count: {pendingFeatures?.Features?.Count ?? 0}");
-					}
-					else
-					{
-						Print($"[FEATURE-STORAGE] No pending features found for patternId: {patternIdString}");
-					}
+					
+				
 
 					//Print($"BarsInProgress {BarsInProgress} BAR: {CurrentBars[BarsInProgress]}  TIME{Time[0]}, EntryLimitFunctionLite entryUUID created {entryUUID}");
 			
@@ -92,6 +82,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					
 					OrderSupplementals orderSupplementals = new OrderSupplementals()
 					{
+						SessionID = SessionID,
 						SimulatedStop = null,
 						SimulatedEntry = null,
 						forceExit = false,
@@ -101,6 +92,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						patternId = patternIdString,
 						pullbackModifier = 1,
 						stopModifier = 1,
+						relaySignalType = builtSignal.signalType,
 			
 					};
 					tryCatchSection = "Section 3c Order Management Lite ";
@@ -109,12 +101,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						OrderStatsEntryPrice = signalPackageParam.price,
 						OrderStatsExitPrice = 0,
 						OrderStatsProfit = 0,
-						OrderStatsHardProfitTarget = recTarget != 0 ? recTarget : 999,/// Profit is scalable so dont let to overscale
+						OrderStatsHardProfitTarget = config?.TakeProfit ?? microContractTakeProfit,/// Profit is scalable so dont let to overscale
 						OrderStatsAllTimeHighProfit = 0,
 						OrderStatsAllTimeLowProfit = 0,
-						OrderStatspullBackThreshold = recPullback > softTakeProfitMult ? recPullback : softTakeProfitMult,
+						OrderStatspullBackThreshold = softTakeProfitMult,
 						OrderStatspullBackPct =  pullBackPct,
-						OrderMaxLoss = recMaxLoss != 0 ? recMaxLoss : 666,/// loss is scalable so dont let to overscale
+						OrderMaxLoss = config?.StopLoss ?? microContractStoploss,/// loss is scalable so dont let to overscale
 						profitByBar = new Dictionary<int,double>()
 					};
 					tryCatchSection = "Section 3d Order Management Lite ";
@@ -134,7 +126,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						OrderSupplementals = orderSupplementals,
 						ExitFunctions = exitFunctions,
 						SignalContextId = signalPackageParam.SignalContextId,
-						builtSignal = builtSignal
+						builtSignal = builtSignal,
+						EntryTime = Time[0]
 					};
 					tryCatchSection = "Section 3e Order Management Lite ";
 					simulatedEntry simulatedEntryAction = new simulatedEntry
@@ -222,12 +215,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						if(selectedBroker == brokerSelection.BlueSky_projectx && !IsInStrategyAnalyzer && isRealTime == true)
 						{
-							_ = Task.Run(() => ExecuteProjectXEntryLong(1, entryUUID));
+							_ = Task.Run(() => ExecuteProjectXEntryLong(strategyDefaultQuantity, entryUUID));
 						}
 						else
 						{
-							EnterLong(1,1,entryUUID);
-							Print($"enterlong {entryUUID}");
+							 
+							      // Use dynamic series selection based on data availability
+							      int orderSeriesIndex = GetOrderSeriesIndex();
+
+								  // For LONG: stop is BELOW entry (we lose if price goes down)
+								  double configStopLoss = config?.StopLoss ?? microContractStoploss;
+								  double exitStopPrice = signalPackageParam.price - (configStopLoss / (accountEntryQuantity * Instrument.MasterInstrument.PointValue));
+								
+								  // Limit should be $1 BELOW the stop (worse price, ensuring fill)
+								  double exitLimitPrice = exitStopPrice - (1 / (accountEntryQuantity * Instrument.MasterInstrument.PointValue));
+								
+								  EnterLong(orderSeriesIndex, strategyDefaultQuantity, entryUUID);
+								  ExitLongStopLimit(orderSeriesIndex, true, strategyDefaultQuantity, exitLimitPrice, exitStopPrice, exitUUID, entryUUID);				  
 						}
 						return;
 					}
@@ -235,12 +239,25 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						if(selectedBroker == brokerSelection.BlueSky_projectx && !IsInStrategyAnalyzer && isRealTime == true)
 						{
-							_ = Task.Run(() => ExecuteProjectXEntryShort(1, entryUUID));
+							_ = Task.Run(() => ExecuteProjectXEntryShort(strategyDefaultQuantity, entryUUID));
 						}
 						else
 						{
-							EnterShort(1,1,entryUUID);
-							Print($"entershort {entryUUID}");
+							
+							
+							      // Use dynamic series selection based on data availability
+							     int orderSeriesIndex = GetOrderSeriesIndex();
+
+								  // For SHORT: stop is ABOVE entry (we lose if price goes up)
+								  double configStopLoss = config?.StopLoss ?? microContractStoploss;
+								  double exitStopPrice = signalPackageParam.price + (configStopLoss / (accountEntryQuantity * Instrument.MasterInstrument.PointValue));
+								
+								  // Limit should be $1 ABOVE the stop (worse price, ensuring fill)
+								  double exitLimitPrice = exitStopPrice + (1 / (accountEntryQuantity * Instrument.MasterInstrument.PointValue));
+								
+								  EnterShort(orderSeriesIndex, strategyDefaultQuantity, entryUUID);
+								  ExitShortStopLimit(orderSeriesIndex, true, strategyDefaultQuantity, exitLimitPrice, exitStopPrice, exitUUID, entryUUID);
+							  
 						}
 						return;
 					}

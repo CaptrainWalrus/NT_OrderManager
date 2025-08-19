@@ -24,13 +24,288 @@ using NinjaTrader.NinjaScript.DrawingTools;
 using System.Reflection;
 using System.Drawing;
 using System.IO;
+using Newtonsoft.Json;
 
 #endregion
 
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
-	
+    /// <summary>
+    /// Configuration class for strategy-specific parameters
+    /// </summary>
+    public class StrategyConfig
+    {
+        public executionMode ExecutionMode { get; set; }
+		public double? TakeProfit { get; set; }
+        public double? StopLoss { get; set; }
+        public double? SoftTakeProfitMult { get; set; }
+        public bool? PullBackExitEnabled { get; set; }
+        public bool? TakeBigProfitEnabled { get; set; }
+        public HashSet<string> AllowedSignals { get; set; } = new HashSet<string>();
+        public Dictionary<string, bool> EntryConditions { get; set; } = new Dictionary<string, bool>();
+        public Dictionary<string, object> LossVectorFilters { get; set; } = new Dictionary<string, object>();
+        
+        public StrategyConfig()
+        {
+        }
+        
+        // Helper methods for Loss Vector Filters
+        public bool GetFilterBool(string filterName, bool defaultValue = false)
+        {
+            if (LossVectorFilters == null || !LossVectorFilters.ContainsKey(filterName))
+                return defaultValue;
+            
+            if (LossVectorFilters[filterName] is bool boolValue)
+                return boolValue;
+            
+            if (bool.TryParse(LossVectorFilters[filterName]?.ToString(), out bool parsed))
+                return parsed;
+            
+            return defaultValue;
+        }
+        
+        public double GetFilterDouble(string filterName, double defaultValue = 0.0)
+        {
+            if (LossVectorFilters == null || !LossVectorFilters.ContainsKey(filterName))
+                return defaultValue;
+            
+            if (LossVectorFilters[filterName] is double doubleValue)
+                return doubleValue;
+            
+            if (double.TryParse(LossVectorFilters[filterName]?.ToString(), out double parsed))
+                return parsed;
+            
+            return defaultValue;
+        }
+        
+        public int GetFilterInt(string filterName, int defaultValue = 0)
+        {
+            if (LossVectorFilters == null || !LossVectorFilters.ContainsKey(filterName))
+                return defaultValue;
+            
+            if (LossVectorFilters[filterName] is int intValue)
+                return intValue;
+            
+            if (int.TryParse(LossVectorFilters[filterName]?.ToString(), out int parsed))
+                return parsed;
+            
+            return defaultValue;
+        }
+        
+        public StrategyConfig(string configName)
+        {
+            // Load configuration based on name (PUMPKIN, etc.)
+            LoadConfig(configName);
+        }
+        
+        private void LoadConfig(string configName)
+        {
+            if (string.IsNullOrEmpty(configName))
+            {
+                // No config name provided - use defaults
+                AllowedSignals = new HashSet<string>();
+                return;
+            }
+            
+            try
+            {
+                // Look for config file in Configs subfolder
+                // Try both exact name and uppercase version for compatibility
+                string configDir = Path.Combine(GetStrategyDirectory(), "Configs");
+                string configPath = Path.Combine(configDir, $"{configName}.json");
+                
+                // If exact name doesn't exist, try uppercase
+                if (!File.Exists(configPath))
+                {
+                    configPath = Path.Combine(configDir, $"{configName.ToUpper()}.json");
+                }
+                
+                if (File.Exists(configPath))
+                {
+                   // NinjaTrader.Code.Output.Process($"[CONFIG] Found file at: {configPath}", NinjaTrader.NinjaScript.PrintTo.OutputTab1);
+                    string jsonContent = File.ReadAllText(configPath);
+                    var configData = JsonConvert.DeserializeObject<StrategyConfigFile>(jsonContent);
+                    
+                    if (configData != null)
+                    {
+                        TakeProfit = configData.TakeProfit;
+                        StopLoss = configData.StopLoss;
+                        SoftTakeProfitMult = configData.SoftTakeProfitMult;
+                        PullBackExitEnabled = configData.PullBackExitEnabled;
+                        TakeBigProfitEnabled = configData.TakeBigProfitEnabled;
+                        
+                        // Load Loss Vector Filters if present
+                        if (configData.LossVectorFilters != null)
+                        {
+                            LossVectorFilters = new Dictionary<string, object>(configData.LossVectorFilters);
+                        }
+                        
+						if(configData.ExecutionMode.ToString() == "decaySystem") ExecutionMode = executionMode.decaySystem;
+						if(configData.ExecutionMode.ToString() == "Branching") ExecutionMode = executionMode.Branching;
+						if(configData.ExecutionMode.ToString() == "VotingSystem") ExecutionMode = executionMode.VotingSystem;
+						if(configData.ExecutionMode.ToString() == "Consensus") ExecutionMode = executionMode.Consensus;
+			
+                        // Debug logging
+                        //NinjaTrader.Code.Output.Process($"[CONFIG-LOADED] {configName}: TP={TakeProfit}, SL={StopLoss}, SoftTP={SoftTakeProfitMult}", NinjaTrader.NinjaScript.PrintTo.OutputTab1);
+                        
+                        // Handle v2.0 "signals" field, new format (EntryConditions), and old format (AllowedSignals)
+                        if (configData.Signals != null)
+                        {
+                            // v2.0 format: use Signals dictionary
+                            EntryConditions = new Dictionary<string, bool>(configData.Signals);
+                            // Convert active conditions to AllowedSignals for backward compatibility
+                            AllowedSignals = new HashSet<string>(
+                                configData.Signals
+                                    .Where(kvp => kvp.Value == true)
+                                    .Select(kvp => kvp.Key)
+                            );
+                        }
+                        else if (configData.EntryConditions != null)
+                        {
+                            // New format: use EntryConditions dictionary
+                            EntryConditions = new Dictionary<string, bool>(configData.EntryConditions);
+                            // Convert active conditions to AllowedSignals for backward compatibility
+                            AllowedSignals = new HashSet<string>(
+                                configData.EntryConditions
+                                    .Where(kvp => kvp.Value == true)
+                                    .Select(kvp => kvp.Key)
+                            );
+                        }
+                        else if (configData.AllowedSignals != null)
+                        {
+                            // Legacy format: convert AllowedSignals to EntryConditions
+                            AllowedSignals = new HashSet<string>(configData.AllowedSignals);
+                            EntryConditions = new Dictionary<string, bool>();
+                            foreach (var signal in configData.AllowedSignals)
+                            {
+                                EntryConditions[signal] = true;
+                            }
+                        }
+                        else
+                        {
+                            // No signal configuration
+                            AllowedSignals = new HashSet<string>();
+                            EntryConditions = new Dictionary<string, bool>();
+                        }
+                    }
+                }
+                else
+                {
+                    // Config file not found - use defaults (no filtering)
+                    AllowedSignals = new HashSet<string>();
+                }
+            }
+            catch (Exception)
+            {
+                // Error loading config - use defaults (no filtering)
+                AllowedSignals = new HashSet<string>();
+            }
+        }
+        
+        /// <summary>
+        /// Check if a specific entry condition is active
+        /// </summary>
+        /// <param name="signalType">The signal type to check</param>
+        /// <returns>True if the condition is active, false otherwise</returns>
+        public bool IsEntryConditionActive(string signalType)
+        {
+            if (EntryConditions != null && EntryConditions.ContainsKey(signalType))
+            {
+                return EntryConditions[signalType];
+            }
+            
+            // Fallback to AllowedSignals for backward compatibility
+            return AllowedSignals != null && AllowedSignals.Contains(signalType);
+        }
+
+        /// <summary>
+        /// Check if any entry conditions are configured (not in no-filter mode)
+        /// </summary>
+        /// <returns>True if filtering is enabled, false if all signals are allowed</returns>
+        public bool HasEntryConditionFiltering()
+        {
+            // If we have EntryConditions, check if any are active
+            if (EntryConditions != null && EntryConditions.Count > 0)
+            {
+                return EntryConditions.Values.Any(active => active);
+            }
+            
+            // Fallback to AllowedSignals
+            return AllowedSignals != null && AllowedSignals.Count > 0;
+        }
+
+        private string GetStrategyDirectory()
+        {
+            // Get the directory where the strategy assembly is located
+            try
+            {
+                // First try the correct path for OrderManager configs
+                // This path MUST match where NinjaTrader compiles the strategy
+                string documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                string orderManagerPath = Path.Combine(documentsPath, @"NinjaTrader 8\bin\Custom\Strategies\OrderManager");
+                if (Directory.Exists(orderManagerPath))
+                {
+                    return orderManagerPath;
+                }
+                
+                // Fallback to assembly location
+                string assemblyLocation = Assembly.GetExecutingAssembly().Location;
+                return Path.GetDirectoryName(assemblyLocation);
+            }
+            catch
+            {
+                // Fallback to current directory
+                return Directory.GetCurrentDirectory();
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Helper class for JSON deserialization
+    /// </summary>
+    internal class StrategyConfigFile
+    {
 		
+        [JsonProperty("ExecutionMode")]
+        public executionMode ExecutionMode { get; set; }
+        
+		[JsonProperty("TakeProfit")]
+        public double? TakeProfit { get; set; }
+        
+        [JsonProperty("StopLoss")]
+        public double? StopLoss { get; set; }
+        
+        [JsonProperty("SoftTakeProfitMult")]
+        public double? SoftTakeProfitMult { get; set; }
+        
+        [JsonProperty("PullBackExitEnabled")]
+        public bool? PullBackExitEnabled { get; set; }
+        
+        [JsonProperty("TakeBigProfitEnabled")]
+        public bool? TakeBigProfitEnabled { get; set; }
+        
+        [JsonProperty("AllowedSignals")]
+        public List<string> AllowedSignals { get; set; }
+        
+        [JsonProperty("EntryConditions")]
+        public Dictionary<string, bool> EntryConditions { get; set; }
+        
+        // Support "signals" field from v2.0 configs
+        [JsonProperty("signals")]
+        public Dictionary<string, bool> Signals { get; set; }
+        
+        // Loss Vector Filters
+        [JsonProperty("lossVectorFilters")]
+        public Dictionary<string, object> LossVectorFilters { get; set; }
+    }
+	
+		public enum executionMode
+		{
+			decaySystem,
+			Branching,
+			VotingSystem,
+			Consensus
+		}
 		
 		public enum entryMechanic
 		{
@@ -770,6 +1045,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 		public class OrderSupplementals
 		{
+			public string SessionID { get; set; }
 			public simulatedStop SimulatedStop { get; set; }
 			public simulatedEntry SimulatedEntry { get; set; }
 			public bool forceExit { get; set; }
@@ -785,6 +1061,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public double stopModifier { get; set; }
 			public bool isEntryRegisteredDTW { get; set; }
 			public DateTime? forceExitTimestamp { get; set; } // Added to track when exit was flagged
+			public string relaySignalType { get; set; }
+			public bool trailingStopActivated { get; set; } = false; // Track if trailing stop has been activated
 
 		}
 		// ProjectX Integration Classes
@@ -817,6 +1095,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public long StopOrderId { get; set; }
 			public long TargetOrderId { get; set; }
 			public string EntryUUID { get; set; }
+			public string ContractId { get; set; } // Added for trailing stop functionality
+			public bool IsLong { get; set; } // Added to track direction
 		}
 
 		public class ProjectXOrder
@@ -925,6 +1205,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			// FIELDS FOR RISK AGENT APPROVAL
 			public double maxStopLoss { get; set; }       // Max SL value for Risk Agent
 			public double maxTakeProfit { get; set; }     // Max TP value for Risk Agent
+			public double confidence { get; set; }       // Entry condition confidence (0.0 - 1.0)
 			
 		}
 		
@@ -944,6 +1225,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			// NEW FIELDS FOR RF FILTERING
 			public patternFunctionResponse builtSignal { get; set; } // Reference to original signal
 			public DateTime EntryTime { get; set; }
+			public DateTime ExitTime { get; set; }
 			public double EntryPrice { get; set; }
 		}
 		
@@ -1292,7 +1574,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Traditional strategy types for isolated testing and training data collection
 		/// UPDATED: Completely uncorrelated strategies to eliminate false consensus
 		/// </summary>
-		public enum TraditionalStrategyType
+		// LEGACY - No longer used, replaced by ImprovedStrategyFilter
+	public enum TraditionalStrategyType
 		{
 			ALL,
 			TIME_SESSION_MOMENTUM,        // Replaces EMA_CROSSOVER - Uses only time/day patterns
@@ -1306,6 +1589,24 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			LOW_VOLUME_SCALPING,          // Large position scalping during low volume periods - NOT included in ALL
 			ZIGZAG_PIVOT_STRATEGY,        // ZigZag pivot points for support/resistance and trend analysis - NOT included in ALL
 			MGC_PATTERN_FILTER            // XGBoost-discovered patterns for MGC instrument - NOT included in ALL
+		}
+
+		/// <summary>
+		/// Improved Strategy Filter for ImprovedTraditionalStrategies system
+		/// </summary>
+		public enum ImprovedStrategyFilter
+		{
+			ALL,                          // NEW: Use Math/Lag voting system (recommended)
+			SINGLE_BEST,                  // Execute highest confidence single strategy
+			UNCORRELATED,                 // Math segment - leading indicators (Time, Statistical, Volume, Structure)
+			Z_SCORE_ENHANCED,             // Lag segment - confirming indicators (Momentum, Trend, Bands)
+			PURE_STATISTICAL,             // Only pure statistical strategies
+			VOLUME_BASED,                 // Only volume-related strategies
+			STRUCTURE_BASED,              // Only price structure strategies
+			INSTRUMENT_SPECIFIC,          // Only instrument-specific strategies (MGC, etc)
+			HIGH_PRIORITY_ONLY,           // Only Priority <= 5 strategies
+			SCALPING_ONLY,                // Only high-frequency scalping strategies
+			SPECIFIC_STRATEGY             // Execute single named strategy (see SpecificStrategyName)
 		}
 
 		/// <summary>
@@ -1335,26 +1636,27 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			public Dictionary<int,double> profitByBar {get; set; }
 		}
 		
+		// COMMENTED OUT: SignalFeatures PendingFeatureSet class
 		/// <summary>
 		/// Represents a set of features pending approval
 		/// </summary>
-		public class PendingFeatureSet
-		{
-			public string EntrySignalId { get; set; }
-			public Dictionary<string, double> Features { get; set; }
-			public string Instrument { get; set; }
-			public string Direction { get; set; }
-			public string EntryType { get; set; }
-			public DateTime Timestamp { get; set; }
-			public int TimeframeMinutes { get; set; } = 1;  // NEW: Timeframe in minutes
-			public int Quantity { get; set; } = 1;  // NEW: Position size (number of contracts)
-			public double StopLoss { get; set; }
-			public double TakeProfit { get; set; }
-			public double Confidence { get; set; }
-			public double RecPullback { get; set; } // Soft-floor exit value
-			public double MaxStopLoss { get; set; }
-			public double MaxTakeProfit { get; set; }
-		}
+		// public class PendingFeatureSet
+		// {
+		//	public string EntrySignalId { get; set; }
+		//	public Dictionary<string, double> Features { get; set; }
+		//	public string Instrument { get; set; }
+		//	public string Direction { get; set; }
+		//	public string EntryType { get; set; }
+		//	public DateTime Timestamp { get; set; }
+		//	public int TimeframeMinutes { get; set; } = 1;  // NEW: Timeframe in minutes
+		//	public int Quantity { get; set; } = 1;  // NEW: Position size (number of contracts)
+		//	public double StopLoss { get; set; }
+		//	public double TakeProfit { get; set; }
+		//	public double Confidence { get; set; }
+		//	public double RecPullback { get; set; } // Soft-floor exit value
+		//	public double MaxStopLoss { get; set; }
+		//	public double MaxTakeProfit { get; set; }
+		// }
 
  
 }

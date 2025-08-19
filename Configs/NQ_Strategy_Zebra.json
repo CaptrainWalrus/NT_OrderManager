@@ -1,0 +1,31 @@
+{
+  "name": "NQ_Strategy_Zebra",
+  "version": "2.0",
+  "created": "2025-08-19T05:20:03.276Z",
+  "TakeProfit": 1000,
+  "StopLoss": 20,
+  "SoftTakeProfitMult": 250,
+  "PullBackExitEnabled": true,
+  "TakeBigProfitEnabled": true,
+  "signals": {
+    "VOLUME_DIRECTION": false,
+    "PRICE_MEAN_REVERSION": false,
+    "PRICE_BREAKOUT": false,
+    "RSI_EXTREME": false,
+    "SIMPLE_MACD": false,
+    "SPREAD_ADJUSTED_RSI": false,
+    "ATR_BAND_MOMENTUM": true,
+    "simple_EMACross": true,
+    "WICK_TREND_PUSH": false,
+    "RSI_EXTREME_CONFIRMATION": false,
+    "PRICE_BREAKOUT_CONFIRMATION": false,
+    "EMA_CROSS_CONFIRMATION": false,
+    "MACD_HISTOGRAM_ACCELERATION": false,
+    "RELATIVE_VOLUME_STRENGTH": false,
+    "EMA_CROSSOVER_MOMENTUM": false,
+    "TIME_SESSION_MOMENTUM": false,
+    "TICK_MOMENTUM_SCALP": false,
+    "WICK_TREND_REVERSAL": false
+  },
+  "ExecutionMode": "Consensus"
+}

@@ -37,6 +37,7 @@ using System.Collections.Concurrent;
 //This namespace holds Strategies in this folder and is required. Do not change it. 
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
+
 	[Gui.CategoryOrder("Risk Agent Config", 1)]
 	[Gui.CategoryOrder("Class Parameters", 2)]
 	[Gui.CategoryOrder("Entry Parameters", 3)]
@@ -63,10 +64,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public CurvesV2Service curvesService;
 		
 		[XmlIgnore]
+		public DropletService dropletService;
+		
+		[XmlIgnore]
+		public DropletIntegration dropletIntegration;
+		
+		[XmlIgnore]
 		private TrainingDataClient trainingDataClient;
 		
 		[XmlIgnore]
 		private ProjectXBridge projectXBridge;
+		
+		[XmlIgnore]
+		// Legacy: protected TraditionalStrategies traditionalStrategies;
+		protected ImprovedTraditionalStrategies improvedTraditionalStrategies;
+		
+		[XmlIgnore]
+		public string SessionID { get; private set; }
 		
 		public int openOrderTest = 0;
 		[XmlIgnore]
@@ -132,6 +146,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		protected int numberOfWins = 0;
 		protected int numberOfLosses = 0;
 		protected double totalProfit = 0;
+		
+		// Profit tracking dictionary: <Time[0] string, profit value>
+		private Dictionary<string, double> profitByTimeStamp = new Dictionary<string, double>();
 		protected double totalLoss = 0;
 		/*  // Set default master value
 		protected double MasterValue2 = 0.5;  // Default midpoint for control
@@ -172,6 +189,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		private bool isWithinDoNotTradeWindow = false;
 		private bool testWebhook = false;
 		private bool saveTest = true;
+		private bool configOnce = false;
 		private bool pauseThompson = false;
 		private double previousNetProfit = 0;
 		private double currentNetProfit = 0;
@@ -188,10 +206,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	 	private signalPackage PreppedSignalPackage;
 		private DateTime startTime;
 
-
-
+		protected executionMode strategyExecutionMode;
 		
-		
+		public double pinPrice = 0;
+		public DateTime pinTime;
+		public string pinDirection = "";
+			
 		private bool DebugMode;
 		
 		private bool isTerminationLogicRun = false; // Flag to ensure termination logic runs only once per instance
@@ -206,13 +226,19 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		private DateTime lastPrintDate;
 		private DateTime lastDailyDate;
 		private static int seed = 012345; // You can change this seed value to get different sequences
+		
+		// Trade correlation analysis state variables
+		private int dailyTradeCounter = 0;
+		private string lastTradeOutcome = "NONE";
+		private DateTime lastTradeDate = DateTime.MinValue;
 	//	private int usedSeed = 0;
-		private SessionIterator sessionIterator;
+		public SessionIterator sessionIterator;
 // Get the actual session end time
 		private DateTime sessionBeginTime;
 		private DateTime sessionEndTime;
 		private DateTime sessionExitTime;
 		private bool sessionCloseRequested;
+		private bool flattenWindowAnnounced;
 		public double dailyProfitATH = double.MinValue;
 		public double intervalNetProfit = 0;
 		public bool btnEnterLong = false;
@@ -239,6 +265,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		protected int savedBar;
 		protected int lastActionBar;
 		protected int barSpacing;
+		protected int lastSignalBar = -999;  // Track when last signal was generated
+		protected int signalCooldownBars = 5;  // Minimum bars between signals
+		protected string lastSignalDirection = "";  // Track last signal direction
+		
+
+		
  		public Random random = new Random();
 		protected int MarginRiskBar;
 		protected double profitRate;
@@ -337,6 +369,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		protected List<simulatedStop> MasterSimulatedStops;
 		protected List<OrderActionResult> OrderActionResultList;
 		
+		
 		/// new version of OrderFlowPatternATH
 			
 		private Dictionary<string, OrderFlowPattern> OrderFlowPatternATH = new Dictionary<string, OrderFlowPattern>();
@@ -391,6 +424,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[NinjaScriptProperty]    
 		[Display(Name="Use Remote Service", Order=0, GroupName="Class Parameters")]
 		public bool UseRemoteServiceParameter { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name="Droplet Endpoint URL", Order=1, GroupName="Droplet Configuration")]
+		public string DropletEndpoint { get; set; } = "https://yourtradejournal-relay.onrender.com";
+		
+		[NinjaScriptProperty]
+		[Display(Name="Droplet API Key", Order=2, GroupName="Droplet Configuration")]
+		public string DropletApiKey { get; set; } = "";
+		
+		[NinjaScriptProperty]
+		[Display(Name="Enable Droplet Service", Order=3, GroupName="Droplet Configuration")]
+		public bool EnableDropletService { get; set; } = true;
 
 	
 
@@ -644,13 +689,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			{
 				Print($"🚨 EMERGENCY EXIT NT position: {entryUUID}");
 				
+				int orderSeriesIndex = GetOrderSeriesIndex();
 				if (wasLong)
 				{
-					ExitLong(1, 1, $"EXIT_{entryUUID}", entryUUID);
+					ExitLong(orderSeriesIndex, 1, $"EXIT_{entryUUID}", entryUUID);
 				}
 				else
 				{
-					ExitShort(1, 1, $"EXIT_{entryUUID}", entryUUID);
+					ExitShort(orderSeriesIndex, 1, $"EXIT_{entryUUID}", entryUUID);
 				}
 				
 				Print($"📢 ProjectX order failed - NT position closed: {entryUUID}");
@@ -658,6 +704,69 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			catch (Exception ex)
 			{
 				Print($"❌ Emergency exit exception: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Convert existing stop to trailing stop when profit threshold is reached
+		/// </summary>
+		private async Task ConvertToTrailingStop(simulatedStop simStop, double currentProfit)
+		{
+			try
+			{
+				string entryUUID = simStop.EntryOrderUUID;
+				
+				// Get the ProjectX order set
+				var orderSet = projectXBridge.GetOrderSet(entryUUID);
+				if (orderSet == null)
+				{
+					Print($"❌ No ProjectX order set found for {entryUUID}");
+					return;
+				}
+				
+				// Calculate new trailing stop price
+				double entryPrice = simStop.OrderRecordMasterLite.EntryOrder.AverageFillPrice;
+				bool isLong = simStop.OrderRecordMasterLite.EntryOrder.IsLong;
+				int quantity = simStop.OrderRecordMasterLite.EntryOrder.Quantity;
+				
+				// Set trailing stop at pullBackPct of current profit (e.g., 50% = $150 if profit is $300)
+				double trailAmount = (currentProfit * pullBackPct) / quantity; // Per contract trail amount
+				double trailingStopPrice = isLong ? 
+					entryPrice + trailAmount : 
+					entryPrice - trailAmount;
+				
+				Print($"[TRAILING-STOP] Converting stop for {entryUUID}: Entry ${entryPrice:F2}, Current profit ${currentProfit:F2}, Trail at ${trailingStopPrice:F2}");
+				
+				// Cancel existing stop order
+				bool cancelSuccess = await projectXBridge.CancelStopOrder(entryUUID);
+				if (!cancelSuccess)
+				{
+					Print($"⚠️ Failed to cancel stop for trailing conversion: {entryUUID}");
+					return;
+				}
+				
+				// Small delay to ensure cancellation is processed
+				await Task.Delay(500);
+				
+				// Place new trailing stop order
+				bool trailSuccess = await projectXBridge.PlaceTrailingStop(
+					entryUUID, 
+					trailingStopPrice,
+					quantity
+				);
+				
+				if (trailSuccess)
+				{
+					Print($"✅ Trailing stop activated for {entryUUID}: Stop at ${trailingStopPrice:F2} ({pullBackPct:P0} of ${currentProfit:F2} profit)");
+				}
+				else
+				{
+					Print($"❌ Failed to place trailing stop for {entryUUID} - position unprotected!");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"❌ Trailing stop conversion error for {simStop.EntryOrderUUID}: {ex.Message}");
 			}
 		}
 		
@@ -714,6 +823,24 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				else
 				{
 					profit = (position.entryPrice - position.currentPrice) * quantity * pointValue;
+				}
+				
+				// Track profit by timestamp if profit is not null
+				if (profit != 0) // Using 0 check since double can't be null
+				{
+					string timeStamp = Time[0].ToString("yyyy-MM-dd HH:mm:ss");
+					profitByTimeStamp[timeStamp] = profit;
+					
+					// Debug the calculation components for troubleshooting
+					Print($"[PROFIT-DEBUG] {timeStamp}:");
+					Print($"  IsLong: {isLong}");
+					Print($"  EntryPrice: {position.entryPrice:F2}");
+					Print($"  CurrentPrice: {position.currentPrice:F2}");
+					Print($"  Quantity: {quantity}");
+					Print($"  PointValue: {pointValue}");
+					Print($"  Price Diff: {(isLong ? position.currentPrice - position.entryPrice : position.entryPrice - position.currentPrice):F2}");
+					Print($"  Calculated Profit: ${profit:F2}");
+					Print($"  Expected: Should be around ($9.00)");
 				}
 				
 				return profit;
@@ -779,13 +906,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					string exitUUID = simStop.OrderRecordMasterLite.ExitOrderUUID;
 					
 					// Exit NT position
+					int orderSeriesIndex = GetOrderSeriesIndex();
 					if (isLong)
 					{
-						ExitLong(1, quantity, exitUUID, entryUUID);
+						ExitLong(orderSeriesIndex, quantity, exitUUID, entryUUID);
 					}
 					else
 					{
-						ExitShort(1, quantity, exitUUID, entryUUID);
+						ExitShort(orderSeriesIndex, quantity, exitUUID, entryUUID);
 					}
 					
 					// Exit ProjectX position
@@ -832,10 +960,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				Description									= @"Management of order handling and responses to entry signals, logic for exits";
 				Name										= "OrganizedStrategy_MainStrategy";
-				Calculate									= Calculate.OnBarClose;
+				Calculate									= Calculate.OnPriceChange;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
-				IsExitOnSessionCloseStrategy				= true;
+				IsExitOnSessionCloseStrategy				= false; // Disable NT built-in, use our own logic
 				ExitOnSessionCloseSeconds					= 30;
 				IsFillLimitOnTouch							= false;
 				MaximumBarsLookBack							= MaximumBarsLookBack.TwoHundredFiftySix;
@@ -846,6 +974,29 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				TraceOrders									= false;
 				RealtimeErrorHandling						= RealtimeErrorHandling.StopCancelClose;
 				StopTargetHandling							= StopTargetHandling.PerEntryExecution;
+				
+				// AUTO-SYNC CONFIG FILES - Ensure all coded strategies are in configs
+				try
+				{
+					if (improvedTraditionalStrategies == null)
+						improvedTraditionalStrategies = new ImprovedTraditionalStrategies();
+					
+					// Auto-correct all config files
+					string[] configFiles = {"PUMPKIN.json", "PUMPKIN_NQ.json", "PUMPKIN_NQ_200TICK.json", "PUMPKIN_NQ_500tick.json"};
+					foreach (string configFile in configFiles)
+					{
+						string configPath = System.IO.Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "strategies", "OrganizedStrategy", "Configs", configFile);
+						bool wasUpdated = improvedTraditionalStrategies.AutoCorrectConfig(configPath);
+						if (wasUpdated)
+							Print($"✅ Auto-corrected config: {configFile}");
+					}
+					
+					Print($"🔄 Config auto-sync completed for {configFiles.Length} files");
+				}
+				catch (Exception ex)
+				{
+					Print($"⚠️ Config auto-sync error: {ex.Message}");
+				}
 				minBarsNeeded								= 75;
 				IsAdoptAccountPositionAware 				= true;
 				IsOverlay 									= true;
@@ -931,10 +1082,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				dailyProfitGoalParameter = 600;
 				dailyProfitGoal = dailyProfitGoalParameter;
 				
-				
-				microContractStoploss = 50;
-				microContractTakeProfit  = 150;
-				
+	
 				
 				
 			
@@ -966,7 +1114,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				
 	           /// for stops
-	           AddDataSeries(Instrument.FullName,BarsPeriodType.Second, 30);
+	           AddDataSeries(Instrument.FullName,BarsPeriodType.Second, 1);
 	          // AddDataSeries(Instrument.FullName,BarsPeriodType.Minute, 30);
 	              
 	         
@@ -976,8 +1124,96 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				// Note: Strategy Analyzer instances have Account == null
 				// We still need to initialize critical components for backtesting
 				
+				// Generate unique session ID for this strategy instance
+				SessionID = Guid.NewGuid().ToString();
+				Print($"[SESSION-DEBUG] Generated session ID: {SessionID} for strategy: {Name} instrument: {Instrument?.MasterInstrument?.Name ?? "UNKNOWN"}");
+				
 				// Initialize training data client
 				trainingDataClient = new TrainingDataClient();
+				
+				// Initialize traditional strategies
+				// Legacy: traditionalStrategies = new TraditionalStrategies();
+				improvedTraditionalStrategies = new ImprovedTraditionalStrategies();
+				
+				// Initialize DropletService if enabled
+				if (EnableDropletService && !string.IsNullOrEmpty(DropletEndpoint))
+				{
+					dropletService = new DropletService(
+						DropletEndpoint, 
+						DropletApiKey, 
+						msg => Print(msg)
+					);
+					
+					// Initialize DropletIntegration with the DropletService
+					dropletIntegration = new DropletIntegration(
+						dropletService,
+						msg => Print(msg)
+					);
+					
+					Print($"[DROPLET] DropletService and DropletIntegration initialized - Endpoint: {DropletEndpoint}");
+					
+					// Send session configuration to relay for risk management tracking
+					// This will be called after config is loaded below
+				}
+				else
+				{
+					Print($"[DROPLET] DropletService disabled or no endpoint configured");
+				}
+				
+				// ========== CRITICAL: Load and Validate Strategy Config ==========
+				// Load config ONCE during initialization, not on every bar update
+				if (!string.IsNullOrEmpty(SpecificStrategyName) && !OverrideStrategyConfig)
+				{
+					Print($"[CONFIG-INIT] Loading config for: {SpecificStrategyName}");
+					currentConfig = new StrategyConfig(SpecificStrategyName);
+					
+					// Validate that config loaded successfully
+					if (currentConfig == null)
+					{
+						Print($"[CONFIG-ERROR] Failed to create config object for: {SpecificStrategyName}");
+						endAll = true;
+						return;
+					}
+					
+					// Check if critical risk parameters were loaded
+					if (!currentConfig.TakeProfit.HasValue || !currentConfig.StopLoss.HasValue)
+					{
+						Print($"[CONFIG-ERROR] Config file missing critical risk parameters for: {SpecificStrategyName}");
+						Print($"[CONFIG-ERROR] TakeProfit: {(currentConfig.TakeProfit.HasValue ? currentConfig.TakeProfit.ToString() : "NULL")}");
+						Print($"[CONFIG-ERROR] StopLoss: {(currentConfig.StopLoss.HasValue ? currentConfig.StopLoss.ToString() : "NULL")}");
+						Print($"[CONFIG-ERROR] Strategy will terminate. Please check config file at:");
+						Print($"[CONFIG-ERROR] C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\Configs\\{SpecificStrategyName}.json");
+						endAll = true;
+						return;
+					}
+					
+					strategyExecutionMode = currentConfig.ExecutionMode;
+					microContractStoploss = (double)currentConfig.StopLoss;
+					microContractTakeProfit = (double)currentConfig.TakeProfit;
+					softTakeProfitMult = (double)currentConfig.SoftTakeProfitMult;
+					PullBackExitEnabled = (bool)currentConfig.PullBackExitEnabled;
+					TakeBigProfitEnabled = (bool)currentConfig.TakeBigProfitEnabled;
+					// Config loaded successfully - display values
+					Print($"[CONFIG-SUCCESS] Loaded {SpecificStrategyName}:");
+					Print($"[CONFIG-SUCCESS]   TakeProfit: ${microContractTakeProfit}");
+					Print($"[CONFIG-SUCCESS]   StopLoss: ${microContractStoploss}");
+					Print($"[CONFIG-SUCCESS]   SoftTPMult: {softTakeProfitMult}");
+					Print($"[CONFIG-SUCCESS]   PullBackExit: {PullBackExitEnabled}");
+					Print($"[CONFIG-SUCCESS]   TakeBigProfit: {TakeBigProfitEnabled}");
+				}
+				else
+				{
+					Print($"[CONFIG-WARNING] No SpecificStrategyName provided - using default risk parameters");
+					// Create empty config that will use defaults
+					currentConfig = new StrategyConfig();
+				}
+				// ========== END CONFIG VALIDATION ==========
+				
+				// Send session configuration to relay after config is loaded
+				if (dropletService != null)
+				{
+					_ = Task.Run(async () => await SendSessionConfigToRelay());
+				}
 				
 				// Initialize ProjectX Bridge if BlueSky_projectx broker is selected
 				if (selectedBroker == brokerSelection.BlueSky_projectx)
@@ -1009,8 +1245,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				VWAP1 = custom_VWAP(vwap1);
 				SMA200 = SMA(BarsArray[0],100);
 				
-				EMA3 = EMA(BarsArray[0],25);
-				EMA4 = EMA(BarsArray[0],50);
+				EMA3 = EMA(BarsArray[0],14);
+				EMA4 = EMA(BarsArray[0],25);
 		
 				
 				
@@ -1044,7 +1280,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			            smallestBarsInProgress = i;
 			        }
 			    }
-				  smallestBarsInProgress = 1;
+				  // Remove hardcoded override - use calculated value
+				  // smallestBarsInProgress = 1;
 				for (int i = 0; i < BarsArray.Length; i++)
 			    {
 			        int currentMinuteValue = BarsArray[i].BarsPeriod.Value;
@@ -1136,8 +1373,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						Print($"State.Terminated: Executing termination logic for instance {this.GetHashCode()}.");
 						Print("State == State.Terminated");
+						
+						// Print profit tracking dictionary
+						Print("=== PROFIT BY TIMESTAMP TRACKING ===");
+						Print($"Total tracked profit calculations: {profitByTimeStamp.Count}");
+						foreach (var kvp in profitByTimeStamp.OrderBy(x => x.Key))
+						{
+							Print($"Time: {kvp.Key} | Profit: ${kvp.Value:F2}");
+						}
+						Print("=== END PROFIT TRACKING ===");
 					}
 				
+
 					// Break circular references to prevent memory leaks
 					try {
 						if (myStrategyControlPane != null)
@@ -1207,6 +1454,42 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						Print("1. No active CurvesV2Service instance to dispose for instance {this.GetHashCode()}");
 					}
 					
+					// 2.5. Dispose DropletService
+					if (dropletService != null)
+					{
+						try 
+						{
+							// DISABLED: Custom session summary (customers should explicitly choose custom vs standard)
+							// Task.Run(async () => 
+							// {
+							//	try
+							//	{
+							//		await SendCustomSessionSummary();
+							//	}
+							//	catch (Exception ex)
+							//	{
+							//		Print($"[DROPLET] Error sending final session data: {ex.Message}");
+							//	}
+							// }).Wait(TimeSpan.FromSeconds(3)); // Wait up to 3 seconds
+							
+							Print("2. Disposing DropletService instance");
+							dropletService.Dispose();
+						}
+						catch (Exception ex)
+						{
+							Print($"Error disposing DropletService instance: {ex.Message}");
+						}
+						finally
+						{
+							dropletService = null;
+							dropletIntegration = null; // Clear reference to dropletIntegration
+						}
+					}
+					else if (!isTestInstance)
+					{
+						Print("2. No active DropletService instance to dispose");
+					}
+					
 					// 3. End training data session to ensure final batch write
 					if (trainingDataClient != null)
 					{
@@ -1236,6 +1519,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						Print("2. No training data client to end session for");
 					}
+					
+					
 				}
 			}
 			catch (Exception ex)
@@ -1259,7 +1544,6 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
    		protected override void OnBarUpdate()
 		{
 		DebugFreezePrint("OnBarUpdate START");
-		
 		if(State == State.Historical && endAll == true)
 		{		
 			return;
@@ -1321,7 +1605,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			}
 		}
 		 msg = "OnBarUpdate start 3";
-		if(BarsInProgress == 0)
+		if(BarsInProgress == largestBarsInProgress)
 		{
 			bool notEnough = cumProfitArray[0] != 0 && cumProfitArray[1]  != 0 && cumProfitArray[2]  != 0 && cumProfitArray[0] < 1000 && cumProfitArray[1] < 1000 && cumProfitArray[2] < 1000;
 			if((SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit <-5000/* || notEnough*/ ) && (State == State.Historical))
@@ -1349,16 +1633,33 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 
 		DateTime sessionEnd = sessionIterator.ActualSessionEnd;
 		
-	    DateTime flattenTime = sessionEnd.AddMinutes(-30); // 10 minutes before session end
+	    DateTime flattenTime = sessionEnd.AddMinutes(-10); // 10 minutes before session end
 	 msg = "OnBarUpdate start 3666";
 		DebugFreezePrint("Session close check COMPLETE");
 		
-	    if (now == flattenTime && now < sessionEnd) // In the flattening window
+	    // Reset announcement flag when outside flatten window (new session)
+	    if (now < flattenTime)
+	    {
+	        flattenWindowAnnounced = false;
+	    }
+	    
+	    // Use time window instead of exact match for more reliable triggering
+	    if (now >= flattenTime && now < sessionEnd) // In the 10-minute flattening window
 	    {
 			DebugFreezePrint("HIT SESSION CLOSE WINDOW");
+			
+			// One-time announcement when entering flatten window
+			if (!flattenWindowAnnounced)
+			{
+				Print($"⚠️ SESSION CLOSE PROTECTION: Entered 10-minute flatten window. Time: {now:HH:mm:ss}, Session ends: {sessionEnd:HH:mm:ss}");
+				flattenWindowAnnounced = true;
+			}
+			
 			if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 			{
-		       // Print($"Flattening at {now}. Session ends at {sessionEnd}.");
+		        MarketPosition currentPosition = GetMarketPositionByIndex(BarsInProgress);
+		        Print($"🔄 AUTO-FLATTEN: Flattening {currentPosition} position at {now:HH:mm:ss}. Session ends at {sessionEnd:HH:mm:ss} (10 min window)");
+		        Print($"📋 Using ExitActiveOrders() with proper ExitLong/ExitShort calls (not NT built-in EOSC)");
 		        ExitActiveOrders(ExitOrderType.EOSC,signalExitAction.FE_EOD,false);
 				
 	    	}
@@ -1450,13 +1751,14 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 								int instrumentSeriesIndex = simStop.instrumentSeriesIndex;
 					            var action = simStop.OrderRecordMasterLite.EntryOrder.OrderAction == OrderAction.Buy ? OrderAction.Sell : OrderAction.BuyToCover;
 					            // Execute the force exit order
+					            int orderSeriesIndex = GetOrderSeriesIndex();
 					            if(action == OrderAction.Sell)
 								{
-									ExitLong(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+									ExitLong(orderSeriesIndex,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
 								}
 								if(action == OrderAction.BuyToCover)
 								{
-									ExitShort(1,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+									ExitShort(orderSeriesIndex,simStop.OrderRecordMasterLite.EntryOrder.Quantity,simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
 								}
 								/*SubmitOrderUnmanaged(
 					                instrumentSeriesIndex,
@@ -1496,9 +1798,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			DebugFreezePrint("MasterSimulatedStops processing START");
 			
-			/// RE ENTRY ONLY 1x max per bar
-			if(IsFirstTickOfBar)
-			{
+			
 				lock (eventLock)
 				{
 					OrderActionResultList.Clear();
@@ -1508,7 +1808,17 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				        {
 				            msg = "MasterSimulatedStops 1";
 				      
-				            OrderActionResult exitAction = UpdateOrderStats(simStop,BarsInProgress,CurrentBars[0]);
+				            // Process on both BarsInProgress 0 and 1 for faster exits
+				            // Use the current series for evaluation but allow both to trigger
+				            OrderActionResult exitAction = null;
+				            
+				            if (BarsInProgress == 0 || BarsInProgress == 1)
+				            {
+				                // Always evaluate using the instrument's series index, not the current BarsInProgress
+				                // This allows 5-second updates to trigger exits for primary series positions
+				                int evaluationBar = (simStop.instrumentSeriesIndex == 0) ? CurrentBars[0] : CurrentBars[BarsInProgress];
+				                exitAction = UpdateOrderStats(simStop, simStop.instrumentSeriesIndex, evaluationBar);
+				            }
 				            
 				            // Only add actions that need to be executed
 				            if (exitAction != null && exitAction.accountEntryQuantity > 0)
@@ -1565,7 +1875,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				        // TODO: Add exit logic here if needed
 				    }
 				}
-			}
+			
 			DebugFreezePrint("MasterSimulatedStops processing COMPLETE");
 			
 	
@@ -1578,7 +1888,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// SUPER IMPORTANT. IF ANYTHING ISNT CAPTURED IN OUR LISTS, IT CAN WRECK US. 
 		/// JUST EXIT ANY POSITIONS IF WE HAVE NO STOPS BUT WE ARE NOT FLAT
 		
-		if(BarsInProgress == 0)     
+		if(BarsInProgress == largestBarsInProgress)     
 		{
 
 			if (Bars.IsFirstBarOfSession)
@@ -1614,48 +1924,92 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		
 			
 			}
-			double unrealizedDailyProfit = dailyProfit+CalculateTotalOpenPositionProfit();
+			double unrealizedDailyProfit = dailyProfit + CalculateTotalOpenPositionProfit();
 			
+			// ========== IMPROVED DAILY PROFIT MANAGEMENT ==========
 			
-			if(unrealizedDailyProfit < -dailyProfitMaxLoss)
+			// 1. DAILY LOSS LIMIT - Stop trading if unrealized daily loss exceeds limit
+			// Using positive value for clarity (e.g., 500 means $500 max loss)
+			double dailyLossLimit = Math.Abs(dailyProfitMaxLoss); // Convert to positive for clarity
+			
+			if(unrealizedDailyProfit <= -dailyLossLimit)
 			{
-				dailyLossATL = Math.Min(unrealizedDailyProfit,dailyProfitMaxLoss);
-				if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
-				{
-			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
-				}
-				//Print("RETURN : HIT dailyProfitMaxLoss 1");
-				return;
-			}
-			if(dailyProfit < -dailyProfitMaxLoss)
-			{
-				Print("RETURN : HIT dailyProfitMaxLoss 2");
-				return;	
-			}
-			if(BarsInProgress == 0)
-			{
-			if (dailyProfit % dailyProfitGoalParameter < 0.1 && dailyProfitGoal > dailyProfitGoalParameter && dailyProfit != 0)
-			{
-				double t = dailyProfitGoal;
-				double mult = dailyProfit / dailyProfitGoalParameter;
-				dailyProfitGoal = dailyProfitGoalParameter*(mult+1);/// increment by 250 for every daily profit goal interval
-				//Print($"{Time[0]}  , dailyProfitGoal {t} ==> ${dailyProfitGoal}");
-
-			}
-			if(dailyProfit > dailyProfitATH) dailyProfitATH = dailyProfit;
-			///(dailyProfitGoal-100) gives a little buffer so that a quick pullback doesnt exit
-			if(unrealizedDailyProfit < (dailyProfitGoal-50) && dailyProfitATH > dailyProfitGoalParameter && dailyProfitATH > dailyProfitGoal) /// we've met the goal and fallen into it
-			{
+				// Track worst daily loss (most negative value)
+				dailyLossATL = Math.Min(dailyLossATL, unrealizedDailyProfit);
 				
 				if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 				{
-			        ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_TP_SAFE, false);
+					Print($"[DAILY LOSS LIMIT] Unrealized P&L: ${unrealizedDailyProfit:F2} exceeded limit of -${dailyLossLimit:F2}");
+					ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_ML, false);
 				}
-				Print("RETURN : HIT FE_CAP_TP_SAFE");
+			
 				return;
 			}
-		
 			
+			// 2. HARD STOP on realized losses
+			if(dailyProfit <= -dailyLossLimit)
+			{
+				//Print($"[HARD STOP] Realized daily loss: ${dailyProfit:F2} exceeded limit of -${dailyLossLimit:F2}");
+				//BackBrush = Brushes.DarkRed;
+				return;	
+			}
+			
+			if(dailyProfit > dailyProfitATH) 
+			{
+				dailyProfitATH = dailyProfit;
+				// Print($"[ATH] New daily profit high: ${dailyProfitATH:F2}");
+			}
+				
+			if(dailyProfit > dailyProfitATH)
+			{
+				//Print($"[HARD STOP] Realized daily loss: ${dailyProfit:F2} exceeded limit of -${dailyLossLimit:F2}");
+				// = Brushes.Green;
+				return;	
+			}
+			// 3. Process profit goals only on main time frame
+			/*if(BarsInProgress == largestBarsInProgress)
+			{
+				// PROFIT GOAL TRACKING - Increment goals as we hit milestones
+				if(dailyProfit > 0 && dailyProfitGoalParameter > 0)
+				{
+					// Use integer division for reliable milestone tracking
+					int currentMilestone = (int)(dailyProfit / dailyProfitGoalParameter);
+					int goalLevel = (int)(dailyProfitGoal / dailyProfitGoalParameter);
+					
+					// If we've reached a new milestone, update the goal
+					if(currentMilestone > goalLevel)
+					{
+						double previousGoal = dailyProfitGoal;
+						dailyProfitGoal = dailyProfitGoalParameter * (currentMilestone + 1);
+						Print($"[PROFIT GOAL] Increased from ${previousGoal:F2} to ${dailyProfitGoal:F2} (Milestone {currentMilestone} reached)");
+					}
+				}
+				
+				// ATH TRACKING
+				
+				
+				// TRAILING PROFIT PROTECTION - Lock in profits after goal achieved
+				// Using percentage-based buffer for flexibility
+				double trailingBufferPercent = 0.20; // 20% pullback allowed from goal
+				double trailingBuffer = dailyProfitGoal * trailingBufferPercent;
+				
+				bool goalWasAchieved = dailyProfitATH >= dailyProfitGoal && dailyProfitGoal > 0;
+				bool profitPulledBack = unrealizedDailyProfit < (dailyProfitGoal - trailingBuffer);
+				
+				if(goalWasAchieved && profitPulledBack)
+				{
+					if(GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
+					{
+						Print($"[TRAILING STOP] Peak: ${dailyProfitATH:F2}, Current: ${unrealizedDailyProfit:F2}");
+						Print($"[TRAILING STOP] Exit triggered: Below ${dailyProfitGoal - trailingBuffer:F2} (Goal: ${dailyProfitGoal:F2} - {trailingBufferPercent*100}% buffer)");
+						ExitActiveOrders(ExitOrderType.ASAP_OutOfMoney, signalExitAction.FE_CAP_TP_SAFE, false);
+					}
+					BackBrush = Brushes.Aqua;
+					return;
+				}
+			}
+			*/
+			// ========== END OF IMPROVED DAILY PROFIT MANAGEMENT ==========
 			
 			/// Calculate the current tier and next tier based on daily profit
 			int currentTier = (int)(Math.Floor((double)dailyProfit / dailyProfitGoalParameter) * dailyProfitGoalParameter);
@@ -1688,7 +2042,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			/// take out trash
 			/// 
 		
-			
+				
 			while(MastersimulatedEntryToDelete.Count > 0)
 			{
 				
@@ -1730,7 +2084,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			
 			
 			/// for TopStep reqs
-			}
+			
 			msg = "almost BuildNewSignal";
 		
 			
@@ -1761,27 +2115,23 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			
 			patternFunctionResponse builtSignal = BuildNewSignal(); 
 			FunctionResponses newSignal = builtSignal.newSignal;
+			//Print($"[DEBUG-CRITICAL] newSignal assigned from builtSignal: {newSignal}");
 			DebugFreezePrint("BuildNewSignal returned");
 			msg = "after BuildNewSignal";
 			//Print($"[MAIN] BuildNewSignal returned: {newSignal}, patternSubType: {builtSignal.patternSubType}");
 			
 			// NEW: RF Model Filtering
-			
+		
 			if(builtSignal.newSignal == FunctionResponses.NoAction)
 			{
 				///no signal
 				return;
 			}
 			Print($"builtSignal.newSignal = {builtSignal.newSignal.ToString()}");
-			  Print($"builtSignal.newSignal = {builtSignal.newSignal.ToString()}");
+		
 
 			  // DEBUG: Check each condition
-			 // Print($"[DEBUG] lastActionBar={lastActionBar}, CurrentBars[0]={CurrentBars[0]}, condition1={(lastActionBar < CurrentBars[0])}");
-			  //Print($"[DEBUG] totalAccountQuantity={totalAccountQuantity}, strategyDefaultQuantity={strategyDefaultQuantity},strategyMaxQuantity={strategyMaxQuantity}");
-			  //Print($"[DEBUG] condition2={(totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity)}");
-			  //Print($"[DEBUG] accountMaxQuantity={accountMaxQuantity}, condition3={(totalAccountQuantity+strategyDefaultQuantity <= accountMaxQuantity)}");      
-			  //Print($"[DEBUG] getAllcustomPositionsCombined()={getAllcustomPositionsCombined()}, condition4={(getAllcustomPositionsCombined() <strategyMaxQuantity)}");
-			
+			  
 			if(lastActionBar < CurrentBars[0] && totalAccountQuantity+strategyDefaultQuantity <= strategyMaxQuantity && totalAccountQuantity+strategyDefaultQuantity <= (accountMaxQuantity) && getAllcustomPositionsCombined() < strategyMaxQuantity) /// eg mcl = 1, sil = 1 , and we're considering mcg 2.  if 2 is less than 5 do something.
 			{
 				
@@ -1809,9 +2159,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					realTimeCounter++;
 				}
 				bool dequeueLast = false;
+				Print($"[DEBUG] newSignal check: newSignal={newSignal}, is null? {newSignal == null}, is NoAction? {newSignal == FunctionResponses.NoAction}");
 				if (newSignal == null || newSignal == FunctionResponses.NoAction)
 				{
-					//Print("newSignal null?");
+					Print($"[DEBUG] Signal blocked: newSignal is {(newSignal == null ? "NULL" : "NoAction")}");
 					if(signalQueue.Count() > 0)
 					{
 						//BackBrush = Brushes.Blue;
@@ -1853,21 +2204,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				//Print(standardPattern.SOMGrid.ToString());
 				DebugPrint(debugSection.OnBarUpdate,"Mark 5 ");	
 				msg = "thisSignalPackage";
-				if (signalsOnly)
-						{
-							if(newSignal == FunctionResponses.EnterLong) Draw.ArrowUp(this,"AA"+CurrentBars[0],true,0,Lows[0][0]-(TickSize*15),Brushes.Cyan); //forceDrawDebug("T",-1,0,Lows[0][0]-(TickSize*7),Brushes.White,true);
-
-
-							if(newSignal == FunctionResponses.EnterShort) Draw.ArrowDown(this,"BB"+CurrentBars[0],true,0,Highs[0][0]+(TickSize*15),Brushes.HotPink);// forceDrawDebug("T",-1,0,Highs[0][0]+(TickSize*7),Brushes.White,true);
-						
-							
-							
-							
-							
-						}
+				
 			
 			//// NOW EMPTY QUEUE AND MAKE ENTRIES
-			{
+			
 					if (!signalsOnly)
 					{		
 									lastFunction = "DO accrualGO NAME OK";
@@ -1889,7 +2229,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 										                            : tempAccountLastEntryTime;
 										
 					                    DateTime xMinutesSpacedGoal = StrategyLastEntryTime.AddMinutes(entriesPerDirectionSpacingTime);
-					                    if ((Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0))
+					                    if (Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0)
 					                    {
 					                        lastFunction = "DO accrualGO TIME OK";
 					                        if (!IsInStrategyAnalyzer && State == State.Realtime) Print("entry spacing ok");
@@ -1909,10 +2249,26 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                                
 													if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
 					                            	{ 
-														if (isRealTime) Print(Time[0] + " ENTER LONG FROM LONG");
+														// ========== SOFT TAKE PROFIT CHECK FOR PYRAMIDING ==========
+														// Only add to position if we have at least soft take profit in open profit
+														double openProfit = CalculateTotalOpenPositionProfit();
+														double softTPThreshold = softTakeProfitMult; // e.g., 0.2 * 500 = $100
+														
+														if (openProfit < softTPThreshold)
+														{
+															Print($"[PYRAMID BLOCKED] Open profit ${openProfit:F2} < Soft TP ${softTPThreshold:F2}");
+															Print($"[PYRAMID BLOCKED] Need at least {softTakeProfitMult:P0} of TP (${softTakeProfitMult}) = ${softTPThreshold:F2}");
+															return;
+														}
+														
+														if (isRealTime) 
+														{
+															Print(Time[0] + " ENTER LONG FROM LONG");
+															Print($"[PYRAMID APPROVED] Open profit ${openProfit:F2} >= Soft TP ${softTPThreshold:F2}");
+														}
 														// Use approval-gated entry during real-time, direct entry in historical
 														
-														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal, currentConfig);
 													
 													}
 													else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Flat)
@@ -1920,7 +2276,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 														if (isRealTime) Print(Time[0] + " ENTER LONG FROM FLAT");
 														// Use approval-gated entry during real-time, direct entry in historical
 														
-														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														EntryLimitFunctionLite(indexQuantity, OrderAction.Buy, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal, currentConfig);
 														
 						                                return;
 													}
@@ -1941,11 +2297,27 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                          
 					                                if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
 					                           		{  
-														Print(Time[0] + " ENTER SHORT FROM SHORT");
+														// ========== SOFT TAKE PROFIT CHECK FOR PYRAMIDING ==========
+														// Only add to position if we have at least soft take profit in open profit
+														double openProfit = CalculateTotalOpenPositionProfit();
+														double softTPThreshold = softTakeProfitMult; // e.g., 0.2 * 500 = $100
+														
+														if (openProfit < softTPThreshold)
+														{
+															Print($"[PYRAMID BLOCKED] Open profit ${openProfit:F2} < Soft TP ${softTPThreshold:F2}");
+															Print($"[PYRAMID BLOCKED] Need at least {softTakeProfitMult:P0} of TP (${softTakeProfitMult}) = ${softTPThreshold:F2}");
+															return;
+														}
+														
+														if (isRealTime)
+														{
+															Print(Time[0] + " ENTER SHORT FROM SHORT");
+															Print($"[PYRAMID APPROVED] Open profit ${openProfit:F2} >= Soft TP ${softTPThreshold:F2}");
+														}
 														// Use approval-gated entry during real-time, direct entry in historical
 														
 														
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal, currentConfig);
 														
 						                                return;
 													}
@@ -1955,7 +2327,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 														// Use approval-gated entry during real-time, direct entry in historical
 														
 													
-														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal);
+														EntryLimitFunctionLite(indexQuantity, OrderAction.SellShort, thisSignalPackage, "", CurrentBars[0], mainEntryOrderType,builtSignal, currentConfig);
 														
 						                                return;
 						                               
@@ -1970,10 +2342,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					                    }
 										else
 										{
-		
+										
 										}
 								}
-					}
+					
 								
 					thisSignalPackage.SignalReturnAction = new signalReturnAction(signalReturnActionEnum.noAction.ToString(), signalReturnActionType.Neutral);
 					lastBar = CurrentBars[0];
@@ -2075,11 +2447,12 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			        if (GetMarketPositionByIndex(BarsInProgress) != MarketPosition.Flat)
 			        {
 			            // Place market order to close position
+			            int orderSeriesIndex = GetOrderSeriesIndex();
 			            if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Long)
 					    {
 							
 					        // Close Long position by selling the quantity
-					        ExitLong(BarsInProgress,GetPositionCountByIndex(BarsInProgress),simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+					        ExitLong(orderSeriesIndex,GetPositionCountByIndex(BarsInProgress),simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
 							
 							//SubmitOrderUnmanaged(BarsInProgress, OrderAction.Sell, OrderType.Market, GetPositionCountByIndex(BarsInProgress), 0, 0, null, "CloseAndStopStrategy_Long");
 					        Print($"Closing Long position of {Position.Quantity} contracts.");
@@ -2087,7 +2460,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					    else if (GetMarketPositionByIndex(BarsInProgress) == MarketPosition.Short)
 					    {
 					        // Close Short position by buying to cover the quantity
-							ExitShort(BarsInProgress,GetPositionCountByIndex(BarsInProgress),simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
+							ExitShort(orderSeriesIndex,GetPositionCountByIndex(BarsInProgress),simStop.OrderRecordMasterLite.ExitOrderUUID,simStop.OrderRecordMasterLite.EntryOrderUUID);
 					        //SubmitOrderUnmanaged(BarsInProgress, OrderAction.BuyToCover, OrderType.Market, GetPositionCountByIndex(BarsInProgress), 0, 0, null, "CloseAndStopStrategy_Short");
 					        Print($"Closing Short position of {Position.Quantity} contracts.");
 					    }
@@ -2128,20 +2501,166 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		{
 			//Print("MainStrat [BuildNewSignal]");
 			
-			// First check traditional strategies for meta-labeling approach
-			patternFunctionResponse traditionalSignal = TraditionalStrategies.CheckAllTraditionalStrategies(this, TraditionalStrategyFilter);
-			if (traditionalSignal != null)
-			{
-				Print($"[TRADITIONAL] Signal found: {traditionalSignal.newSignal}, type: {traditionalSignal.signalType}");
-				return traditionalSignal;
-			}
 			
-			// If no traditional signal found, return default no-action signal
-			patternFunctionResponse thisSignal = new patternFunctionResponse();
-			thisSignal.newSignal = FunctionResponses.NoAction;
-			thisSignal.patternSubType = "none";
 			
-			return thisSignal;
+			
+			
+			
+			
+				// Original Mode: Use traditional strategies
+				// Legacy: patternFunctionResponse traditionalSignal = null;//traditionalStrategies.CheckAllTraditionalStrategies(this, TraditionalStrategyFilter,RiskAgentConfidenceThreshold);
+				// Execute strategies based on filter selection
+				patternFunctionResponse traditionalSignal = null;
+				
+				// Config is now loaded ONCE in State.DataLoaded, not here
+				// Using the class-level currentConfig that was validated at startup
+				
+				// Choose execution mode:
+				/// Option 1: NEW Decay-based signal strength system with momentum
+				if(strategyExecutionMode == executionMode.decaySystem)
+				{	
+					traditionalSignal = improvedTraditionalStrategies.ExecuteDecaySystem(this, currentConfig);
+				}		
+				/// Option 2: Branching system - regime detection then confirmation
+				if(strategyExecutionMode == executionMode.Branching)
+				{
+						traditionalSignal = improvedTraditionalStrategies.ExecuteBranchingSystem(this, currentConfig);
+				}
+				/// Option 3: Original voting system with Math/Lag segments
+				if(strategyExecutionMode == executionMode.VotingSystem)
+				{
+				 	traditionalSignal = improvedTraditionalStrategies.ExecuteVotingSystem(this, currentConfig);
+				}
+						
+				/// Option 4: Execute all strategies with consensus (30% agreement threshold)
+				if(strategyExecutionMode == executionMode.Consensus)
+				{
+					traditionalSignal = improvedTraditionalStrategies.ExecuteAll(this, 0.3, currentConfig);
+				}
+				if (traditionalSignal != null)
+				{
+					// Check for rapid direction changes
+					string currentDirection = traditionalSignal.newSignal == FunctionResponses.EnterLong ? "long" : "short";
+					if (!string.IsNullOrEmpty(lastSignalDirection) && lastSignalDirection != currentDirection)
+					{
+						int barsSinceLastSignal = CurrentBars[0] - lastSignalBar;
+						if (barsSinceLastSignal < signalCooldownBars * 2) // Double cooldown for opposite direction
+						{
+							Print($"[SIGNAL-COOLDOWN] Rejecting opposite direction signal - only {barsSinceLastSignal} bars since {lastSignalDirection} signal");
+							patternFunctionResponse noSignal = new patternFunctionResponse();
+							noSignal.newSignal = FunctionResponses.NoAction;
+							noSignal.patternSubType = "direction_cooldown";
+							return noSignal;
+						}
+					}
+					
+					// ========== SMA DIRECTION VERIFICATION ==========
+					// Final qualifier: verify signal aligns with SMA trend
+					// Calculate SMA direction using multiple periods for confirmation
+					int smaPeriod1 = 20;  // Fast SMA
+					int smaPeriod2 = 50;  // Medium SMA
+					int smaPeriod3 = 100; // Slow SMA
+					
+					// Ensure we have enough bars
+					if (CurrentBar > smaPeriod3)
+					{
+							// Calculate SMAs
+							double sma20 = EMA(Close, smaPeriod1)[0];
+							double sma50 = EMA(Close, smaPeriod2)[0];
+							double sma100 = EMA(Close, smaPeriod3)[0];
+							
+							// Previous values for direction
+							double sma20Prev = EMA(Close, smaPeriod1)[1];
+							double sma50Prev = EMA(Close, smaPeriod2)[1];
+							
+							// Calculate SMA slopes
+							double sma20Slope = sma20 - sma20Prev;
+							double sma50Slope = sma50 - sma50Prev;
+							
+							// Trend alignment check
+							bool uptrend = sma20 > sma50 && sma50 > sma100;
+							bool downtrend = sma20 < sma50 && sma50 < sma100;
+							
+							// Direction momentum
+							bool bullishMomentum = sma20Slope > 0 && sma50Slope > 0;
+							bool bearishMomentum = sma20Slope < 0 && sma50Slope < 0;
+							
+							// Verify signal aligns with SMA trend
+							bool smaVerificationPassed = true;
+							
+							if (traditionalSignal.newSignal == FunctionResponses.EnterLong)
+							{
+								// For long entries, require uptrend or bullish momentum
+								smaVerificationPassed = uptrend || bullishMomentum;
+								
+								if (!smaVerificationPassed)
+								{
+									Print($"[SMA VERIFY] LONG signal rejected - SMA20: {sma20:F2} (slope: {sma20Slope:F2}), SMA50: {sma50:F2} (slope: {sma50Slope:F2}), SMA100: {sma100:F2}");
+									Print($"[SMA VERIFY] Uptrend: {uptrend}, Bullish Momentum: {bullishMomentum}");
+									patternFunctionResponse noSignal = new patternFunctionResponse();
+									noSignal.newSignal = FunctionResponses.NoAction;
+									noSignal.patternSubType = "sma_filter_rejected";
+									return noSignal;
+								}
+								else
+								{
+									Print($"[SMA VERIFY] LONG signal confirmed - Uptrend: {uptrend}, Momentum: {bullishMomentum}");
+									lastSignalBar = CurrentBars[0];
+									lastSignalDirection = currentDirection;
+									return traditionalSignal;
+								}
+								
+							}
+							else if (traditionalSignal.newSignal == FunctionResponses.EnterShort)
+							{
+								// For short entries, require downtrend or bearish momentum
+								smaVerificationPassed = downtrend || bearishMomentum;
+								
+								if (!smaVerificationPassed)
+								{
+									Print($"[SMA VERIFY] SHORT signal rejected - SMA20: {sma20:F2} (slope: {sma20Slope:F2}), SMA50: {sma50:F2} (slope: {sma50Slope:F2}), SMA100: {sma100:F2}");
+									Print($"[SMA VERIFY] Downtrend: {downtrend}, Bearish Momentum: {bearishMomentum}");
+									patternFunctionResponse noSignal = new patternFunctionResponse();
+									noSignal.newSignal = FunctionResponses.NoAction;
+									noSignal.patternSubType = "sma_filter_rejected";
+									return noSignal;
+								}
+								else
+								{
+									Print($"[SMA VERIFY] SHORT signal confirmed - Downtrend: {downtrend}, Momentum: {bearishMomentum}");
+									lastSignalBar = CurrentBars[0];
+									lastSignalDirection = currentDirection;
+									return traditionalSignal;
+								}
+							}
+							else
+							{
+								// Signal is neither EnterLong nor EnterShort (e.g., NoAction or other)
+								return traditionalSignal;
+							}
+						}
+					else
+					{
+						// Not enough bars for SMA calculation
+						Print($"[SMA VERIFY] Skipped - insufficient bars ({CurrentBar} < {smaPeriod3})");
+						// Still track the signal if it's valid
+						if (traditionalSignal.newSignal == FunctionResponses.EnterLong || traditionalSignal.newSignal == FunctionResponses.EnterShort)
+						{
+							lastSignalBar = CurrentBars[0];
+							lastSignalDirection = traditionalSignal.newSignal == FunctionResponses.EnterLong ? "long" : "short";
+						}
+						return traditionalSignal;
+					}
+					
+				}
+				else
+				{
+					// noaction
+				
+					return traditionalSignal;
+				}
+				
+
 		}
 		
 		protected virtual FunctionResponses exitFunctionResponse()
@@ -2150,6 +2669,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			return FunctionResponses.NoAction;
 								
 		}
+		
+		
+		
+		
+		
+		
+	
 		
 		protected int getAllcustomPositionsCombined()
 		{
@@ -2480,6 +3006,73 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			}
 			return instrumentCode;
 		}
+
+		/// <summary>
+		/// Collect all session configuration parameters for risk management tracking
+		/// </summary>
+		protected virtual Dictionary<string, object> CollectSessionConfig()
+		{
+			var config = new Dictionary<string, object>
+			{
+				// Core risk management parameters - convert enum and object to strings
+				["ExecutionMode"] = strategyExecutionMode.ToString(),
+				["Time_Period"] = BarsArray[0].BarsPeriod.BarsPeriodType.ToString(),
+				["Time_Value"] = BarsArray[0].BarsPeriod.Value,
+				["microContractStoploss"] = microContractStoploss,
+				["microContractTakeProfit"] = microContractTakeProfit,
+				["softTakeProfitMult"] = softTakeProfitMult,
+				["dailyProfitMaxLoss"] = dailyProfitMaxLoss,
+				["dailyProfitGoalParameter"] = dailyProfitGoalParameter,
+				["PullBackExitEnabled"] = PullBackExitEnabled,
+				["TakeBigProfitEnabled"] = TakeBigProfitEnabled,
+				["entriesPerDirectionSpacingTime"] = entriesPerDirectionSpacingTime,
+			
+				// Additional strategy parameters that could affect risk
+				["strategyDefaultQuantity"] = strategyDefaultQuantity,
+				["strategyMaxQuantity"] = strategyMaxQuantity,
+				["accountMaxQuantity"] = accountMaxQuantity,
+				
+				// Session metadata
+				["instrument"] = GetInstrumentCode(),
+				["strategyName"] = Name,
+				["specificStrategyName"] = SpecificStrategyName,
+				["isLiveTrading"] = !IsInStrategyAnalyzer,
+				["timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+			};
+			
+			return config;
+		}
+
+		/// <summary>
+		/// Send session configuration to cloud relay for analysis tracking
+		/// </summary>
+		protected virtual async Task SendSessionConfigToRelay()
+		{
+			try
+			{
+				if (dropletService == null || string.IsNullOrEmpty(SessionID))
+				{
+					Print("[SESSION-CONFIG] DropletService not available or SessionID not set - skipping config send");
+					return;
+				}
+
+				var config = CollectSessionConfig();
+				bool success = await dropletService.SendSessionConfig(SessionID, config);
+				
+				if (success)
+				{
+					Print($"[SESSION-CONFIG] ✓ Session configuration sent for {SessionID}");
+				}
+				else
+				{
+					Print($"[SESSION-CONFIG] ✗ Failed to send session configuration for {SessionID}");
+				}
+			}
+			catch (Exception ex)
+			{
+				Print($"[SESSION-CONFIG] Error sending session config: {ex.Message}");
+			}
+		}
 		
 		// Signal persistence validation - check if last N signals are all same direction
 		public bool ValidateSignalPersistence(double currentScore, out string direction)
@@ -2652,6 +3245,11 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		[Display(Name="entriesPerDirectionSpacing(Time)", Order=20, GroupName="Class Parameters")]
 		public int entriesPerDirectionSpacingTime
 		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Override Strategy Config", Description="If true, use NT user inputs for SL/TP instead of config file", Order=21, GroupName="Class Parameters")]
+		public bool OverrideStrategyConfig
+		{ get; set; }
 
 		
 		[NinjaScriptProperty]
@@ -2780,54 +3378,117 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		public double RiskAgentConfidenceThreshold { get; set; } = 0.5;
 	
 		
-		[NinjaScriptProperty]
-		[Display(Name="Traditional Strategy Filter", Description="Test specific traditional strategy type for pure training data", Order=6, GroupName="Risk Agent Config")]
-		public TraditionalStrategyType TraditionalStrategyFilter { get; set; } = TraditionalStrategyType.ALL;
+		// Legacy: [NinjaScriptProperty]
+		// Legacy: [Display(Name="Traditional Strategy Filter", Description="Test specific traditional strategy type for pure training data", Order=6, GroupName="Risk Agent Config")]
+		// Legacy: public TraditionalStrategyType TraditionalStrategyFilter { get; set; } = TraditionalStrategyType.ALL;
 		
 		[NinjaScriptProperty]
-		[Display(Name="Do Not Store (Out-of-Sample)", Description="Skip storing positions to Agentic Memory for out-of-sample testing", Order=7, GroupName="Risk Agent Config")]
+		[Display(Name="Improved Strategy Filter", Description="Filter strategies by category or execution type", Order=6, GroupName="Risk Agent Config")]
+		public ImprovedStrategyFilter StrategyFilter { get; set; } = ImprovedStrategyFilter.ALL;
+		
+		[NinjaScriptProperty]
+		[Display(Name="Specific Strategy Name", Description="Strategy name when filter is SPECIFIC_STRATEGY", Order=7, GroupName="Risk Agent Config")]
+		public string SpecificStrategyName { get; set; } = "PUMPKIN";
+		protected StrategyConfig currentConfig;
+		
+		
+		
+		[NinjaScriptProperty]
+		[Display(Name="Do Not Store (Out-of-Sample)", Description="Skip storing positions to Agentic Memory for out-of-sample testing", Order=9, GroupName="Risk Agent Config")]
 		public bool DoNotStore { get; set; } = false;
 		
 		[NinjaScriptProperty]
-		[Display(Name="Store As Recent (Live Training)", Description="Store positions as RECENT data for live graduation learning", Order=8, GroupName="Risk Agent Config")]
+		[Display(Name="Store As Recent (Live Training)", Description="Store positions as RECENT data for live graduation learning", Order=10, GroupName="Risk Agent Config")]
 		public bool StoreAsRecent { get; set; } = false;
 
-		[NinjaScriptProperty]
-		[Range(3000, 9999)]
-		[Display(Name="Risk Agent Port", Description="Risk Agent service port (default: 3017)", Order=9, GroupName="Risk Agent Config")]
-		public int RiskAgentPort { get; set; } = 3017;
+		// COMMENTED OUT: SignalFeatures Risk Agent Configuration Properties
+		// [NinjaScriptProperty]
+		// [Range(3000, 9999)]
+		// [Display(Name="Risk Agent Port", Description="Risk Agent service port (default: 3017)", Order=11, GroupName="Risk Agent Config")]
+		// public int RiskAgentPort { get; set; } = 3017;
 
-		[NinjaScriptProperty]
-		[Display(Name="Enable Anti-Overfitting", Description="Enable anti-overfitting protection for pattern analysis", Order=10, GroupName="Risk Agent Config")]
-		public bool EnableAntiOverfitting { get; set; } = true;
+		// [NinjaScriptProperty]
+		// [Display(Name="Enable Anti-Overfitting", Description="Enable anti-overfitting protection for pattern analysis", Order=12, GroupName="Risk Agent Config")]
+		// public bool EnableAntiOverfitting { get; set; } = true;
 
-		[NinjaScriptProperty]
-		[Range(0.5, 0.99)]
-		[Display(Name="Diminishing Factor", Description="Confidence reduction factor per pattern exposure (0.5=strong penalty, 0.99=light penalty)", Order=11, GroupName="Risk Agent Config")]
-		public double DiminishingFactor { get; set; } = 0.8;
+		// [NinjaScriptProperty]
+		// [Range(0.5, 0.99)]
+		// [Display(Name="Diminishing Factor", Description="Confidence reduction factor per pattern exposure (0.5=strong penalty, 0.99=light penalty)", Order=13, GroupName="Risk Agent Config")]
+		// public double DiminishingFactor { get; set; } = 0.8;
 
-		[NinjaScriptProperty]
-		[Range(1, 20)]
-		[Display(Name="Max Pattern Exposure", Description="Maximum times a pattern can be used before heavy penalty", Order=12, GroupName="Risk Agent Config")]
-		public int MaxPatternExposure { get; set; } = 5;
+		// [NinjaScriptProperty]
+		// [Range(1, 20)]
+		// [Display(Name="Max Pattern Exposure", Description="Maximum times a pattern can be used before heavy penalty", Order=14, GroupName="Risk Agent Config")]
+		// public int MaxPatternExposure { get; set; } = 5;
 
-		[NinjaScriptProperty]
-		[Range(15, 240)]
-		[Display(Name="Time Window Minutes", Description="Time window for pattern clustering detection (minutes)", Order=13, GroupName="Risk Agent Config")]
-		public int TimeWindowMinutes { get; set; } = 60;
+		// [NinjaScriptProperty]
+		// [Range(15, 240)]
+		// [Display(Name="Time Window Minutes", Description="Time window for pattern clustering detection (minutes)", Order=15, GroupName="Risk Agent Config")]
+		// public int TimeWindowMinutes { get; set; } = 60;
 
-		[NinjaScriptProperty]
-		[Display(Name="Backtest Mode", Description="Current backtest mode for anti-overfitting", Order=14, GroupName="Risk Agent Config")]
-		public BacktestModes BacktestMode { get; set; } = BacktestModes.LiveTrading;
+		// [NinjaScriptProperty]
+		// [Display(Name="Backtest Mode", Description="Current backtest mode for anti-overfitting", Order=16, GroupName="Risk Agent Config")]
+		// public BacktestModes BacktestMode { get; set; } = BacktestModes.LiveTrading;
 
-		[NinjaScriptProperty]
-		[Display(Name="Reset Learning on Backtest", Description="Reset pattern exposure when starting new backtests", Order=15, GroupName="Risk Agent Config")]
-		public bool ResetLearningOnBacktest { get; set; } = true;
+		// [NinjaScriptProperty]
+		// [Display(Name="Reset Learning on Backtest", Description="Reset pattern exposure when starting new backtests", Order=17, GroupName="Risk Agent Config")]
+		// public bool ResetLearningOnBacktest { get; set; } = true;
 
 		[NinjaScriptProperty]
 		[Range(500, 10000)]
-		[Display(Name="Risk Agent Timeout (ms)", Description="Timeout for Risk Agent requests in milliseconds", Order=16, GroupName="Risk Agent Config")]
+		[Display(Name="Risk Agent Timeout (ms)", Description="Timeout for Risk Agent requests in milliseconds", Order=18, GroupName="Risk Agent Config")]
 		public int RiskAgentTimeoutMs { get; set; } = 2000;
+		
+		#endregion
+		
+		#region Trade Correlation Analysis Helper Methods
+		
+		/// <summary>
+		/// Get the count of trades executed today
+		/// </summary>
+		/// <returns>Daily trade count</returns>
+		public int GetDailyTradeCount()
+		{
+			// Reset counter on new trading day
+			if (Time[0].Date != lastTradeDate.Date)
+			{
+				dailyTradeCounter = 0;
+				lastTradeDate = Time[0].Date;
+			}
+			
+			return dailyTradeCounter;
+		}
+		
+		/// <summary>
+		/// Get the result of the previous trade
+		/// </summary>
+		/// <returns>WIN, LOSS, BE (break-even), or NONE</returns>
+		public string GetLastTradeResult()
+		{
+			return lastTradeOutcome;
+		}
+		
+		/// <summary>
+		/// Update trade outcome tracking for correlation analysis
+		/// </summary>
+		/// <param name="pnl">Trade P&L</param>
+		public void UpdateTradeOutcomeTracking(double pnl)
+		{
+			// Increment daily trade counter
+			dailyTradeCounter++;
+			
+			// Update last trade result
+			if (pnl > 5.0) // Small buffer for break-even
+				lastTradeOutcome = "WIN";
+			else if (pnl < -5.0)
+				lastTradeOutcome = "LOSS";
+			else
+				lastTradeOutcome = "BE";
+				
+			lastTradeDate = Time[0].Date;
+		}
+		
+	
 		
 	#endregion
 	

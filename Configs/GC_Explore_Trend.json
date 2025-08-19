@@ -1,0 +1,35 @@
+{
+  "name": "GC_Explore_Trend",
+  "version": "2.0",
+  "created": "2025-08-19T05:35:14.963Z",
+  "TakeProfit": 1000,
+  "StopLoss": 75,
+  "SoftTakeProfitMult": 150,
+  "PullBackExitEnabled": true,
+  "TakeBigProfitEnabled": true,
+  "signals": {
+    "VOLUME_DIRECTION": false,
+    "PRICE_MEAN_REVERSION": false,
+    "PRICE_BREAKOUT": true,
+    "RSI_EXTREME": false,
+    "SIMPLE_MACD": false,
+    "SPREAD_ADJUSTED_RSI": false,
+    "ATR_BAND_MOMENTUM": true,
+    "simple_EMACross": false,
+    "WICK_TREND_PUSH": true,
+    "RSI_EXTREME_CONFIRMATION": false,
+    "PRICE_BREAKOUT_CONFIRMATION": true,
+    "EMA_CROSS_CONFIRMATION": true,
+    "MACD_HISTOGRAM_ACCELERATION": false,
+    "RELATIVE_VOLUME_STRENGTH": false,
+    "EMA_CROSSOVER_MOMENTUM": false,
+    "TIME_SESSION_MOMENTUM": false,
+    "TICK_MOMENTUM_SCALP": false,
+    "WICK_TREND_REVERSAL": false
+  },
+  "ExecutionMode": "Consensus",
+  "lossVectorFilters": {
+    "FilterConsecutiveLosses": true,
+    "FilterConsecutiveLossesCount": 2
+  }
+}

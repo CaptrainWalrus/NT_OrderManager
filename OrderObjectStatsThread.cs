@@ -221,7 +221,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				// Thresholds and modifiers
 				
-				double maxLoss = simStop.OrderRecordMasterLite.PriceStats.OrderMaxLoss;
+				double maxLoss = simStop.OrderRecordMasterLite.PriceStats.OrderMaxLoss * quantity;
         
 		        // DEBUG: Verify max loss calculation
 		        //Print($"[MAXLOSS-CALC] {simStop.EntryOrderUUID.Substring(0,8)}: stopModifier={stopModifier:F2}, microContractStoploss={microContractStoploss:F2}, maxLoss={maxLoss:F2}");
@@ -244,11 +244,10 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		            thompsonScoreModifier = score;
 		        }
 				
-				if(bip == 0)
-				{
+				
 					int age = thisBar - simStop.OrderRecordMasterLite.EntryBar;
 					simStop.OrderRecordMasterLite.PriceStats.profitByBar[age] = currentProfit;
-				}
+				
 		        // DEBUG: Log divergence and max loss values for comparison
 		        //Print($"[DEBUG] {simStop.EntryOrderUUID}: Profit=${currentProfit:F2}, thisRecordDivergence={thisRecordDivergence:F3}, dynamicDivergenceThreshold={dynamicDivergenceThreshold:F3}");
 		       
@@ -260,6 +259,18 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				bool hardProfitTargetReached = currentProfit > hardProfitTarget;
 				bool softProfitPullbackTarget = allTimeHighProfit > softProfitTarget && (currentProfit > 0 && currentProfit < Math.Max(softProfitTarget, pullBackPct * allTimeHighProfit));
 		       
+				// NEW: Check for trailing stop activation
+				double trailingStopThreshold = pullBackPct * softTakeProfitMult * quantity;
+				bool shouldActivateTrailingStop = currentProfit >= trailingStopThreshold && 
+												  !simStop.OrderRecordMasterLite.OrderSupplementals.trailingStopActivated;
+		
+				if (shouldActivateTrailingStop && selectedBroker == brokerSelection.BlueSky_projectx)
+				{
+					// Trigger trailing stop conversion
+					_ = Task.Run(() => ConvertToTrailingStop(simStop, currentProfit));
+					simStop.OrderRecordMasterLite.OrderSupplementals.trailingStopActivated = true;
+					Print($"[TRAILING-STOP] Activating for {simStop.EntryOrderUUID}: Profit ${currentProfit:F2} >= Threshold ${trailingStopThreshold:F2}");
+				}
 	
 	        // 3. UPDATE PRICE STATS
 	        if (isNewAllTimeHigh)
@@ -314,14 +325,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	            if (isLong)
 	            {
 					Print("Exiting Long MLL");
-	                ExitLong(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+	                int orderSeriesIndex = GetOrderSeriesIndex();
+	                ExitLong(orderSeriesIndex, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
 					if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitLong(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 
 	            }
 	            else
 	            {
 					Print("Exiting Short MLL");
-	                ExitShort(1, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
+	                int orderSeriesIndex = GetOrderSeriesIndex();
+	                ExitShort(orderSeriesIndex, quantity, simStop.OrderRecordMasterLite.ExitOrderUUID, simStop.OrderRecordMasterLite.EntryOrderUUID);
 					if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitShort(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 
 	            }
@@ -344,6 +357,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 						DebugFreezePrint("FLAG PBL / PBS");
 						thisSignalExitAction = isLong ? signalExitAction.PBL : signalExitAction.PBS;
+						
 					}
 					
 
@@ -351,51 +365,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						//canScaleIn = false;
 						string instrumentCode = GetInstrumentCode();
 						DateTime xMinutesSpacedGoal = StrategyLastScaleInTime.AddMinutes(entriesPerDirectionSpacingTime);
-						//bool matchDir = (simStop.EntryOrderAction == OrderAction.Buy && RFscore > 0) || (simStop.EntryOrderAction == OrderAction.SellShort && RFscore < 0);
-
-
-						/*var (RFscore, posSize, risk, target, pullback) = curvesService.CheckSignalsSync(
-						    UseRemoteServiceParameter, 
-						    Time[0], 
-						    instrumentCode, 
-						    OutlierScoreRequirement, 
-						    effectiveScoreRequirement
-						);						
 						
- 						
-						string persistenceDirection;
-						// Use the actual RFscore instead of 0
-						bool isPersistent = ValidateSignalPersistence(RFscore, out persistenceDirection);
-						
-				
-						
-						if(canScaleIn && Times[0][0] >= xMinutesSpacedGoal && entriesPerDirectionSpacingTime > 0  && Math.Abs(RFscore) > OutlierScoreRequirement && matchDir && (thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS))   
-						{
-							// Fix the persistence direction check - should match the signal direction
-							bool persistenceMatches = (persistenceDirection == "BULL" && thisSignalExitAction == signalExitAction.PBL) || 
-													  (persistenceDirection == "BEAR" && thisSignalExitAction == signalExitAction.PBS);
-							
-							if(isPersistent && persistenceMatches) 
-							{
-						
-							// Scale in logic
-							DebugFreezePrint("SCALE IN TBPS / TBPL / PBL / PBS");
-							simStop.OrderRecordMasterLite.OrderSupplementals.hasScaledIn = true;
-							
-							action.accountEntryQuantity = strategyDefaultQuantity;
-							action.appendSignal = "";
-							action.builtSignal = new patternFunctionResponse();
-							action.builtSignal.patternId = simStop.OrderRecordMasterLite.OrderSupplementals.patternId;
-							action.builtSignal.patternSubType = simStop.OrderRecordMasterLite.OrderSupplementals.patternSubtype;
-							action.OA = simStop.EntryOrderAction;
-							action.orderType = OrderType.Market;
-							action.signalPackageParam = simStop.OrderRecordMasterLite.OrderSupplementals.sourceSignalPackage;
-							action.thisBar = CurrentBars[0];
-							StrategyLastScaleInTime = Time[0]; ///no full order but will stop rapid-fire orders
-							}
-						
-						}
-						*/
 						 if(thisSignalExitAction == signalExitAction.PBL || thisSignalExitAction == signalExitAction.PBS)
 						{
 							// Exit logic
@@ -405,13 +375,15 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							if (isLong)
 							{
 								DebugFreezePrint($"Just exit long PBL");
-								ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								int orderSeriesIndex = GetOrderSeriesIndex();
+								ExitLong(orderSeriesIndex, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitLong(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 							}
 							else
 							{
 								DebugFreezePrint($"Just exit Short PBS");
-								ExitShort(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								int orderSeriesIndex = GetOrderSeriesIndex();
+								ExitShort(orderSeriesIndex, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitShort(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 							}
 							
@@ -430,14 +402,16 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							if (isLong)
 							{
 								DebugFreezePrint($"Just exit long TBPL");
-								ExitLong(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								int orderSeriesIndex = GetOrderSeriesIndex();
+								ExitLong(orderSeriesIndex, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitLong(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 
 							}
 							else
 							{
 								DebugFreezePrint($"Just exit Short TBPS");
-								ExitShort(1, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
+								int orderSeriesIndex = GetOrderSeriesIndex();
+								ExitShort(orderSeriesIndex, simStop.quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID);
 								if(!IsInStrategyAnalyzer && isRealTime == true)  _ = Task.Run(() =>  projectXBridge.ProjectXExitShort(quantity, simStop.ExitOrderUUID, simStop.EntryOrderUUID,contractId));
 
 							}

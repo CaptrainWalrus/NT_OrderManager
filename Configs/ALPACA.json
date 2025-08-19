@@ -1,0 +1,32 @@
+{
+  "name": "ALPACA",
+  "version": "2.0",
+  "created": "2025-08-18T23:10:20.989Z",
+  "TakeProfit": 1000,
+  "StopLoss": 300,
+  "SoftTakeProfitMult": 200,
+  "PullBackExitEnabled": true,
+  "TakeBigProfitEnabled": true,
+  "signals": {
+    "VOLUME_DIRECTION": false,
+    "PRICE_MEAN_REVERSION": false,
+    "PRICE_BREAKOUT": false,
+    "RSI_EXTREME": false,
+    "SIMPLE_MACD": false,
+    "SPREAD_ADJUSTED_RSI": false,
+    "ATR_BAND_MOMENTUM": false,
+    "simple_EMACross": false,
+    "WICK_REVERSAL_CONFIRMATION": false,
+    "RSI_EXTREME_CONFIRMATION": false,
+    "PRICE_BREAKOUT_CONFIRMATION": false,
+    "EMA_CROSS_CONFIRMATION": false,
+    "MACD_HISTOGRAM_ACCELERATION": false,
+    "RELATIVE_VOLUME_STRENGTH": false,
+    "EMA_CROSSOVER_MOMENTUM": false,
+    "TIME_SESSION_MOMENTUM": false,
+    "TICK_MOMENTUM_SCALP": false,
+    "WICK_TREND_REVERSAL": true,
+    "Retry_PullBack": false
+  },
+  "ExecutionMode": "Consensus"
+}

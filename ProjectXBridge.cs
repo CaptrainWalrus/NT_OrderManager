@@ -146,7 +146,9 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
                     ParentOrderId = parentResponse.orderId,
                     StopOrderId = stopResponse?.success == true ? stopResponse.orderId : 0,
                     TargetOrderId = targetResponse?.success == true ? targetResponse.orderId : 0,
-                    EntryUUID = entryUUID
+                    EntryUUID = entryUUID,
+                    ContractId = contractId,
+                    IsLong = isLong
                 };
 
                 // 5. Track the order set
@@ -287,6 +289,100 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
             {
                 strategy.Print($"⚠️ Error cancelling bracket orders: {ex.Message}");
             }
+        }
+        
+        /// <summary>
+        /// Cancel stop order only (preserve target)
+        /// </summary>
+        public async Task<bool> CancelStopOrder(string entryUUID)
+        {
+            try
+            {
+                if (!activeOrderSets.TryGetValue(entryUUID, out var orderSet))
+                {
+                    strategy.Print($"⚠️ No order set found for {entryUUID}");
+                    return false;
+                }
+                
+                if (orderSet.StopOrderId > 0)
+                {
+                    bool cancelSuccess = await client.CancelOrderAsync(orderSet.StopOrderId);
+                    if (cancelSuccess)
+                    {
+                        strategy.Print($"✅ Stop order cancelled for {entryUUID}");
+                        orderSet.StopOrderId = 0; // Clear the stop order ID
+                        return true;
+                    }
+                    else
+                    {
+                        strategy.Print($"❌ Cancel stop failed for order ID {orderSet.StopOrderId}");
+                        return false;
+                    }
+                }
+                
+                strategy.Print($"⚠️ No stop order to cancel for {entryUUID}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                strategy.Print($"❌ Error cancelling stop: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Place a trailing stop order
+        /// </summary>
+        public async Task<bool> PlaceTrailingStop(string entryUUID, double stopPrice, int quantity)
+        {
+            try
+            {
+                if (!activeOrderSets.TryGetValue(entryUUID, out var orderSet))
+                {
+                    strategy.Print($"⚠️ No order set found for {entryUUID}");
+                    return false;
+                }
+                
+                var stopOrder = new ProjectXOrder
+                {
+                    accountId = strategy.ProjectXAccountId,
+                    contractId = orderSet.ContractId,
+                    type = 5, // TrailingStop per API docs
+                    side = orderSet.IsLong ? 1 : 0, // Opposite side for stop (sell to exit long, buy to exit short)
+                    size = quantity,
+                    trailPrice = (decimal)stopPrice,
+                    customTag = $"{entryUUID}_TRAIL",
+                    linkedOrderId = orderSet.ParentOrderId
+                };
+                
+                var stopResponse = await client.PlaceOrderAsync(stopOrder);
+                
+                if (stopResponse.success)
+                {
+                    strategy.Print($"✅ Trailing stop placed at ${stopPrice:F2} for {entryUUID}");
+                    orderSet.StopOrderId = stopResponse.orderId; // Update with new trailing stop ID
+                    return true;
+                }
+                else
+                {
+                    strategy.Print($"❌ Trailing stop failed: {stopResponse.errorMessage}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                strategy.Print($"❌ Trailing stop exception: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Get order set for external access
+        /// </summary>
+        public ProjectXOrderSet GetOrderSet(string entryUUID)
+        {
+            activeOrderSets.TryGetValue(entryUUID, out var orderSet);
+            return orderSet;
         }
 
         #endregion

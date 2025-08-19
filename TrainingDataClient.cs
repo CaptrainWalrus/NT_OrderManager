@@ -112,7 +112,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 					SessionId = this.sessionId ?? "default",
 					outcome.SignalType,
 					outcome.SignalDefinition,
-					SignalFeatures = outcome.EntryFeatures, // Map EntryFeatures to SignalFeatures
+					// COMMENTED OUT: SignalFeatures mapping
+					// SignalFeatures = outcome.EntryFeatures, // Map EntryFeatures to SignalFeatures
 					outcome.EntryTime,
 					outcome.ExitTime,
 					outcome.EntryPrice,

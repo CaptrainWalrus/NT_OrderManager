@@ -1,3 +1,4 @@
+/*
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,20 +11,25 @@ using NinjaTrader.NinjaScript.Strategies.OrganizedStrategy;
 namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 {
 	/// <summary>
+	/// LEGACY CODE - NO LONGER IN USE
+	/// This file has been replaced by ImprovedTraditionalStrategies.cs
 	/// Traditional strategy library for meta-labeling approach
 	/// These strategies provide the baseline "edge" that RF models will enhance
+	/// 
+	/// MIGRATION NOTE: MainStrategy and CurvesStrategy now use ImprovedTraditionalStrategies
+	/// which provides attribute-based automatic registration and Z-Score enhanced strategies
 	/// </summary>
 	/// 
 		
-	public static class TraditionalStrategies
+	public class TraditionalStrategies
 	{
 		// Random number generator for threshold variations
-		private static readonly Random random = new Random();
+		private readonly Random random = new Random();
 		
 		/// <summary>
 		/// Apply randomization to a threshold value
 		/// </summary>
-		private static double Randomize(double value, double variationPercent = 0.1)
+		private double Randomize(double value, double variationPercent = 0.1)
 		{
 			// Apply +/- variationPercent randomization
 			double variation = value * variationPercent;
@@ -33,7 +39,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Detects huge bars that indicate trend exhaustion - avoid trading near these
 		/// </summary>
-		private static bool IsHugeBarEnvironment(Strategy strategy)
+		private bool IsHugeBarEnvironment(Strategy strategy)
 		{
 			try
 			{
@@ -103,7 +109,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// TIME SESSION MOMENTUM - Pure time-based entries (UNCORRELATED #1)
 		/// Uses only time/day patterns - NO price indicators for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckTimeSessionMomentum(Strategy strategy)
+		public patternFunctionResponse CheckTimeSessionMomentum(Strategy strategy)
 		{
 			try
 			{
@@ -166,7 +172,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// STATISTICAL Z-SCORE - Pure mathematical deviation analysis (UNCORRELATED #2)
 		/// Uses only statistical Z-scores - NO volume/levels for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckStatisticalZScore(Strategy strategy)
+		public patternFunctionResponse CheckStatisticalZScore(Strategy strategy)
 		{
 			try
 			{
@@ -213,7 +219,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// PRICE VELOCITY ACCELERATION - Pure physics concepts (UNCORRELATED #3)
 		/// Uses only velocity/acceleration/jerk - NO volume/ATR for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckPriceVelocityAcceleration(Strategy strategy)
+		public patternFunctionResponse CheckPriceVelocityAcceleration(Strategy strategy)
 		{
 			try
 			{
@@ -263,7 +269,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// INTRADAY MEAN REVERSION - Rolling range behavior (UNCORRELATED #4)
 		/// Uses rolling 6-hour window for 24/7 markets - NO session dependency
 		/// </summary>
-		public static patternFunctionResponse CheckIntradayMeanReversion(Strategy strategy)
+		public patternFunctionResponse CheckIntradayMeanReversion(Strategy strategy)
 		{
 			try
 			{
@@ -330,7 +336,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Helper method to get rolling session anchor for 24/7 markets
 		/// Uses 4-hour rolling window instead of daily session concept
 		/// </summary>
-		private static double Get24HourAnchorPrice(Strategy strategy)
+		private double Get24HourAnchorPrice(Strategy strategy)
 		{
 			try
 			{
@@ -358,7 +364,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Momentum Breakout - Simple directional momentum detector
 		/// Detects strong directional moves with volume confirmation
 		/// </summary>
-		public static patternFunctionResponse CheckMomentumBreakout(Strategy strategy)
+		public patternFunctionResponse CheckMomentumBreakout(Strategy strategy)
 		{
 			try
 			{
@@ -404,7 +410,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Simple Support/Resistance Bounce - Level rejection detector
 		/// Detects bounces off key support/resistance levels
 		/// </summary>
-		public static patternFunctionResponse CheckSRBounce(Strategy strategy)
+		public patternFunctionResponse CheckSRBounce(Strategy strategy)
 		{
 			try
 			{
@@ -441,7 +447,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Pullback from Recent Extremes - 3-bar decline from recent high/low
 		/// Detects pullbacks from recent highs (bear) and bounces from recent lows (bull)
 		/// </summary>
-		public static patternFunctionResponse CheckPullbackFromExtremes(Strategy strategy)
+		public patternFunctionResponse CheckPullbackFromExtremes(Strategy strategy)
 		{
 			try
 			{
@@ -518,7 +524,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 			return null;
 		}
 		
-		public static patternFunctionResponse CheckEMAVWAPCross(Strategy strategy)
+		public patternFunctionResponse CheckEMAVWAPCross(Strategy strategy)
 		{
 			try
 			{
@@ -563,32 +569,39 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				// Long signal: CrossAbove(EMA3,VWAP1,10) && EMA3[0] - VWAP1[0] > TickSize*3 && IsRising(EMA3)
 				if (crossedAbove && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isRising)
 				{
-					// Generate entry signal ID and features
-					string entrySignalId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}";
-					var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					// COMMENTED OUT: SignalFeatures Risk Agent Integration
+					// // Generate entry signal ID and features
+					// string entrySignalId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					// var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					// 
+					// // Queue features and get Risk Agent approval with micro contract values
+					// var mainStrategy = (MainStrategy)strategy;
+					// double maxStopLoss = mainStrategy.microContractStoploss * 0.8; // 80% of micro contract SL
+					// double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.87; // 87% of micro contract TP
+					// bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+					//	strategy.Instrument.FullName, "long", "CheckEMAVWAPCross", 1, maxStopLoss, maxTakeProfit).Result;
+					// 
+					// if (approved && features != null)
 					
-					// Queue features and get Risk Agent approval with micro contract values
+					// Simplified: Use direct strategy parameters without Risk Agent
 					var mainStrategy = (MainStrategy)strategy;
-					double maxStopLoss = mainStrategy.microContractStoploss * 0.8; // 80% of micro contract SL
-					double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.87; // 87% of micro contract TP
-					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
-						strategy.Instrument.FullName, "long", "CheckEMAVWAPCross", 1, maxStopLoss, maxTakeProfit).Result;
-					
-					if (approved && features != null)
+					if (true) // Always approve for now
 					{
-						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						// COMMENTED OUT: Risk Agent pending features
+						// var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						
 						return new patternFunctionResponse
 						{
 							newSignal = FunctionResponses.EnterLong,
 							signalType = "CheckEMAVWAPCross",
 							signalDefinition = "crossedAbove && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isRising",
-							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
-							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
-							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recStop = mainStrategy.microContractStoploss * 0.8,  // Use direct strategy values
+							recTarget = mainStrategy.microContractTakeProfit * 0.87,  // Use direct strategy values
+							signalScore = 0.65,  // Default confidence
 							recQty = 1,
-							patternId = entrySignalId,
-							patternSubType = "BULLISH_CheckEMAVWAPCross",
-							signalFeatures = features
+							patternId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}",
+							patternSubType = "BULLISH_CheckEMAVWAPCross"
+							// COMMENTED OUT: signalFeatures = features
 						};
 					}
 				}
@@ -597,32 +610,39 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				// Note: The original condition seems wrong for short (should be VWAP - EMA3 > threshold), but keeping as-is for compatibility
 				if (crossedBelow && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isFalling)
 				{
-					// Generate entry signal ID and features
-					string entrySignalId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}";
-					var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					// COMMENTED OUT: SignalFeatures Risk Agent Integration
+					// // Generate entry signal ID and features
+					// string entrySignalId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}";
+					// var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+					// 
+					// // Queue features and get Risk Agent approval with micro contract values
+					// var mainStrategy = (MainStrategy)strategy;
+					// double maxStopLoss = mainStrategy.microContractStoploss * 0.8; // 80% of micro contract SL
+					// double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.87; // 87% of micro contract TP
+					// bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
+					//	strategy.Instrument.FullName, "short", "CheckEMAVWAPCross", 1, maxStopLoss, maxTakeProfit).Result;
+					// 
+					// if (approved && features != null)
 					
-					// Queue features and get Risk Agent approval with micro contract values
+					// Simplified: Use direct strategy parameters without Risk Agent
 					var mainStrategy = (MainStrategy)strategy;
-					double maxStopLoss = mainStrategy.microContractStoploss * 0.8; // 80% of micro contract SL
-					double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.87; // 87% of micro contract TP
-					bool approved = mainStrategy.QueueAndApprove(entrySignalId, features, 
-						strategy.Instrument.FullName, "short", "CheckEMAVWAPCross", 1, maxStopLoss, maxTakeProfit).Result;
-					
-					if (approved && features != null)
+					if (true) // Always approve for now
 					{
-						var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						// COMMENTED OUT: Risk Agent pending features
+						// var pending = ((MainStrategy)strategy).GetPendingFeatures(entrySignalId);
+						
 						return new patternFunctionResponse
 						{
 							newSignal = FunctionResponses.EnterShort,
 							signalType = "CheckEMAVWAPCross",
 							signalDefinition = "crossedBelow && (ema3[0] - vwap[0]) > (tickSize * Randomize(3, 0.3)) && isFalling",
-							recStop = pending?.StopLoss ?? 30,  // Use dollar values from Risk Agent
-							recTarget = pending?.TakeProfit ?? 90,  // Use dollar values from Risk Agent
-							signalScore = pending?.Confidence ?? 0.65,  // Use actual confidence from Risk Agent
+							recStop = mainStrategy.microContractStoploss * 0.8,  // Use direct strategy values
+							recTarget = mainStrategy.microContractTakeProfit * 0.87,  // Use direct strategy values
+							signalScore = 0.65,  // Default confidence
 							recQty = 1,
-							patternId = entrySignalId,
-							patternSubType = "BEARISH_CheckEMAVWAPCross",
-							signalFeatures = features
+							patternId = $"CheckEMAVWAPCross_{strategy.Time[0]:yyyyMMdd_HHmmss}",
+							patternSubType = "BEARISH_CheckEMAVWAPCross"
+							// COMMENTED OUT: signalFeatures = features
 						};
 					}
 				}
@@ -640,12 +660,13 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Helper method to create standardized signals WITHOUT Risk Agent approval
 		/// Risk Agent approval happens only AFTER consensus logic in the main dispatcher
 		/// </summary>
-		private static patternFunctionResponse CreateSignal(Strategy strategy, string direction, string signalType, string reason, double maxStopLossMultiplier = 1.0, double maxTakeProfitMultiplier = 1.0)
+		private patternFunctionResponse CreateSignal(Strategy strategy, string direction, string signalType, string reason, double maxStopLossMultiplier = 1.0, double maxTakeProfitMultiplier = 1.0)
 		{
 			try
 			{
 				string entrySignalId = $"{signalType}_{strategy.Time[0]:yyyyMMdd_HHmmss}";
-				var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+				// COMMENTED OUT: SignalFeatures generation
+				// var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
 				
 				// Get micro contract values from MainStrategy and apply multipliers
 				var mainStrategy = (MainStrategy)strategy;
@@ -654,7 +675,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				
 				// NO Risk Agent approval here - just create the candidate signal
 				// Approval happens AFTER consensus in CheckAllTraditionalStrategies
-				if (features != null)
+				// COMMENTED OUT: if (features != null)
+				if (true) // Always create signal now
 				{
 					return new patternFunctionResponse
 					{
@@ -667,7 +689,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						signalScore = 0.65, // Default confidence - Risk Agent will provide actual confidence
 						recQty = 1,
 						patternId = entrySignalId,
-						signalFeatures = features,
+						// COMMENTED OUT: signalFeatures = features,
 						// Store max values for Risk Agent approval later
 						maxStopLoss = maxStopLoss,
 						maxTakeProfit = maxTakeProfit
@@ -684,7 +706,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Convert signal type to numeric for ML training
 		/// </summary>
-		private static double GetSignalTypeNumeric(string signalType)
+		private double GetSignalTypeNumeric(string signalType)
 		{
 			switch (signalType)
 			{
@@ -702,7 +724,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Main strategy dispatcher - checks all traditional strategies and picks highest confidence
 		/// This is the method called from BuildNewSignal()
 		/// </summary>
-		public static patternFunctionResponse CheckAllTraditionalStrategies(Strategy strategy, TraditionalStrategyType strategyFilter = TraditionalStrategyType.ALL)
+		public patternFunctionResponse CheckAllTraditionalStrategies(Strategy strategy, TraditionalStrategyType strategyFilter, double riskAgentConfThreshold = 0.5)
 		{
 			try
 			{
@@ -758,21 +780,24 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 							var mainStrategy = (MainStrategy)strategy;
 							string direction = singleSignal.newSignal == FunctionResponses.EnterLong ? "long" : "short";
 							
-							bool approved = mainStrategy.QueueAndApprove(singleSignal.patternId, singleSignal.signalFeatures, 
-								strategy.Instrument.FullName, direction, singleSignal.signalType, 1, 
-								singleSignal.maxStopLoss, singleSignal.maxTakeProfit).Result;
+							// COMMENTED OUT: SignalFeatures Risk Agent Integration
+							// bool approved = mainStrategy.QueueAndApprove(singleSignal.patternId, singleSignal.signalFeatures, 
+							//	strategy.Instrument.FullName, direction, singleSignal.signalType, 1, 
+							//	singleSignal.maxStopLoss, singleSignal.maxTakeProfit).Result;
 							
+							bool approved = true; // Always approve for now
 							if (approved)
 							{
-								var pending = mainStrategy.GetPendingFeatures(singleSignal.patternId);
-								if (pending != null)
-								{
-									// Update with Risk Agent values
-									singleSignal.recStop = pending.StopLoss != 0 ? pending.StopLoss : singleSignal.recStop;
-									singleSignal.recTarget = pending.TakeProfit != 0 ? pending.TakeProfit : singleSignal.recTarget;
-									singleSignal.recPullback = pending.RecPullback != 0 ? pending.RecPullback : singleSignal.recPullback;
-									singleSignal.signalScore = pending.Confidence != 0 ? pending.Confidence : singleSignal.signalScore;
-								}
+								// COMMENTED OUT: Risk Agent pending features
+								// var pending = mainStrategy.GetPendingFeatures(singleSignal.patternId);
+								// if (pending != null)
+								// {
+								//	// Update with Risk Agent values
+								//	singleSignal.recStop = pending.StopLoss != 0 ? pending.StopLoss : singleSignal.recStop;
+								//	singleSignal.recTarget = pending.TakeProfit != 0 ? pending.TakeProfit : singleSignal.recTarget;
+								//	singleSignal.recPullback = pending.RecPullback != 0 ? pending.RecPullback : singleSignal.recPullback;
+								//	singleSignal.signalScore = pending.Confidence != 0 ? pending.Confidence : singleSignal.signalScore;
+								// }
 								
 								strategy.Print($"[TRADITIONAL-SINGLE] APPROVED: {singleSignal.signalType} with SL: {singleSignal.recStop}, TP: {singleSignal.recTarget}, Confidence: {singleSignal.signalScore:F3}");
 								return singleSignal;
@@ -838,7 +863,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 				double shortPercentage = (double)shortSignals / totalSignals;
 				
 				// Require 75% consensus in one direction
-				const double ALIGNMENT_THRESHOLD = 0.85;
+				double ALIGNMENT_THRESHOLD = 0.75; // Always require 75% regardless of riskAgentConfThreshold
 				bool hasDirectionalConsensus = longPercentage >= ALIGNMENT_THRESHOLD || shortPercentage >= ALIGNMENT_THRESHOLD;
 				
 				if (!hasDirectionalConsensus || candidateSignals.Count < 3)
@@ -859,21 +884,24 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					var mainStrategy = (MainStrategy)strategy;
 					string direction = bestSignal.newSignal == FunctionResponses.EnterLong ? "long" : "short";
 					
-					bool approved = mainStrategy.QueueAndApprove(bestSignal.patternId, bestSignal.signalFeatures, 
-						strategy.Instrument.FullName, direction, bestSignal.signalType, 1, 
-						bestSignal.maxStopLoss, bestSignal.maxTakeProfit).Result;
+					// COMMENTED OUT: SignalFeatures Risk Agent Integration
+					// bool approved = mainStrategy.QueueAndApprove(bestSignal.patternId, bestSignal.signalFeatures, 
+					//	strategy.Instrument.FullName, direction, bestSignal.signalType, 1, 
+					//	bestSignal.maxStopLoss, bestSignal.maxTakeProfit).Result;
 					
+					bool approved = true; // Always approve for now
 					if (approved)
 					{
-						var pending = mainStrategy.GetPendingFeatures(bestSignal.patternId);
-						if (pending != null)
-						{
-							// Update with Risk Agent values
-							bestSignal.recStop = pending.StopLoss != 0 ?  pending.StopLoss : bestSignal.recStop;
-							bestSignal.recTarget = pending.TakeProfit != 0 ? pending.TakeProfit:bestSignal.recTarget;
-							bestSignal.recPullback = pending.RecPullback  != 0 ?   pending.RecPullback : bestSignal.recPullback;
-							bestSignal.signalScore = pending.Confidence  != 0 ? pending.Confidence :  bestSignal.signalScore;
-						}
+						// COMMENTED OUT: Risk Agent pending features
+						// var pending = mainStrategy.GetPendingFeatures(bestSignal.patternId);
+						// if (pending != null)
+						// {
+						//	// Update with Risk Agent values
+						//	bestSignal.recStop = pending.StopLoss != 0 ?  pending.StopLoss : bestSignal.recStop;
+						//	bestSignal.recTarget = pending.TakeProfit != 0 ? pending.TakeProfit:bestSignal.recTarget;
+						//	bestSignal.recPullback = pending.RecPullback  != 0 ?   pending.RecPullback : bestSignal.recPullback;
+						//	bestSignal.signalScore = pending.Confidence  != 0 ? pending.Confidence :  bestSignal.signalScore;
+						// }
 						
 						strategy.Print($"[TRADITIONAL] FINAL APPROVAL: {bestSignal.signalType} with SL: {bestSignal.recStop}, TP: {bestSignal.recTarget}, Confidence: {bestSignal.signalScore:F3}");
 						return bestSignal;
@@ -902,7 +930,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// TICK SEQUENCE PATTERN - Pure tick patterns (UNCORRELATED #5)
 		/// Uses only tick-by-tick bar patterns - NO wicks/EMA for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckTickSequencePattern(Strategy strategy)
+		public patternFunctionResponse CheckTickSequencePattern(Strategy strategy)
 		{
 			try
 			{
@@ -955,7 +983,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// PRICE DISTRIBUTION SKEW - Statistical distribution analysis (UNCORRELATED #6)
 		/// Uses only statistical distribution - NO gap patterns for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckPriceDistributionSkew(Strategy strategy)
+		public patternFunctionResponse CheckPriceDistributionSkew(Strategy strategy)
 		{
 			try
 			{
@@ -1006,7 +1034,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// FOURIER CYCLE ANALYSIS - Frequency analysis (UNCORRELATED #7)
 		/// Uses only cycle/frequency detection - NO high/low levels for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckFourierCycleAnalysis(Strategy strategy)
+		public patternFunctionResponse CheckFourierCycleAnalysis(Strategy strategy)
 		{
 			try
 			{
@@ -1058,7 +1086,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// ENTROPY COMPLEXITY MEASURE - Information theory (UNCORRELATED #8)
 		/// Uses only information theory - NO moving averages for true independence
 		/// </summary>
-		public static patternFunctionResponse CheckEntropyComplexityMeasure(Strategy strategy)
+		public patternFunctionResponse CheckEntropyComplexityMeasure(Strategy strategy)
 		{
 			try
 			{
@@ -1112,7 +1140,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Helper method for cycle correlation calculation
 		/// </summary>
-		private static double CalculateCycleCorrelation(double[] prices, int period)
+		private double CalculateCycleCorrelation(double[] prices, int period)
 		{
 			// Simplified cycle correlation calculation
 			var correlations = new List<double>();
@@ -1130,7 +1158,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Focuses on green bars with upper wicks followed by negative confirmation
 		/// Uses 120-period volume average for context but allows more entries
 		/// </summary>
-		public static patternFunctionResponse CheckLowVolumeScalping(Strategy strategy)
+		public patternFunctionResponse CheckLowVolumeScalping(Strategy strategy)
 		{
 			try
 			{
@@ -1171,7 +1199,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check for green bar with upper wick followed by negative confirmation
 		/// </summary>
-		private static patternFunctionResponse CheckGreenWickReversal(Strategy strategy)
+		private patternFunctionResponse CheckGreenWickReversal(Strategy strategy)
 		{
 			// Look for green bar with upper wick in recent bars (1-5 bars ago)
 			for (int wickBarIndex = 1; wickBarIndex <= 5; wickBarIndex++)
@@ -1252,7 +1280,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check for red bar with lower wick followed by positive confirmation
 		/// </summary>
-		private static patternFunctionResponse CheckRedWickReversal(Strategy strategy)
+		private patternFunctionResponse CheckRedWickReversal(Strategy strategy)
 		{
 			// Look for red bar with lower wick in recent bars (1-5 bars ago)
 			for (int wickBarIndex = 1; wickBarIndex <= 5; wickBarIndex++)
@@ -1333,7 +1361,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check for volume exhaustion reversal pattern
 		/// </summary>
-		private static patternFunctionResponse CheckVolumeExhaustionReversal(Strategy strategy, double volumeMA120)
+		private patternFunctionResponse CheckVolumeExhaustionReversal(Strategy strategy, double volumeMA120)
 		{
 			if (strategy.CurrentBar < 5) return null;
 			
@@ -1396,19 +1424,21 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Helper method to create scalping signals with large positions and ultra-tight risk
 		/// </summary>
-		private static patternFunctionResponse CreateScalpingSignal(Strategy strategy, string direction, string signalType, string reason)
+		private patternFunctionResponse CreateScalpingSignal(Strategy strategy, string direction, string signalType, string reason)
 		{
 			try
 			{
 				string entrySignalId = $"{signalType}_{strategy.Time[0]:yyyyMMdd_HHmmss}";
-				var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
+				// COMMENTED OUT: SignalFeatures generation
+				// var features = ((MainStrategy)strategy).GenerateFeatures(strategy.Time[0], strategy.Instrument.FullName);
 				
 				// Get micro contract values and apply ULTRA-TIGHT scalping multipliers
 				var mainStrategy = (MainStrategy)strategy;
 				double maxStopLoss = mainStrategy.microContractStoploss * 0.25; // 25% of micro contract SL (ultra-tight)
 				double maxTakeProfit = mainStrategy.microContractTakeProfit * 0.3; // 30% of micro contract TP (ultra-tight)
 				
-				if (features != null)
+				// COMMENTED OUT: if (features != null)
+				if (true) // Always create scalping signal
 				{
 					return new patternFunctionResponse
 					{
@@ -1421,7 +1451,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 						signalScore = 0.75, // Higher confidence for scalping in controlled conditions
 						recQty = 3, // LARGE POSITION SIZE: 3x normal quantity for scalping
 						patternId = entrySignalId,
-						signalFeatures = features,
+					
 						maxStopLoss = maxStopLoss,
 						maxTakeProfit = maxTakeProfit
 					};
@@ -1439,7 +1469,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// Uses 4 recent peaks and valleys to identify equidistant levels and trend patterns
 		/// Works on any timeframe with 3-point deviation threshold
 		/// </summary>
-		public static patternFunctionResponse CheckZigZagPivotStrategy(Strategy strategy)
+		public patternFunctionResponse CheckZigZagPivotStrategy(Strategy strategy)
 		{
 			try
 			{
@@ -1483,7 +1513,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Get recent ZigZag pivot points (peaks or valleys)
 		/// </summary>
-		private static List<ZigZagPivot> GetRecentZigZagPivots(Strategy strategy, object zigZag, bool isPeaks, int count)
+		private List<ZigZagPivot> GetRecentZigZagPivots(Strategy strategy, object zigZag, bool isPeaks, int count)
 		{
 			var pivots = new List<ZigZagPivot>();
 			
@@ -1532,7 +1562,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check if pivot levels are roughly equidistant (no massive jumps)
 		/// </summary>
-		private static bool AreEquidistant(List<ZigZagPivot> pivots)
+		private bool AreEquidistant(List<ZigZagPivot> pivots)
 		{
 			if (pivots.Count < 2) return false;
 			
@@ -1555,7 +1585,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check for trend continuation patterns
 		/// </summary>
-		private static patternFunctionResponse CheckZigZagTrend(Strategy strategy, List<ZigZagPivot> peaks, List<ZigZagPivot> valleys, double currentPrice, double atr)
+		private patternFunctionResponse CheckZigZagTrend(Strategy strategy, List<ZigZagPivot> peaks, List<ZigZagPivot> valleys, double currentPrice, double atr)
 		{
 			if (peaks.Count < 2 || valleys.Count < 2) return null;
 			
@@ -1603,7 +1633,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check for breakout from consolidation
 		/// </summary>
-		private static patternFunctionResponse CheckZigZagBreakout(Strategy strategy, List<ZigZagPivot> peaks, List<ZigZagPivot> valleys, double currentPrice, double atr)
+		private patternFunctionResponse CheckZigZagBreakout(Strategy strategy, List<ZigZagPivot> peaks, List<ZigZagPivot> valleys, double currentPrice, double atr)
 		{
 			if (peaks.Count < 3 || valleys.Count < 3) return null;
 			
@@ -1640,7 +1670,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 		/// <summary>
 		/// Check for support/resistance bounces
 		/// </summary>
-		private static patternFunctionResponse CheckZigZagBounce(Strategy strategy, List<ZigZagPivot> peaks, List<ZigZagPivot> valleys, double currentPrice, double atr)
+		private patternFunctionResponse CheckZigZagBounce(Strategy strategy, List<ZigZagPivot> peaks, List<ZigZagPivot> valleys, double currentPrice, double atr)
 		{
 			var bounceDistance = atr * 0.4; // Within 40% ATR of level
 			
@@ -1674,7 +1704,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	/// Uses discovered feature ranges to filter high-probability trades
 	/// Based on analysis of 6,354 MGC trades
 	/// </summary>
-	public static patternFunctionResponse CheckMGCPatternFilter(Strategy strategy)
+	public patternFunctionResponse CheckMGCPatternFilter(Strategy strategy)
 	{
 		try
 		{
@@ -1946,3 +1976,5 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 	}
 	} // End of TraditionalStrategies class
 }
+
+*/

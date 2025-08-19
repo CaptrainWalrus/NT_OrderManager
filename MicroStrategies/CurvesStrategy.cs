@@ -46,6 +46,14 @@ public partial class CurvesStrategy : MainStrategy
 	[XmlIgnore]
 	private bool isInCooldown = false;
 	[XmlIgnore]
+	private bool configOnce = false;
+	[XmlIgnore]
+	private bool configOnce2 = false;
+	
+	// Loss Vector Filters
+	[XmlIgnore]
+	private LossVectorFilters lossVectorFilters;
+	[XmlIgnore]
 	private DateTime cooldownStartTime = DateTime.MinValue;
 	[XmlIgnore]
 	private double cooldownExitPrice = 0.0;
@@ -145,9 +153,12 @@ public partial class CurvesStrategy : MainStrategy
 				// Initialize the service
 				curvesService = new CurvesV2Service(config, msg => Print(msg));
 				
-				// Generate a unique session ID for this strategy instance
-				curvesService.sessionID = Guid.NewGuid().ToString();
-				Print($"[SESSION-DEBUG] Generated session ID: {curvesService.sessionID} for instrument: {Instrument?.MasterInstrument?.Name ?? "UNKNOWN"}");
+				// Note: DropletService is now initialized in MainStrategy.cs
+				// SendSessionConfigToRelay() is also called from MainStrategy.cs after config is loaded
+				
+				// Use session ID from MainStrategy
+				curvesService.sessionID = SessionID;
+				Print($"[SESSION-DEBUG] Using MainStrategy session ID: {curvesService.sessionID} for instrument: {Instrument?.MasterInstrument?.Name ?? "UNKNOWN"}");
 				
 				// Set strategy state for conditional sync/async behavior
 				curvesService.SetStrategyState(State == State.Historical);
@@ -159,6 +170,17 @@ public partial class CurvesStrategy : MainStrategy
 				curvesService.SetMasterSimulatedStops(MasterSimulatedStops);
 				
 				Print("CurvesV2Service initialized successfully.");
+				
+				// Initialize Loss Vector Filters
+				lossVectorFilters = new LossVectorFilters(this, msg => Print(msg));
+				Print("LossVectorFilters initialized.");
+				
+				// Load loss vector filter configuration once at startup
+				if (currentConfig != null && lossVectorFilters != null)
+				{
+					lossVectorFilters.LoadFromConfig(currentConfig);
+					Print($"[LOSS-VECTOR-CONFIG] Loaded {lossVectorFilters.CountActiveFilters()} active filters from config");
+				}
 				
 				// Optional: Connect WebSocket if not using HTTP-only mode
 				if (!UseDirectSync && State != State.Historical)
@@ -297,7 +319,7 @@ public partial class CurvesStrategy : MainStrategy
 	////////////////////////////
 	protected override void OnBarUpdate()
 	{
-		if(BarsInProgress == 0)
+		if(BarsInProgress == 0 && CurrentBars[0] % 120 == 0)
 		{
 			Print($"{GetInstrumentCode()} >> {Time[0]}");
 		}
@@ -377,6 +399,17 @@ public partial class CurvesStrategy : MainStrategy
 			if (isInCooldown)
 				return thisSignal;
 			
+			// Check Loss Vector Filters (already loaded in State.DataLoaded)
+			if (lossVectorFilters != null && lossVectorFilters.EnableLossVectorFilters)
+			{
+				string filterReason;
+				if (lossVectorFilters.ShouldFilterTrade(out filterReason))
+				{
+					Print($"[LOSS-VECTOR-FILTER] Trade blocked: {filterReason}");
+					return thisSignal; // Return NoAction
+				}
+			}
+			
 			// Position and throttle checks
 			int totalPositions = getAllcustomPositionsCombined();
 			TimeSpan timeSinceLastThrottle = Times[BarsInProgress][0] - ThrottleAll;
@@ -385,14 +418,47 @@ public partial class CurvesStrategy : MainStrategy
 			if (Math.Max(totalPositions,Position.Quantity) < EntriesPerDirection && Math.Max(totalPositions,Position.Quantity) < accountMaxQuantity && timeSinceLastThrottle > TimeSpan.FromMinutes(entriesPerDirectionSpacingTime))
 			{
 
-			
-				// Get traditional strategy signal first
-				var traditionalSignal = TraditionalStrategies.CheckAllTraditionalStrategies(this, TraditionalStrategyFilter);
+			   
+				// Get traditional strategy signal using voting system with config
+				StrategyConfig currentConfig = new StrategyConfig(SpecificStrategyName);
+				
+				//var traditionalSignal = improvedTraditionalStrategies.ExecuteVotingSystem(this, currentConfig);
+				
+				
+				patternFunctionResponse traditionalSignal = null;
+				
+				// Config is now loaded ONCE in State.DataLoaded, not here
+				// Using the class-level currentConfig that was validated at startup
+				
+				// Choose execution mode:
+				/// Option 1: NEW Decay-based signal strength system with momentum
+				if(strategyExecutionMode == executionMode.decaySystem)
+				{	
+					traditionalSignal = improvedTraditionalStrategies.ExecuteDecaySystem(this, currentConfig);
+				}		
+				/// Option 2: Branching system - regime detection then confirmation
+				if(strategyExecutionMode == executionMode.Branching)
+				{
+						traditionalSignal = improvedTraditionalStrategies.ExecuteBranchingSystem(this, currentConfig);
+				}
+				/// Option 3: Original voting system with Math/Lag segments
+				if(strategyExecutionMode == executionMode.VotingSystem)
+				{
+				 	traditionalSignal = improvedTraditionalStrategies.ExecuteVotingSystem(this, currentConfig);
+				}
+						
+				/// Option 4: Execute all strategies with consensus (30% agreement threshold)
+				if(strategyExecutionMode == executionMode.Consensus)
+				{
+					traditionalSignal = improvedTraditionalStrategies.ExecuteAll(this, 0.3, currentConfig);
+				}
+				
 				if (traditionalSignal == null || traditionalSignal.newSignal == FunctionResponses.NoAction)
 					return thisSignal;
-				
 				// Traditional strategies already got Risk Agent approval and populated signalScore, recStop, recTarget
 				// Check if the signal meets our confidence threshold
+				Print($"[DEBUG-CURVES] Signal: {traditionalSignal.signalType}, Score: {traditionalSignal.signalScore:F3}, Confidence: {traditionalSignal.confidence:F3}, Threshold: {RiskAgentConfidenceThreshold:F3}");
+				
 				if (traditionalSignal.signalScore >= RiskAgentConfidenceThreshold)
 				{
 					ThrottleAll = Times[0][0];

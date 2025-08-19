@@ -61,7 +61,7 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
 					{
 
 						int targetedSeriesIndex =  simEntry.instrumentSeriesIndex; 
-						if(BarsInProgress == 0)
+						if(BarsInProgress == smallestBarsInProgress)
 						{
 					
 

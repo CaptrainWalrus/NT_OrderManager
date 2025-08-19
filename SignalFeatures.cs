@@ -1,3 +1,13 @@
+// ========================================================================================
+// ENTIRE SIGNALFEATURES.CS FILE COMMENTED OUT - COMPLEX FEATURE SYSTEM DISABLED
+// ========================================================================================
+// This file contained a complex 140-feature generation system with Risk Agent integration
+// including anti-overfitting protection, pattern exposure tracking, and ML-based signal
+// filtering. The system was not working well and is being disabled to simplify the codebase
+// back to basic traditional strategies without complex feature engineering.
+// ========================================================================================
+
+/*
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
@@ -451,8 +461,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
                 var timeout = 2000; // Default timeout
                 
                 // Access properties from MainStrategy (this partial class)
-                try { port = RiskAgentPort; } catch { /* use default */ }
-                try { timeout = RiskAgentTimeoutMs; } catch { /* use default */ }
+                try { port = RiskAgentPort; } catch {  }
+                try { timeout = RiskAgentTimeoutMs; } catch { }
                 
                 riskAgentUrl = $"http://localhost:{port}/api/evaluate-risk";
                 riskAgentHttpClient.Timeout = TimeSpan.FromMilliseconds(timeout);
@@ -1126,3 +1136,8 @@ namespace NinjaTrader.NinjaScript.Strategies.OrganizedStrategy
         #endregion
     }
 }
+*/
+
+// ========================================================================================
+// END OF COMMENTED OUT SIGNALFEATURES.CS FILE
+// ========================================================================================

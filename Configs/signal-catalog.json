@@ -1,0 +1,249 @@
+{
+  "version": "2.0",
+  "timestamp": "2025-08-17T06:20:40.690Z",
+  "signalCount": 14,
+  "sources": {
+    "mainFile": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs",
+    "directory": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\entrySignals"
+  },
+  "signals": [
+    {
+      "name": "VOLUME_DIRECTION",
+      "methodName": "VolumeDirection",
+      "description": "Simple volume direction detection",
+      "category": "OrderFlow",
+      "segment": "Math",
+      "minBars": 10,
+      "priority": 1,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "PRICE_MEAN_REVERSION",
+      "methodName": "PriceMeanReversion",
+      "description": "Simple mean reversion using SMA and ATR",
+      "category": "Statistical",
+      "segment": "Math",
+      "minBars": 30,
+      "priority": 2,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "PRICE_BREAKOUT",
+      "methodName": "PriceBreakout",
+      "description": "Simple price breakouts of recent highs/lows",
+      "category": "Momentum",
+      "segment": "Math",
+      "minBars": 20,
+      "priority": 3,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "RSI_EXTREME",
+      "methodName": "RSIExtreme",
+      "description": "Simple RSI extreme detection",
+      "category": "Statistical",
+      "segment": "Math",
+      "minBars": 14,
+      "priority": 4,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "SIMPLE_MACD",
+      "methodName": "SimpleMacd",
+      "description": "Simple MACD line crossovers",
+      "category": "Structure",
+      "segment": "Math",
+      "minBars": 26,
+      "priority": 5,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "SPREAD_ADJUSTED_RSI",
+      "methodName": "SpreadAdjustedRSI",
+      "description": "RSI adjusted for spread costs on 1-minute timeframe",
+      "category": "Momentum",
+      "segment": "Lag",
+      "minBars": 20,
+      "priority": 1,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "ATR_BAND_MOMENTUM",
+      "methodName": "ATRBandMomentum",
+      "description": "ATR-based dynamic bands with momentum confirmation",
+      "category": "Volatility",
+      "segment": "Lag",
+      "minBars": 30,
+      "priority": 2,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "simple_EMACross",
+      "methodName": "simple_EMACross",
+      "description": "ATR-based dynamic bands with momentum confirmation",
+      "category": "Trend",
+      "segment": "Lag",
+      "minBars": 30,
+      "priority": 2,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "MACD_HISTOGRAM_ACCELERATION",
+      "methodName": "MACDHistogramAcceleration",
+      "description": "MACD histogram acceleration/deceleration for 1-min",
+      "category": "Trend",
+      "segment": "Lag",
+      "minBars": 30,
+      "priority": 3,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "RELATIVE_VOLUME_STRENGTH",
+      "methodName": "RelativeVolumeStrength",
+      "description": "Relative volume strength indicator for 1-min momentum",
+      "category": "Volume",
+      "segment": "Lag",
+      "minBars": 30,
+      "priority": 4,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "EMA_CROSSOVER_MOMENTUM",
+      "methodName": "EMACrossoverMomentum",
+      "description": "Fast EMA crossover with momentum filter for 1-min",
+      "category": "Trend",
+      "segment": "Lag",
+      "minBars": 20,
+      "priority": 5,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "TIME_SESSION_MOMENTUM",
+      "methodName": "TimeSessionMomentum",
+      "description": "Time-of-day based momentum for specific sessions",
+      "category": "Time",
+      "segment": "Math",
+      "minBars": 20,
+      "priority": 1,
+      "includeInAll": false,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "TICK_MOMENTUM_SCALP",
+      "methodName": "TickMomentumScalp",
+      "description": "Tick-based momentum scalping for 1-min bars",
+      "category": "Scalping",
+      "segment": "Math",
+      "minBars": 10,
+      "priority": 5,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    },
+    {
+      "name": "WICK_TREND_REVERSAL",
+      "methodName": "WickTrendReversal",
+      "description": "Simple wick reversal at highs/lows",
+      "category": "Reversal",
+      "segment": "Math",
+      "minBars": 20,
+      "priority": 6,
+      "includeInAll": true,
+      "source": {
+        "file": "main",
+        "className": "TradingStrategyAttribute",
+        "namespace": "NinjaTrader.NinjaScript.Strategies.OrganizedStrategy",
+        "path": "C:\\Users\\aport\\Documents\\NinjaTrader 8\\bin\\Custom\\Strategies\\OrderManager\\ImprovedTraditionalStrategies.cs"
+      },
+      "enabled": false
+    }
+  ]
+}
